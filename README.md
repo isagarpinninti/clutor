@@ -1,6 +1,22 @@
-# Clutor
+<p align="center">
+  <img src="assets/clutor-logo.svg" width="560" alt="clutor: big models on small machines, with honest numbers">
+</p>
 
-**A terminal tool for running big mixture-of-experts models from disk on small machines, with a coding agent that cannot touch your project until you say so.**
+<p align="center">
+  <a href="https://github.com/isagarpinninti/clutor/actions/workflows/ci.yml"><img src="https://github.com/isagarpinninti/clutor/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/@clutor/cli"><img src="https://img.shields.io/npm/v/@clutor/cli?color=2ea043" alt="npm version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f6feb" alt="MIT licence"></a>
+</p>
+
+<p align="center">
+  <a href="#get-started"><b>Get started</b></a> ·
+  <a href="#commands"><b>Commands</b></a> ·
+  <a href="#what-is-measured-and-what-is-not"><b>Measured vs not</b></a> ·
+  <a href="#how-it-works"><b>How it works</b></a> ·
+  <a href="#documentation"><b>Docs</b></a>
+</p>
+
+**Big models, small machines, honest numbers.** A mixture-of-experts model uses only a few of its experts for each token, so it does not have to fit in RAM: Clutor keeps the small always-needed part resident and reads the experts from disk through a cache that learns which ones you use. Pure C engine, no GPU required, and a terminal that tells you what it measured, what it computed and what it only assumed.
 
 Clutor has three parts, and the line between them is the point of this README:
 
@@ -8,26 +24,61 @@ Clutor has three parts, and the line between them is the point of this README:
 2. **An honest planner and CLI** (`packages/core`, `packages/cli`, TypeScript): will this model fit, where does every byte go, how fast could the disk possibly let it go. It drives `llama.cpp` to actually generate text, and serves OpenAI- and Ollama-compatible APIs.
 3. **A sandboxed coding agent**: it works in a held-aside copy, asks before running project code, shows an exact diff, and signs a receipt of what it did.
 
-[Quickstart](#quickstart) · [Commands](#commands) · [What is measured, what is not](#what-is-measured-and-what-is-not) · [Docs](#documentation)
+```
+$ clutor
 
-## Quickstart
+ ██████╗██╗     ██╗   ██╗████████╗ ██████╗ ██████╗
+██╔════╝██║     ██║   ██║╚══██╔══╝██╔═══██╗██╔══██╗
+██║     ██║     ██║   ██║   ██║   ██║   ██║██████╔╝
+██║     ██║     ██║   ██║   ██║   ██║   ██║██╔══██╗
+╚██████╗███████╗╚██████╔╝   ██║   ╚██████╔╝██║  ██║
+ ╚═════╝╚══════╝ ╚═════╝    ╚═╝    ╚═════╝ ╚═╝  ╚═╝
 
-Needs Node.js 20+ and a C compiler (for the engine; `xcode-select --install` on macOS). llama.cpp (`brew install llama.cpp`) is needed to chat or run the agent.
+clutor interactive session v0.1.1
+big models on small machines, with honest numbers
+
+  folder  ~/myproject
+  model   not configured
+
+  tips    type a task in plain words and the agent works on this folder
+          its changes are held aside; nothing is written without your approval
+          /help lists commands · /plan <model> · /cache · /exit
+
+clt> /plan deepseek-v3 --ram 16
+```
+
+## Get started
+
+You need Node.js 20+ and a C compiler for the engine (`xcode-select --install` on macOS, `build-essential` on Debian and Ubuntu). To chat or run the agent you also need `llama.cpp` (`brew install llama.cpp`).
+
+**From npm**
+
+```bash
+npm install -g @clutor/cli       # if this needs root, set a user prefix: npm config set prefix ~/.npm-global
+clutor engine build              # compiles the engine into ~/.clutor/bin/clutor-engine (once)
+clutor init
+clutor                           # the interactive session
+```
+
+`plan`, `chat`, the agent and the server need no compiler; `stream`, `bench` and `/cache` need the engine.
+
+**From source**
 
 ```bash
 git clone https://github.com/isagarpinninti/clutor.git && cd clutor
 npm install && npm run build
 npm run engine                              # compiles c/ into c/build/clutor-engine
 alias clutor="node $PWD/packages/cli/dist/bin.js"     # `clt` is the short name once installed with npm
+```
 
-clutor init
+Then try it:
+
+```bash
 clutor plan deepseek-v3 --ram 16            # will it fit; the fastest the disk allows
 clutor pull olmoe-1b-7b-q4_k_m              # a 3.9 GiB real MoE model, asks first
 clutor stream models/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf --tokens 300 --cache-mb 512
 clutor bench --file models/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf     # compares cache strategies
 ```
-
-Installed from npm instead (`npm install -g @clutor/cli`)? The package carries the engine's C source: run `clutor engine build` once (needs a C compiler) and it is compiled into `~/.clutor/bin/clutor-engine`, where `stream`, `bench` and `/cache` find it. `plan`, `chat`, the agent and the server need no compiler.
 
 To chat or use the agent, set `backend.kind` to `llama-server` and `backend.llamaServer.model` to a `.gguf` in `clutor.config.json` (see `examples/clutor.config.json`), then:
 
@@ -38,6 +89,12 @@ clutor decide --prompt "PR #42 changes auth with no tests" --choices "approve,re
 clutor code "add a token-bucket rate limiter with tests" --dir ./myproject --verify "npm test"
 clutor serve                                 # OpenAI + Ollama API on 127.0.0.1:4320
 ```
+
+## What Clutor is, and why
+
+A mixture-of-experts model is huge on disk and small per token. The dense part (attention, shared weights, embeddings) is needed every token; the routed experts are only needed when the router picks them. So the model has to be **placed**, not fitted: the dense part in RAM, the experts on disk, and a cache between them that keeps the experts your work keeps asking for.
+
+Clutor exists to answer, with measurements, the question every "run a huge model on a laptop" claim skips: **how fast can the disk possibly let this go, and what does the cache actually buy?** Every number it prints is labelled **measured** (on your machine), **computed** (from a file header or published architecture), **assumed** (disk speed, until you run `bench`) or **simulated**. It never presents a computed ceiling as a speed.
 
 ## Commands
 
@@ -120,6 +177,29 @@ LRU is flushed by the noise and needs another window to recover; the frequency f
 **Memory ceiling.** A 1,000-token run at the same cache size had a peak RSS (`ru_maxrss`) of 269.98 MiB in each of ten 100-token windows: no growth. The engine also computes what it expects to use from its own allocations; it predicted 271.73 MiB against 270.02 MiB measured. The cache fits inside `--cache-mb` (2,114 slots, 256.0 MiB); the whole process sits about 14 MiB above that budget, because the staging buffers, the resident dense weights and the process baseline are not part of it. `ru_maxrss` can only rise, so a flat line means the peak was reached in the first window.
 
 **Receipt.** `clutor bench ... --receipt` signs one entry into `.clutor/receipts.jsonl` with the start and finish times of the run, and `clutor receipt verify <clt_...> --key-id <id>` prints the decoded payload. The receipt proves the text was not changed after signing; it does not prove the numbers are right.
+
+## How it works
+
+Every layer of every token goes through the same steps, and the engine times each one:
+
+1. **Route.** The router picks the top-k experts for the layer (synthetic until the engine runs a real model).
+2. **Look up.** The expert cache answers hits from RAM. It is an adaptive-window W-TinyLFU (a 4-bit Count-Min Sketch in front of a segmented LRU) so a burst of one-off experts cannot flush the hot ones.
+3. **Prefetch.** While layer L computes, the engine predicts layer L+1's experts and a pool of `pread` workers stages them.
+4. **Overlap.** The compute thread only waits for bytes that are not there yet; the time it waits is reported.
+5. **Smart-route (optional).** When a wanted expert is missing and a cached one is nearly as probable, route to the cached one, bounded so that no probability moves by more than a set amount.
+
+The cache is one contiguous slot arena sized as budget / stride, so resident memory follows `--cache-mb` instead of drifting. The engine also computes the RSS it expects from its own allocations, and the tests hold the measured peak to within a few MiB of that.
+
+## Repo layout
+
+```
+c/                   the native engine: GGUF parser, I/O pool, cache, prefetch, smart-route, Q4_0 kernel
+packages/core/       planner, catalog, gates (CL-101..108), agent, receipts, server
+packages/cli/        the `clutor` / `clt` command, interactive session, engine driver
+docs/                guide, engine, agent, security model, limits
+examples/            sample clutor.config.json
+scripts/             packaging helpers
+```
 
 ## What Clutor does not do
 

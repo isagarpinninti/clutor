@@ -2,6 +2,12 @@
 
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+- The interactive session opens with a large CLUTOR wordmark, the version, folder and model (colour only on a terminal, never with `NO_COLOR`; a one-line title on narrow terminals).
+- README restructured around a logo (`assets/clutor-logo.svg`), badges and a sample session; no claims changed.
+
 ## 0.1.1
 
 ### Changed

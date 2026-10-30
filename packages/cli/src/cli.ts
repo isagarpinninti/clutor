@@ -94,7 +94,7 @@ export async function main(argv: string[], io: Io, session?: SessionState): Prom
   const json = flagBool(args, "json");
   try {
     if (flagBool(args, "version") || command === "version" || argv.includes("-v")) return io.out(version()), 0;
-    if (!command && !flagBool(args, "help") && !argv.includes("-h") && io.prompt && !session) return await (await import("./repl")).runRepl(io, (a, s) => main(a, io, s), (cfg, what) => engineSlashCommand(io, cfg, what));
+    if (!command && !flagBool(args, "help") && !argv.includes("-h") && io.prompt && !session) return await (await import("./repl")).runRepl(io, (a, s) => main(a, io, s), (cfg, what) => engineSlashCommand(io, cfg, what), version());
     if (!command || flagBool(args, "help") || command === "help" || argv.includes("-h")) return io.out(HELP), 0;
 
     switch (command) {

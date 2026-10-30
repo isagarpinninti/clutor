@@ -1,5 +1,6 @@
 import { TOOLS } from "@clutor/core";
 import { loadConfig, ConfigError, type ClutorConfig } from "./config";
+import { banner, useColor } from "./banner";
 import { table } from "./format";
 import type { Io, SessionState } from "./cli";
 
@@ -65,7 +66,7 @@ function helpText(): string {
   return `Type a task in plain words and the agent works on this folder. Its changes are held aside; you see the diff and approve before anything is written.\n\n${table(rows)}`;
 }
 
-export async function runRepl(io: Io, run: Run, engine: EngineView): Promise<number> {
+export async function runRepl(io: Io, run: Run, engine: EngineView, version = "dev"): Promise<number> {
   const ask = io.prompt as NonNullable<Io["prompt"]>;
   const session: SessionState = { auto: false, notes: [], usage: { promptTokens: 0, completionTokens: 0 } };
   const load = (): ClutorConfig | undefined => {
@@ -73,7 +74,7 @@ export async function runRepl(io: Io, run: Run, engine: EngineView): Promise<num
   };
   const cfg = load();
   const model = (c: ClutorConfig | undefined): string => !c ? "not configured" : c.backend.kind === "openai" ? `${c.backend.model ?? "default"} at ${c.backend.baseUrl}` : c.backend.llamaServer.model ?? "not configured (set backend.llamaServer.model)";
-  io.out(`clutor interactive session\n  folder  ${io.cwd}\n  model   ${model(cfg)}\n  Type a task, or /help for commands. Nothing is written to your files without your approval.`);
+  io.out(banner({ version, folder: io.cwd, model: model(cfg), columns: process.stdout.columns ?? 80, color: useColor() }));
 
   try {
     for (;;) {
