@@ -2,6 +2,12 @@
 
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/).
 
+## 0.1.1
+
+### Changed
+- **`@clutor/cli` now ships the native engine's C source.** After `npm install -g @clutor/cli`, `clutor engine build` compiles it (needs a C compiler) into `~/.clutor/bin/clutor-engine`, where `stream`, `bench` and `/cache` find it. Nothing is compiled during `npm install`. A source checkout still builds into `c/build`.
+- `@clutor/core` is republished at 0.1.1 with no code changes so both packages share a version.
+
 ## 0.1.0
 
 First release. Terminal only: there is no desktop app.

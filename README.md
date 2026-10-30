@@ -27,6 +27,8 @@ clutor stream models/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf --tokens 300 --cache-
 clutor bench --file models/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf     # compares cache strategies
 ```
 
+Installed from npm instead (`npm install -g @clutor/cli`)? The package carries the engine's C source: run `clutor engine build` once (needs a C compiler) and it is compiled into `~/.clutor/bin/clutor-engine`, where `stream`, `bench` and `/cache` find it. `plan`, `chat`, the agent and the server need no compiler.
+
 To chat or use the agent, set `backend.kind` to `llama-server` and `backend.llamaServer.model` to a `.gguf` in `clutor.config.json` (see `examples/clutor.config.json`), then:
 
 ```bash

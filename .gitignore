@@ -13,3 +13,4 @@ c/build/
 models/
 *.gguf
 !packages/core/test/fixtures/*.gguf
+packages/cli/c/

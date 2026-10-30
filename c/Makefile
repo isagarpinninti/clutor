@@ -8,13 +8,16 @@ ifeq ($(shell uname -m),x86_64)
   CFLAGS += -mavx2
 endif
 LDLIBS = -lm -lpthread
+# BUILD can point somewhere writable when the source sits in a read-only installed package: make BUILD=$HOME/.clutor/bin
+BUILD ?= build
 SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/stream.c
-BIN = build/clutor-engine
+BIN = $(BUILD)/clutor-engine
 
 all: $(BIN)
 build:
 	mkdir -p build
-$(BIN): build $(SRC) src/main.c $(wildcard src/*.h)
+$(BIN): $(SRC) src/main.c $(wildcard src/*.h)
+	mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(SRC) src/main.c -o $@ $(LDLIBS)
 build/test_engine: build $(SRC) test/test_engine.c $(wildcard src/*.h)
 	$(CC) $(CFLAGS) -Isrc $(SRC) test/test_engine.c -o $@ $(LDLIBS)

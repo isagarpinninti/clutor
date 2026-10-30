@@ -1,6 +1,6 @@
 {
   "name": "clutor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Clutor: a terminal-first engine and toolkit for running large mixture-of-experts models from disk on small machines, with an honest memory planner, a streaming expert cache, and a sandboxed coding agent.",
   "scripts": {

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,10 +20,15 @@ export class EngineError extends Error {
 const EXE = process.platform === "win32" ? "clutor-engine.exe" : "clutor-engine";
 const executable = (p: string): boolean => { try { accessSync(p, constants.X_OK); return true; } catch { return false; } };
 
-/** The `c/` folder of a source checkout (absent in an installed package). */
+/** The engine's C source: `c/` inside the installed package, else the `c/` folder of a source checkout. */
 export function engineSourceDir(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "c");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const packaged = join(here, "..", "c");
+  return existsSync(join(packaged, "Makefile")) ? packaged : join(here, "..", "..", "..", "c");
 }
+
+/** True when the source came from the npm package: its folder may be read-only, so the binary is built under ~/.clutor/bin instead. */
+const isPackaged = (): boolean => existsSync(join(dirname(fileURLToPath(import.meta.url)), "..", "c", "Makefile"));
 
 export function findEngine(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const candidates = [env["CLUTOR_ENGINE"], join(engineSourceDir(), "build", EXE), join(homedir(), ".clutor", "bin", EXE), ...(env["PATH"] ?? "").split(delimiter).map((d) => join(d, EXE))];
@@ -45,9 +50,10 @@ export function run(bin: string, args: string[], opts: { timeoutMs?: number; cwd
 /** Compiles the engine from source with `make` (needs a C compiler). Returns the path of the binary. */
 export async function buildEngine(): Promise<string> {
   const dir = engineSourceDir();
-  const r = await run("make", ["-C", dir], { timeoutMs: 300_000 }).catch((e: unknown) => { throw new EngineError(`could not run make: ${e instanceof Error ? e.message : String(e)}`); });
+  const out = isPackaged() ? join(homedir(), ".clutor", "bin") : join(dir, "build");
+  const r = await run("make", ["-C", dir, ...(isPackaged() ? [`BUILD=${out}`] : [])], { timeoutMs: 300_000 }).catch((e: unknown) => { throw new EngineError(`could not run make: ${e instanceof Error ? e.message : String(e)}`); });
   if (r.code !== 0) throw new EngineError(`the engine did not compile:\n${(r.stderr || r.stdout).split("\n").slice(-15).join("\n")}`);
-  const bin = join(dir, "build", EXE);
+  const bin = join(out, EXE);
   if (!executable(bin)) throw new EngineError(`make finished but ${bin} is missing`);
   return bin;
 }
