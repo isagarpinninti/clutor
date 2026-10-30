@@ -184,8 +184,18 @@ static void wait_slot(eng *e, int slot, uint64_t *wait_ns) {
   if (waited) *wait_ns += now_ns() - t0;
 }
 
-/* Peak resident set size of this process so far, in bytes (macOS reports bytes, Linux kilobytes). */
+/* Peak resident set size of this process so far, in bytes (macOS ru_maxrss is bytes; Linux uses VmHWM, falling back to ru_maxrss in kilobytes). */
 static uint64_t peak_rss(void) {
+#if defined(__linux__)
+  /* ru_maxrss survives fork+exec on Linux, so it can still show the parent's peak; VmHWM belongs to this process image only. */
+  FILE *f = fopen("/proc/self/status", "r");
+  if (f) {
+    char line[256]; unsigned long long kb = 0; int found = 0;
+    while (fgets(line, sizeof line, f)) if (sscanf(line, "VmHWM: %llu kB", &kb) == 1) { found = 1; break; }
+    fclose(f);
+    if (found) return (uint64_t)kb * 1024ull;
+  }
+#endif
   struct rusage u;
   if (getrusage(RUSAGE_SELF, &u)) return 0;
 #ifdef __APPLE__
