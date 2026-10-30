@@ -1,0 +1,114 @@
+import { spawn } from "node:child_process";
+import { accessSync, constants } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/**
+ * The native engine (c/): a C program that reads a GGUF file directly and streams its experts from disk through Clutor's cache.
+ * It does not run a transformer yet. What it measures is real (bytes read, time spent waiting for them, cache and prefetch behaviour);
+ * what it routes with is a synthetic router, and every report says so.
+ */
+
+export class EngineError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EngineError";
+  }
+}
+
+const EXE = process.platform === "win32" ? "clutor-engine.exe" : "clutor-engine";
+const executable = (p: string): boolean => { try { accessSync(p, constants.X_OK); return true; } catch { return false; } };
+
+/** The `c/` folder of a source checkout (absent in an installed package). */
+export function engineSourceDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "c");
+}
+
+export function findEngine(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const candidates = [env["CLUTOR_ENGINE"], join(engineSourceDir(), "build", EXE), join(homedir(), ".clutor", "bin", EXE), ...(env["PATH"] ?? "").split(delimiter).map((d) => join(d, EXE))];
+  return candidates.find((c): c is string => !!c && executable(c));
+}
+
+export function run(bin: string, args: string[], opts: { timeoutMs?: number; cwd?: string } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], ...(opts.cwd ? { cwd: opts.cwd } : {}) });
+    let stdout = "", stderr = "";
+    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new EngineError(`${bin} did not finish within ${(opts.timeoutMs ?? 600_000) / 1000} seconds`)); }, opts.timeoutMs ?? 600_000);
+    child.stdout.on("data", (b: Buffer) => { stdout += b.toString(); });
+    child.stderr.on("data", (b: Buffer) => { stderr += b.toString(); });
+    child.on("error", (e) => { clearTimeout(timer); reject(new EngineError(`could not start ${bin}: ${e.message}`)); });
+    child.on("close", (code) => { clearTimeout(timer); resolve({ code: code ?? 1, stdout, stderr }); });
+  });
+}
+
+/** Compiles the engine from source with `make` (needs a C compiler). Returns the path of the binary. */
+export async function buildEngine(): Promise<string> {
+  const dir = engineSourceDir();
+  const r = await run("make", ["-C", dir], { timeoutMs: 300_000 }).catch((e: unknown) => { throw new EngineError(`could not run make: ${e instanceof Error ? e.message : String(e)}`); });
+  if (r.code !== 0) throw new EngineError(`the engine did not compile:\n${(r.stderr || r.stdout).split("\n").slice(-15).join("\n")}`);
+  const bin = join(dir, "build", EXE);
+  if (!executable(bin)) throw new EngineError(`make finished but ${bin} is missing`);
+  return bin;
+}
+
+export interface EngineInfo {
+  arch: string; name: string; layers: number; experts: number; expertsUsed: number; moeLayers: number;
+  residentBytes: number; maxDenseBytes: number; maxExpertBytes: number; totalBytes: number; unsizedTensors: number;
+  layerTable: Array<{ denseBytes: number; expertBytes: number; routerBytes: number }>;
+}
+
+export interface StreamOptions {
+  tokens?: number; warmup?: number; cacheMb?: number; stage?: number;
+  policy?: "lru" | "wtinylfu" | "adaptive";
+  smart?: string; prefetch?: boolean; ioThreads?: number; seed?: number; locality?: number; predictCorr?: number; computeUs?: number; windowPct?: number;
+  noOsCache?: boolean;
+  /** auto: keep the dense weights in RAM when they fit in a quarter of it; ring: re-read two layers at a time every token. */
+  dense?: "auto" | "resident" | "ring";
+  /** kernel: a Q4_0 x Q8_0 dot-product kernel over every loaded byte (default); checksum: a cheap hash, so the run measures I/O alone. */
+  compute?: "kernel" | "checksum";
+  /** Scenario: measured tokens [at, at+len) route uniformly at random (scan noise); all others use one fixed tight topic. */
+  shift?: { at: number; len: number };
+  /** Record hits and peak RSS every N measured tokens. */
+  window?: number;
+}
+
+export interface StreamReport {
+  provenance: { routing: string; disk: string; compute: string };
+  model: { name: string; arch: string; layers: number; experts: number; expertsUsed: number; expertBytes: number };
+  config: { policy: string; cacheSlots: number; stageSlots: number; smartRoute: boolean; J: number; M: number; tau: number; denseMode: "resident" | "ring"; densePreloadBytes: number; computeMode: "kernel" | "checksum"; computeKernel: string; prefetch: boolean; ioThreads: number; osCacheBypass: boolean; tokens: number; warmup: number; seed: number; locality: number; predictCorr: number };
+  totals: {
+    accesses: number; hits: number; stageHits: number; misses: number; bypass: number; hitRate: number; substituted: number; droppedMass: number; maxDeltaP: number; admitRejects: number; evictions: number;
+    prefetchIssued: number; prefetchLate: number; prefetchWasted: number; demandBytes: number; prefetchBytes: number; denseBytes: number;
+    wallSeconds: number; ioWaitSeconds: number; computeSeconds: number; readSecondsTotal: number; overlap: number; tokensPerSecond: number; gbPerToken: number; missesPerToken: number; checksum: string;
+  };
+  /** ru_maxrss of the engine process, bytes: before it allocated anything, and at the end of the run. */
+  rss: { startBytes: number; peakBytes: number; /** Process baseline plus every buffer and table the run allocates, all pages touched. */ predictedBytes: number };
+  scenario: { shiftAt: number; shiftLen: number };
+  windows: Array<{ tokEnd: number; accesses: number; hits: number; peakRssBytes: number }>;
+  layers: Array<{ layer: number; accesses: number; hits: number; misses: number; substituted: number; ioWaitSeconds: number }>;
+}
+
+function streamArgs(file: string, o: StreamOptions): string[] {
+  const a = ["stream", file, "--json"];
+  const add = (k: string, v: string | number | undefined): void => { if (v !== undefined) a.push(k, String(v)); };
+  add("--tokens", o.tokens); add("--warmup", o.warmup); add("--cache-mb", o.cacheMb); add("--stage", o.stage); add("--policy", o.policy);
+  add("--smart", o.smart); if (o.prefetch !== undefined) add("--prefetch", o.prefetch ? "on" : "off");
+  add("--io-threads", o.ioThreads); add("--seed", o.seed); add("--locality", o.locality); add("--predict-corr", o.predictCorr); add("--compute-us", o.computeUs); add("--window-pct", o.windowPct);
+  add("--dense", o.dense); add("--compute", o.compute); add("--window", o.window);
+  if (o.shift) add("--shift", `${o.shift.at},${o.shift.len}`);
+  if (o.noOsCache) a.push("--no-os-cache");
+  return a;
+}
+
+export async function engineInfo(bin: string, file: string): Promise<EngineInfo> {
+  const r = await run(bin, ["info", file, "--json"], { timeoutMs: 60_000 });
+  if (r.code !== 0) throw new EngineError(r.stderr.trim() || `engine exited with ${r.code}`);
+  return JSON.parse(r.stdout) as EngineInfo;
+}
+
+export async function engineStream(bin: string, file: string, o: StreamOptions = {}, timeoutMs = 900_000): Promise<StreamReport> {
+  const r = await run(bin, streamArgs(file, o), { timeoutMs });
+  if (r.code !== 0) throw new EngineError(r.stderr.trim() || `engine exited with ${r.code}`);
+  try { return JSON.parse(r.stdout) as StreamReport; } catch { throw new EngineError("the engine printed something that is not a report"); }
+}

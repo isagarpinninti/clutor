@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.tsbuildinfo
+*.log
+.DS_Store
+.clutor/
+.env*
+!.env.example
+coverage/
+c/build/
+
+# model files (keep only the small test fixture)
+models/
+*.gguf
+!packages/core/test/fixtures/*.gguf

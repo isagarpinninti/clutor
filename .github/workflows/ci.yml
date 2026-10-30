@@ -1,0 +1,66 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Build, test, smoke (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run engine
+      - run: npm run engine:test
+      - run: npm run build
+      - run: npm test
+      - run: npm run smoke
+      - run: npm run bench
+        if: matrix.node == 22 && matrix.os == 'ubuntu-latest'
+
+  sanitizers:
+    name: Engine under ASan, UBSan and TSan (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Generate a small MoE test file
+        run: node -e "import('@clutor/core/node').then(m=>m.writeSyntheticGguf('/tmp/small.gguf',{arch:'qwen2moe',name:'small-moe',layers:6,embedding:256,heads:8,kvHeads:4,contextLength:2048,expertCount:32,expertsUsed:4,expertFfn:256,denseFfn:0,vocab:1024,sharedExperts:0}))"
+      - run: make -C c sanitize SMALL=/tmp/small.gguf
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Runtime dependencies must have no known high or critical vulnerabilities
+        run: npm audit --omit=dev --audit-level=high

@@ -1,0 +1,9 @@
+{
+  "models": "models",
+  "port": 4320,
+  "backend": {
+    "kind": "llama-server",
+    "llamaServer": { "model": "models/Qwen3-30B-A3B-Q4_K_M.gguf", "port": 8123 }
+  },
+  "agent": { "verifyCommand": "npm test" }
+}

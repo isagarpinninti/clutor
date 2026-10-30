@@ -1,0 +1,20 @@
+{
+  "name": "@clutor/core",
+  "version": "0.1.0",
+  "description": "Clutor engine: a dependency-free GGUF v3 reader, a physical-memory planner for out-of-core mixture-of-experts models, a W-TinyLFU expert cache with cross-layer prefetch and router-drift-bounded substitution, prompt-lookup drafting, and a sandboxed coding agent with shadow workspaces, diffs, checkpoints and tamper-evident receipts.",
+  "license": "MIT",
+  "type": "module",
+  "author": { "name": "Sagar Pinninti", "url": "https://github.com/isagarpinninti" },
+  "repository": { "type": "git", "url": "git+https://github.com/isagarpinninti/clutor.git", "directory": "packages/core" },
+  "keywords": ["gguf", "llm", "moe", "mixture-of-experts", "local-llm", "inference", "coding-agent", "memory-planner"],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js", "require": "./dist/index.cjs" },
+    "./node": { "types": "./dist/node.d.ts", "import": "./dist/node.js", "require": "./dist/node.cjs" }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": { "node": ">=20" },
+  "scripts": { "build": "tsup", "typecheck": "tsc --noEmit", "test": "vitest run" }
+}
