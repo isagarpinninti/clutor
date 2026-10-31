@@ -313,6 +313,44 @@ static void test_meta(const char *fixture) {
   cl_meta_free(&m);
 }
 
+/* The integer dot products must equal "dequantize the weights, dequantize the 8-bit activations, multiply in double". */
+static void test_integer_dot(void) {
+  enum { ROWS = 40, COLS = 768 };   /* 3 blocks of 256 per row */
+  uint32_t s = 777;
+  static float x[COLS];
+  static uint8_t w4[ROWS * 3 * 144], w6[ROWS * 3 * 210];
+  for (int i = 0; i < COLS; i++) { s = s * 1664525u + 1013904223u; x[i] = ((float)(s >> 8) / (1 << 24) - 0.5f) * (i % 97 == 0 ? 8.0f : 1.0f); }
+  for (size_t i = 0; i < sizeof w4; i++) { s = s * 1664525u + 1013904223u; w4[i] = (uint8_t)(s >> 16); }
+  for (size_t i = 0; i < sizeof w6; i++) { s = s * 1664525u + 1013904223u; w6[i] = (uint8_t)(s >> 16); }
+  for (int b = 0; b < ROWS * 3; b++) {   /* sane scales: half-precision 0.01 .. 0.04, so no Inf or NaN */
+    uint16_t d = (uint16_t)(0x2400 + (b % 16) * 8), dm = (uint16_t)(0x2000 + (b % 7) * 8);
+    memcpy(w4 + b * 144, &d, 2); memcpy(w4 + b * 144 + 2, &dm, 2);
+    memcpy(w6 + b * 210 + 208, &d, 2);
+  }
+  cl_xq q;
+  CHECK(cl_xq_init(&q, COLS), "activation buffer");
+  cl_xq_quantize(&q, x);
+  float xd[COLS];
+  for (int b = 0; b < COLS / 256; b++) for (int j = 0; j < 256; j++) xd[b * 256 + j] = q.b[b].d * q.b[b].qs[j];
+  for (int pass = 0; pass < 2; pass++) {
+    uint32_t type = pass ? CL_T_Q6_K : CL_T_Q4_K;
+    const uint8_t *w = pass ? w6 : w4;
+    static float out[ROWS];
+    cl_mv job = {type, w, ROWS, COLS, x, &q, out};
+    cl_matvec_batch(&job, 1);
+    int bad = 0;
+    float row[COLS];
+    for (int r = 0; r < ROWS; r++) {
+      cl_dequant_row(type, w + (size_t)r * cl_row_bytes(type, COLS), row, COLS);
+      double ref = 0, mag = 0;
+      for (int c = 0; c < COLS; c++) { ref += (double)row[c] * xd[c]; mag += fabs((double)row[c] * xd[c]); }
+      if (fabs(ref - out[r]) > 1e-4 * mag + 1e-6) bad++;
+    }
+    CHECK(bad == 0, "%s integer dot matches dequantize-and-multiply on %d of %d rows (%s)", pass ? "Q6_K" : "Q4_K", ROWS - bad, ROWS, cl_quant_path());
+  }
+  cl_xq_free(&q);
+}
+
 static void test_xs(const char *fixture) {
   if (!fixture) return;
   FILE *fp = fopen(fixture, "rb");
@@ -352,7 +390,7 @@ static void test_xs(const char *fixture) {
 }
 
 int main(int argc, char **argv) {
-  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
+  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_integer_dot(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   test_gguf(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;

@@ -17,6 +17,23 @@ uint64_t cl_row_bytes(uint32_t type, uint64_t n);
 /* Dequantizes n elements (a multiple of the block) from one row into floats. */
 void cl_dequant_row(uint32_t type, const void *src, float *dst, int n);
 
+/* An activation vector quantized to 8-bit blocks of 256 (ggml's Q8_K layout: a scale, 256 int8, and the sum of each 16), the partner of
+ * the K-quant weight types in the integer dot products. n must be a multiple of 256. */
+typedef struct { float d; int8_t qs[256]; int16_t bsums[16]; } cl_q8k;
+typedef struct { cl_q8k *b; int n; } cl_xq;
+int cl_xq_init(cl_xq *q, int n);
+void cl_xq_free(cl_xq *q);
+void cl_xq_quantize(cl_xq *q, const float *x);
+
+/* One matrix-vector product: out[r] = dot(row r of W, x). K-quant weights use `xq` and integer arithmetic; other types use the float `xf`. */
+typedef struct { uint32_t type; const void *w; int rows, cols; const float *xf; const cl_xq *xq; float *out; } cl_mv;
+/* Runs several products at once, their rows split into chunks over the thread pool. */
+void cl_matvec_batch(const cl_mv *jobs, int n);
+/* 1 when the weights of this type are multiplied with integer arithmetic (and so need `xq`). */
+int cl_type_integer_dot(uint32_t type);
+/* Name of the integer dot path compiled in: "neon+dotprod" or "scalar". */
+const char *cl_quant_path(void);
+
 /* out[r] = dot(row r of W, x) for rows x cols weights of `type`, using a pool of threads. Dequantizes each block to float on the fly. */
 void cl_matvec(uint32_t type, const void *w, int rows, int cols, const float *x, float *out);
 

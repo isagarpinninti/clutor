@@ -19,7 +19,7 @@ static void usage(void) {
        "  info <model.gguf> [--json]       Read the header and print where every layer's bytes and experts live\n"
        "  tokenize <model.gguf> TEXT [--no-special]    Print the token ids of TEXT (byte-level BPE built from the model's own tables)\n"
        "  logits <model.gguf> PROMPT [--top N] [--ctx N] [--trace FILE]   Run the REAL forward pass over PROMPT and print the next-token logprobs (olmoe models); --trace writes the router's choices\n"
-       "  generate <model.gguf> PROMPT [--n N] [--trace FILE] [--quiet] [--cache-mb N --prefetch on|off --policy lru|wtinylfu|adaptive --io-threads N --no-os-cache]   Greedy decoding with the real forward pass; --trace records the router's scores for every token; --cache-mb N streams the experts from disk through an N MiB cache instead of mapping the whole file\n"
+       "  generate <model.gguf> PROMPT [--n N] [--trace FILE] [--quiet] [--cache-mb N --prefetch on|off (off) --prefetch-n N --policy lru|wtinylfu|adaptive --io-threads N --no-os-cache]   Greedy decoding with the real forward pass; --trace records the router's scores for every token; --cache-mb N streams the experts from disk through an N MiB cache instead of mapping the whole file\n"
        "  stream <model.gguf> [options]    Stream experts from disk through the cache for N tokens of routing (synthetic, or the real router with --trace FILE) and report what was measured\n"
        "\n"
        "stream options:\n  --trace FILE   replay the REAL router recorded by `generate --trace` (cyclically) instead of the synthetic one; prefetch then guesses from the previous token's choices\n"
@@ -234,11 +234,12 @@ static cl_fwd_opts fwd_opts(int argc, char **argv) {
   cl_fwd_opts o = {0};
   o.cache_bytes = (uint64_t)(num(argc, argv, "--cache-mb", 0) * 1048576.0);
   const char *pf = arg(argc, argv, "--prefetch");
-  o.prefetch = !(pf && !strcmp(pf, "off"));
+  o.prefetch = pf && !strcmp(pf, "on");   /* off by default: previous-token prefetch lost on every disk-bound measurement (docs/NATIVE_ENGINE.md) */
   const char *pol = arg(argc, argv, "--policy");
   o.policy = !pol || !strcmp(pol, "adaptive") ? CL_ADAPTIVE : !strcmp(pol, "lru") ? CL_LRU : CL_WTINYLFU;
   o.io_threads = (int)num(argc, argv, "--io-threads", 3);
   o.stage_slots = (int)num(argc, argv, "--stage", 0);
+  o.prefetch_n = (int)num(argc, argv, "--prefetch-n", 0);
   o.os_bypass = flag(argc, argv, "--no-os-cache");
   return o;
 }

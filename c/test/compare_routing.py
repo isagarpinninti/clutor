@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Compares the router's choices with llama.cpp's. Usage: compare_routing.py EVAL_CALLBACK_OUTPUT TRACE
-EVAL_CALLBACK_OUTPUT comes from `llama-eval-callback -m MODEL -p PROMPT -n 1 -ngl 0`; TRACE from `clutor-engine logits MODEL PROMPT --trace TRACE`.
+EVAL_CALLBACK_OUTPUT comes from `llama-eval-callback -m MODEL -p PROMPT -n 1 -ngl 0`; TRACE (a v2 route trace of raw router scores) from `clutor-engine logits MODEL PROMPT --trace TRACE`.
 llama-eval-callback prints only the first and last three of each token's eight experts, so that is what is compared: the share of those
 reference experts that are inside this engine's top-8 for the same token and layer."""
 import re, sys
@@ -20,8 +20,10 @@ while i < len(txt):
 mine = {}
 for line in open(sys.argv[2]):
     if line.startswith("#"): continue
-    p = list(map(int, line.split()))
-    mine.setdefault(p[1], {})[p[0]] = p[2:]
+    f = line.split()
+    scores = [float(v) for v in f[2:]]
+    top8 = sorted(range(len(scores)), key=lambda e: (-scores[e], e))[:8]   # best first, ties to the lower id
+    mine.setdefault(int(f[1]), {})[int(f[0])] = top8
 hit = tot = 0
 for L, rows in sorted(ref.items()):
     off = len(mine[L]) - len(rows)   # the last layer keeps only the final token

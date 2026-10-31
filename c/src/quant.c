@@ -115,56 +115,200 @@ void cl_dequant_row(uint32_t type, const void *src, float *dst, int n) {
   }
 }
 
-/* ---- thread pool: a matvec is split into row ranges, one per worker; the caller works too ---- */
-typedef struct { uint32_t type; const uint8_t *w; int rows, cols; const float *x; float *out; uint64_t rowb; } job_t;
-static int g_threads = 0;
+/* ---- integer dot products: K-quant weights against 8-bit activations (the maths of ggml's vec_dot for these types) ---- */
+#if !defined(CL_FORCE_SCALAR) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#include <arm_neon.h>
+#define CL_Q_NEON 1
+#endif
+const char *cl_quant_path(void) {
+#ifdef CL_Q_NEON
+  return "neon+dotprod";
+#else
+  return "scalar";
+#endif
+}
+int cl_type_integer_dot(uint32_t t) { return t == CL_T_Q4_K || t == CL_T_Q6_K; }
 
-static void run_rows(const job_t *j, int r0, int r1) {
-  float *tmp = malloc((size_t)j->cols * sizeof(float));
-  if (!tmp) return;
-  for (int r = r0; r < r1; r++) {
-    const uint8_t *row = j->w + (size_t)r * j->rowb;
-    float acc = 0;
-    if (j->type == CL_T_F32) {
-      const float *wf = (const float *)(const void *)row;
-      for (int i = 0; i < j->cols; i++) acc += wf[i] * j->x[i];
-    } else {
-      /* dequantize a block-sized slice at a time, so the scratch row stays in cache */
-      uint32_t bl = cl_type_block(j->type), bb = cl_type_bytes(j->type);
-      float buf[256];
-      for (int c = 0; c < j->cols; c += (int)bl) {
-        cl_dequant_row(j->type, row + (size_t)(c / (int)bl) * bb, buf, (int)bl);
-        for (uint32_t i = 0; i < bl; i++) acc += buf[i] * j->x[c + (int)i];
-      }
-    }
-    j->out[r] = acc;
+int cl_xq_init(cl_xq *q, int n) { q->n = n; q->b = n % 256 == 0 ? malloc((size_t)(n / 256) * sizeof(cl_q8k)) : NULL; return q->b != NULL; }
+void cl_xq_free(cl_xq *q) { free(q->b); q->b = NULL; q->n = 0; }
+void cl_xq_quantize(cl_xq *q, const float *x) {
+  for (int i = 0; i < q->n / 256; i++) {
+    const float *xs = x + i * 256;
+    float amax = 0;
+    for (int j = 0; j < 256; j++) { float a = fabsf(xs[j]); if (a > amax) amax = a; }
+    cl_q8k *b = &q->b[i];
+    float d = amax / 127.0f, id = d != 0.0f ? 1.0f / d : 0.0f;
+    b->d = d;
+    for (int j = 0; j < 256; j++) b->qs[j] = (int8_t)roundf(xs[j] * id);
+    for (int g = 0; g < 16; g++) { int s = 0; for (int j = 0; j < 16; j++) s += b->qs[g * 16 + j]; b->bsums[g] = (int16_t)s; }
   }
-  free(tmp);
 }
 
-typedef struct { const job_t *job; int r0, r1; } slice_t;
-static void *worker(void *p) { slice_t *s = p; run_rows(s->job, s->r0, s->r1); return NULL; }
+#ifdef CL_Q_NEON
+static inline int32_t dot16(int8x16_t a, int8x16_t b) { return vaddvq_s32(vdotq_s32(vdupq_n_s32(0), a, b)); }
+#else
+static inline int32_t dot16_s(const int8_t *a, const int8_t *b) { int32_t s = 0; for (int i = 0; i < 16; i++) s += a[i] * b[i]; return s; }
+#endif
 
+static float dot_q4_K(int nb, const b_q4_K *x, const cl_q8k *y) {
+  float sum = 0;
+  for (int i = 0; i < nb; i++) {
+    uint8_t sc[8], mn[8];
+    for (int j = 0; j < 8; j++) scale_min_k4(j, x[i].scales, &sc[j], &mn[j]);
+    const uint8_t *q4 = x[i].qs;
+    const int8_t *q8 = y[i].qs;
+    int32_t sumi = 0;
+#ifdef CL_Q_NEON
+    const uint8x16_t m4 = vdupq_n_u8(0x0f);
+    for (int g = 0; g < 4; g++) {
+      uint8x16_t v0 = vld1q_u8(q4 + 32 * g), v1 = vld1q_u8(q4 + 32 * g + 16);
+      int8x16_t lo0 = vreinterpretq_s8_u8(vandq_u8(v0, m4)), lo1 = vreinterpretq_s8_u8(vandq_u8(v1, m4));
+      int8x16_t hi0 = vreinterpretq_s8_u8(vshrq_n_u8(v0, 4)), hi1 = vreinterpretq_s8_u8(vshrq_n_u8(v1, 4));
+      int32x4_t a = vdotq_s32(vdotq_s32(vdupq_n_s32(0), lo0, vld1q_s8(q8 + 64 * g)), lo1, vld1q_s8(q8 + 64 * g + 16));
+      int32x4_t b = vdotq_s32(vdotq_s32(vdupq_n_s32(0), hi0, vld1q_s8(q8 + 64 * g + 32)), hi1, vld1q_s8(q8 + 64 * g + 48));
+      sumi += sc[2 * g] * vaddvq_s32(a) + sc[2 * g + 1] * vaddvq_s32(b);
+    }
+#else
+    for (int g = 0; g < 4; g++) {
+      int32_t a = 0, b = 0;
+      for (int l = 0; l < 32; l++) { a += (q4[32 * g + l] & 0xF) * q8[64 * g + l]; b += (q4[32 * g + l] >> 4) * q8[64 * g + 32 + l]; }
+      sumi += sc[2 * g] * a + sc[2 * g + 1] * b;
+    }
+#endif
+    int32_t summs = 0;
+    for (int j = 0; j < 8; j++) summs += mn[j] * (y[i].bsums[2 * j] + y[i].bsums[2 * j + 1]);
+    sum += y[i].d * (cl_f16_to_f32(x[i].d) * (float)sumi - cl_f16_to_f32(x[i].dmin) * (float)summs);
+  }
+  return sum;
+}
+
+static float dot_q6_K(int nb, const b_q6_K *x, const cl_q8k *y) {
+  float sum = 0;
+  for (int i = 0; i < nb; i++) {
+    int8_t q[256];
+    const uint8_t *ql = x[i].ql, *qh = x[i].qh;
+    for (int n = 0; n < 256; n += 128) {
+      for (int l = 0; l < 32; l++) {
+        q[n + l] = (int8_t)(((ql[l] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32);
+        q[n + l + 32] = (int8_t)(((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32);
+        q[n + l + 64] = (int8_t)(((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32);
+        q[n + l + 96] = (int8_t)(((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32);
+      }
+      ql += 64; qh += 32;
+    }
+    int32_t sumi = 0;
+    for (int j = 0; j < 16; j++) {
+#ifdef CL_Q_NEON
+      sumi += x[i].scales[j] * dot16(vld1q_s8(q + 16 * j), vld1q_s8(y[i].qs + 16 * j));
+#else
+      sumi += x[i].scales[j] * dot16_s(q + 16 * j, y[i].qs + 16 * j);
+#endif
+    }
+    sum += cl_f16_to_f32(x[i].d) * y[i].d * (float)sumi;
+  }
+  return sum;
+}
+
+/* ---- thread pool: persistent workers claim chunks of a batch; the caller works too ---- */
+#include <stdatomic.h>
+#define CHUNK 16
+static int g_threads = 0;
 void cl_set_threads(int n) { g_threads = n < 1 ? 1 : n > 16 ? 16 : n; }
 int cl_get_threads(void) {
   if (!g_threads) { long c = sysconf(_SC_NPROCESSORS_ONLN); cl_set_threads(c > 0 ? (int)c : 1); }
   return g_threads;
 }
 
-void cl_matvec(uint32_t type, const void *w, int rows, int cols, const float *x, float *out) {
-  job_t j = {type, w, rows, cols, x, out, cl_row_bytes(type, (uint64_t)cols)};
-  int nt = cl_get_threads();
-  if (rows < 64 || nt == 1 || (uint64_t)rows * (uint64_t)cols < (1u << 18)) { run_rows(&j, 0, rows); return; }
-  if (nt > rows) nt = rows;
-  pthread_t th[16];
-  slice_t sl[16];
-  int per = (rows + nt - 1) / nt, started = 0;
-  for (int t = 1; t < nt; t++) {
-    sl[t] = (slice_t){&j, t * per, (t + 1) * per > rows ? rows : (t + 1) * per};
-    if (sl[t].r0 >= rows) break;
-    if (pthread_create(&th[t], NULL, worker, &sl[t])) { run_rows(&j, sl[t].r0, sl[t].r1); continue; }
-    started = t;
+typedef struct { const cl_mv *jobs; int n; int *first; int total; } batch_t;   /* first[j] = index of job j's first chunk */
+static pthread_mutex_t pool_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t pool_cv = PTHREAD_COND_INITIALIZER, pool_done = PTHREAD_COND_INITIALIZER;
+static _Atomic(const batch_t *) cur_batch;
+static atomic_int next_chunk, pending_workers, generation;
+static int pool_started, pool_size;
+#define SPIN 20000   /* a worker polls this many times for the next batch before it sleeps; a batch arrives within microseconds of the last */
+
+static void do_rows(const cl_mv *j, int r0, int r1) {
+  uint32_t t = j->type;
+  uint64_t rb = cl_row_bytes(t, (uint64_t)j->cols);
+  const uint8_t *w = j->w;
+  if (t == CL_T_Q4_K && j->xq) for (int r = r0; r < r1; r++) j->out[r] = dot_q4_K(j->cols / 256, (const b_q4_K *)(const void *)(w + (size_t)r * rb), j->xq->b);
+  else if (t == CL_T_Q6_K && j->xq) for (int r = r0; r < r1; r++) j->out[r] = dot_q6_K(j->cols / 256, (const b_q6_K *)(const void *)(w + (size_t)r * rb), j->xq->b);
+  else {   /* any other type: dequantize a block at a time and use the float vector */
+    uint32_t bl = cl_type_block(t), bb = cl_type_bytes(t);
+    float buf[256];
+    for (int r = r0; r < r1; r++) {
+      const uint8_t *row = w + (size_t)r * rb;
+      float acc = 0;
+      if (t == CL_T_F32) { const float *wf = (const float *)(const void *)row; for (int i = 0; i < j->cols; i++) acc += wf[i] * j->xf[i]; }
+      else for (int c = 0; c < j->cols; c += (int)bl) { cl_dequant_row(t, row + (size_t)(c / (int)bl) * bb, buf, (int)bl); for (uint32_t i = 0; i < bl; i++) acc += buf[i] * j->xf[c + (int)i]; }
+      j->out[r] = acc;
+    }
   }
-  run_rows(&j, 0, per < rows ? per : rows);
-  for (int t = 1; t <= started; t++) pthread_join(th[t], NULL);
+}
+
+static void run_chunks(const batch_t *b) {
+  for (;;) {
+    int c = atomic_fetch_add(&next_chunk, 1);
+    if (c >= b->total) return;
+    int j = 0;
+    while (j + 1 < b->n && b->first[j + 1] <= c) j++;
+    int r0 = (c - b->first[j]) * CHUNK, r1 = r0 + CHUNK;
+    if (r1 > b->jobs[j].rows) r1 = b->jobs[j].rows;
+    do_rows(&b->jobs[j], r0, r1);
+  }
+}
+
+static void *pool_worker(void *arg) {
+  (void)arg;
+  int seen = 0;   /* the pool is started before the first batch, so every worker begins at generation 0 */
+  for (;;) {
+    int g = atomic_load(&generation);
+    for (int i = 0; i < SPIN && g == seen; i++) g = atomic_load(&generation);
+    if (g == seen) {
+      pthread_mutex_lock(&pool_mu);
+      while ((g = atomic_load(&generation)) == seen) pthread_cond_wait(&pool_cv, &pool_mu);
+      pthread_mutex_unlock(&pool_mu);
+    }
+    seen = g;
+    run_chunks(atomic_load(&cur_batch));
+    if (atomic_fetch_sub(&pending_workers, 1) == 1) { pthread_mutex_lock(&pool_mu); pthread_cond_signal(&pool_done); pthread_mutex_unlock(&pool_mu); }
+  }
+  return NULL;
+}
+
+void cl_matvec_batch(const cl_mv *jobs, int n) {
+  int first[64], total = 0;
+  if (n > 64) n = 64;
+  for (int j = 0; j < n; j++) { first[j] = total; total += (jobs[j].rows + CHUNK - 1) / CHUNK; }
+  batch_t b = {jobs, n, first, total};
+  int nt = cl_get_threads();
+  if (nt == 1 || total < 4) { atomic_store(&next_chunk, 0); run_chunks(&b); return; }
+  if (!pool_started) {
+    pool_started = 1; pool_size = nt - 1;
+    for (int i = 0; i < pool_size; i++) { pthread_t t; if (pthread_create(&t, NULL, pool_worker, NULL) == 0) pthread_detach(t); else { pool_size = i; break; } }
+  }
+  atomic_store(&next_chunk, 0);
+  atomic_store(&cur_batch, &b);
+  atomic_store(&pending_workers, pool_size);
+  pthread_mutex_lock(&pool_mu);
+  atomic_fetch_add(&generation, 1);
+  pthread_cond_broadcast(&pool_cv);
+  pthread_mutex_unlock(&pool_mu);
+  run_chunks(&b);
+  for (int i = 0; i < SPIN && atomic_load(&pending_workers) > 0; i++) { }
+  if (atomic_load(&pending_workers) > 0) {
+    pthread_mutex_lock(&pool_mu);
+    while (atomic_load(&pending_workers) > 0) pthread_cond_wait(&pool_done, &pool_mu);
+    pthread_mutex_unlock(&pool_mu);
+  }
+}
+
+void cl_matvec(uint32_t type, const void *w, int rows, int cols, const float *x, float *out) {
+  cl_xq q = {0};
+  int use_q = cl_type_integer_dot(type) && cl_xq_init(&q, cols);
+  if (use_q) cl_xq_quantize(&q, x);
+  cl_mv j = {type, w, rows, cols, x, use_q ? &q : NULL, out};
+  if (cl_type_integer_dot(type) && !use_q) { /* odd width: cannot happen for real K-quant tensors */ return; }
+  cl_matvec_batch(&j, 1);
+  cl_xq_free(&q);
 }

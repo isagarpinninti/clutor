@@ -9,6 +9,7 @@
 #define CL_FORWARD_H
 #include "gguf.h"
 #include "meta.h"
+#include "quant.h"
 #include "xs.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -32,7 +33,9 @@ typedef struct {
   cl_fwd_layer *L;
   float *kc, *vc;          /* [layer][position][n_head_kv * head_dim] */
   float *x, *xn, *q, *k, *v, *att, *scores, *logits_buf, *moe, *hg, *hu, *hd, *rl;
+  cl_xq xq_e, xq_ff, *xq_ffk;       /* the current activation vector, quantized for the integer dot products */
   cl_xs *xs;               /* when set, experts come from disk through the cache instead of from the mapped file */
+  int prefetch_n;          /* experts per layer to prefetch */
   int prefetch;            /* guess the next layer's experts from the previous token's choices and read them early */
   int *prev_sel;           /* [layer][n_used]: the experts each layer chose for the previous token, -1 before the first */
   int pos;                 /* tokens already in the KV cache */
@@ -44,7 +47,8 @@ typedef struct { int *experts; float *weights; float *logits; /* optional: n_lay
 
 /* Streaming options. cache_bytes == 0 keeps the whole file mapped (fast, but resident memory grows with the model); otherwise experts are read
  * on demand into a cache of that many bytes and the rest of the model stays on disk. */
-typedef struct { uint64_t cache_bytes; int stage_slots, io_threads, os_bypass, prefetch; cl_policy policy; } cl_fwd_opts;
+typedef struct { uint64_t cache_bytes; int stage_slots, io_threads, os_bypass, prefetch;
+  int prefetch_n;   /* how many of the previous token's experts per layer to read early (best-ranked first); 0 = all that were used */ cl_policy policy; } cl_fwd_opts;
 int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen);
 void cl_fwd_close(cl_fwd *f);
 void cl_fwd_reset(cl_fwd *f);
