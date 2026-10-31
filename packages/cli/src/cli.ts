@@ -13,7 +13,7 @@ import { runDecide } from "./decide";
 import { BackendManager, buildLlamaArgs, findLlamaServer, probeLlamaServer } from "./backend";
 import { CONFIG_FILE, ConfigError, DEFAULT_PORT, loadConfig, type ClutorConfig } from "./config";
 import { formatGates, formatPlan, formatSimulation, pct, table, tps } from "./format";
-import { EngineError, buildEngine, run, engineInfo, engineRun, engineStream, findEngine, type StreamOptions, type StreamReport } from "./engine";
+import { EngineError, buildEngine, installPrebuilt, run, engineInfo, engineRun, engineStream, findEngine, type StreamOptions, type StreamReport } from "./engine";
 import { DOWNLOADS, downloadFile, downloadUrl, listLocalModels, resolveModel } from "./models";
 import { createClutorServer } from "./server";
 
@@ -71,7 +71,7 @@ Usage: clutor <command> [options]
                                      Generate text with the native engine's real forward pass (olmoe models). With --cache-mb the experts stream from disk through a cache of that size
   quality <model.gguf> <text-file> --cache-mb N [--smart J,M,TAU] [--max-tokens N] [--json]
                                      Perplexity, KL divergence and top-token agreement of a streamed (optionally smart-route) run against exact routing
-  engine build|where                 Compile the native engine from c/ (needs a C compiler), or show which one is used
+  engine install|build|where         Install the prebuilt native engine (checked against a SHA-256), or compile it from c/ (needs a C compiler), or show which one is used
   code "<task>" [--dir folder] [--apply] [--yes] [--verify "npm test"] [--max-steps N]
                                      Run the coding agent on a folder; review the diff before anything is written
   serve [dir] [--port ${DEFAULT_PORT}] [--folder dir]...   Start the local server: OpenAI and Ollama compatible API, agent, MCP
@@ -264,7 +264,7 @@ async function bench(io: Io, args: ReturnType<typeof parseArgs>, json: boolean):
     const m = await measureExpertReads(path, layout, h.totalRamBytes, 96);
     const dm = diskModelFrom(m, expertSizeBytes(layout), layout.layers.find((l) => l.experts.length)?.experts[0]?.length ?? 1);
     const bin = findEngine();
-    if (flagBool(args, "engine") && !bin) throw new UsageError("the native engine is not built: run `clutor engine build` (needs a C compiler)");
+    if (flagBool(args, "engine") && !bin) throw new UsageError("the native engine is not installed: run `clutor engine install` (prebuilt) or `clutor engine build` (needs a C compiler)");
     const startedAt = new Date().toISOString();
     const cmp = bin ? await compareStrategies(bin, path, flagInt(args, "cache-mb", 1, 1_000_000) ?? Math.max(64, Math.floor(h.totalRamBytes / 2 ** 20 / 16)), flagInt(args, "tokens", 10, 100_000) ?? 300, (flagString(args, "dense") as StreamOptions["dense"] | undefined), computeFlag(args)) : undefined;
     if (json) { io.out(JSON.stringify({ measurement: m, diskModel: dm, ...(cmp ? { engine: cmp } : {}) }, null, 2)); return 0; }
@@ -683,7 +683,7 @@ function engineFlags(args: ReturnType<typeof parseArgs>): string[] {
 async function generateCmd(io: Io, args: ReturnType<typeof parseArgs>, file: string | undefined, prompt: string): Promise<number> {
   if (!file || !prompt.trim()) throw new UsageError('usage: clutor generate <model.gguf> "<prompt>" [--n N] [--cache-mb N] [--smart J,M,TAU]');
   const bin = findEngine();
-  if (!bin) throw new UsageError("the native engine is not built: run `clutor engine build` (needs a C compiler)");
+  if (!bin) throw new UsageError("the native engine is not installed: run `clutor engine install` (prebuilt) or `clutor engine build` (needs a C compiler)");
   const path = resolve(io.cwd, file);
   if (!existsSync(path)) throw new UsageError(`${path} does not exist`);
   const n = flagInt(args, "n", 1, 100_000) ?? 64;
@@ -700,7 +700,7 @@ async function qualityCmd(io: Io, args: ReturnType<typeof parseArgs>, file: stri
   if (!file || !text) throw new UsageError("usage: clutor quality <model.gguf> <text-file> --cache-mb N [--smart J,M,TAU] [--max-tokens N]");
   if (flagInt(args, "cache-mb", 1, 10_000_000) === undefined) throw new UsageError("quality compares against a streamed run: give --cache-mb N");
   const bin = findEngine();
-  if (!bin) throw new UsageError("the native engine is not built: run `clutor engine build` (needs a C compiler)");
+  if (!bin) throw new UsageError("the native engine is not installed: run `clutor engine install` (prebuilt) or `clutor engine build` (needs a C compiler)");
   const path = resolve(io.cwd, file), textPath = resolve(io.cwd, text);
   if (!existsSync(path)) throw new UsageError(`${path} does not exist`);
   if (!existsSync(textPath)) throw new UsageError(`${textPath} does not exist`);
@@ -725,7 +725,7 @@ async function qualityCmd(io: Io, args: ReturnType<typeof parseArgs>, file: stri
 async function streamCmd(io: Io, args: ReturnType<typeof parseArgs>, file: string | undefined, json: boolean): Promise<number> {
   if (!file) throw new UsageError("usage: clutor stream <model.gguf> [--tokens N] [--cache-mb N] [--policy lru|wtinylfu|adaptive] [--smart J,M,TAU|off] [--prefetch on|off]");
   const bin = findEngine();
-  if (!bin) throw new UsageError("the native engine is not built: run `clutor engine build` (needs a C compiler)");
+  if (!bin) throw new UsageError("the native engine is not installed: run `clutor engine install` (prebuilt) or `clutor engine build` (needs a C compiler)");
   const num = (n: string, lo: number, hi: number): number | undefined => flagInt(args, n, lo, hi);
   const pol = flagString(args, "policy");
   if (pol && !["lru", "wtinylfu", "adaptive"].includes(pol)) throw new UsageError("--policy must be lru, wtinylfu or adaptive");
@@ -786,7 +786,11 @@ async function engineCmd(io: Io, sub: string | undefined): Promise<number> {
     io.err("Compiling the native engine...");
     try { io.out(`Built ${await buildEngine()}`); return 0; } catch (e) { if (e instanceof EngineError) { io.err(e.message); return 1; } throw e; }
   }
-  throw new UsageError("usage: clutor engine build | where");
+  if (sub === "install") {
+    io.err("Downloading the prebuilt native engine and checking its SHA-256...");
+    try { io.out(`Installed ${await installPrebuilt(version())}`); return 0; } catch (e) { if (e instanceof EngineError) { io.err(e.message); return 1; } throw e; }
+  }
+  throw new UsageError("usage: clutor engine install | build | where");
 }
 
 /** `/layers` and `/cache` in the chat REPL. They describe the model FILE and a streaming pass over it; the chat itself runs in llama-server. */

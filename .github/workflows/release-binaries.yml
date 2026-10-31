@@ -1,0 +1,70 @@
+name: engine binaries
+# Builds the native engine on each platform, checks the built binary against the independent reference (the golden test), and attaches
+# clutor-engine-<platform>.tar.gz plus SHA256SUMS to the GitHub release of the tag. Run it by hand (workflow_dispatch) to build without publishing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: darwin-arm64, runner: macos-14 }
+          - { platform: darwin-x64, runner: macos-13 }
+          - { platform: linux-x64, runner: ubuntu-latest }
+          - { platform: linux-arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build the engine (the Makefile picks NEON, AVX2 or portable C for this machine)
+        run: make -C c BUILD=dist
+      - name: Unit tests and golden test against the built binary
+        run: |
+          make -C c test
+          python3 c/test/tiny_olmoe.py write c/build/tiny_olmoe.gguf
+          python3 c/test/tiny_olmoe.py check c/dist/clutor-engine c/build/tiny_olmoe.gguf
+          python3 c/test/tiny_olmoe.py write c/build/tiny_qwen3moe.gguf --arch qwen3moe
+          python3 c/test/tiny_olmoe.py check c/dist/clutor-engine c/build/tiny_qwen3moe.gguf --arch qwen3moe
+      - name: Package
+        run: |
+          name="clutor-engine-${{ matrix.platform }}"
+          mkdir -p "stage/$name"
+          cp c/dist/clutor-engine LICENSE "stage/$name/"
+          ./c/dist/clutor-engine --version > "stage/$name/VERSION"
+          tar -C stage -czf "$name.tar.gz" "$name"
+          (command -v sha256sum >/dev/null && sha256sum "$name.tar.gz" || shasum -a 256 "$name.tar.gz") > "$name.tar.gz.sha256"
+          cat "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: clutor-engine-${{ matrix.platform }}
+          path: |
+            clutor-engine-${{ matrix.platform }}.tar.gz
+            clutor-engine-${{ matrix.platform }}.tar.gz.sha256
+
+  publish:
+    name: Attach to the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Create the release if it does not exist, then upload (existing assets are replaced)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat assets/*.sha256 > assets/SHA256SUMS
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "Prebuilt native engine for macOS and Linux. Install with \`clutor engine install\`, or download the tarball for your platform and check it against SHA256SUMS."
+          gh release upload "$GITHUB_REF_NAME" assets/*.tar.gz assets/SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber

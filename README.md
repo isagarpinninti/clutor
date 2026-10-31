@@ -55,7 +55,8 @@ You need Node.js 20+ and a C compiler for the engine (`xcode-select --install` o
 
 ```bash
 npm install -g @clutor/cli       # if this needs root, set a user prefix: npm config set prefix ~/.npm-global
-clutor engine build              # compiles the engine into ~/.clutor/bin/clutor-engine (once)
+clutor engine install            # downloads the prebuilt engine for macOS or Linux and checks its SHA-256 (once; needs a published release)
+clutor engine build              # or compiles it from source into ~/.clutor/bin/clutor-engine (needs a C compiler)
 clutor init
 clutor                           # the interactive session
 ```
@@ -106,7 +107,7 @@ Clutor exists to answer, with measurements, the question every "run a huge model
 | `quality <file.gguf> <text>` | Perplexity, KL divergence and top-token agreement of a streamed or smart-route run against exact routing on a text file (needs `--cache-mb`) |
 | `stream <file.gguf>` | **Native engine.** Streams the file's experts from disk for N tokens of synthetic routing; reports measured I/O, waits, cache, prefetch and peak RSS. `--shift AT,LEN` makes those tokens uniform scan noise; `--window N` prints hit rate and peak RSS per N tokens |
 | `bench --file <f>` | Measures random expert reads, then compares LRU, adaptive cache + prefetch, and + smart-route on that file. `--receipt` signs the result into the receipt log |
-| `engine build\|where` | Compile the engine, or show which binary is used |
+| `engine install\|build\|where` | Install the prebuilt engine (SHA-256 checked), compile it from source, or show which binary is used |
 | `chat` | REPL against the configured model. `/layers` shows where the file's bytes are; `/cache` runs a streaming pass over the file |
 | `decide` | One forward pass: probability of each choice's first token (not a calibrated confidence) |
 | `code "<task>"` | The agent. Review the diff, then `--apply` or answer the prompt |

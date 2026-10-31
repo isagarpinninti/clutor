@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
-import { accessSync, constants, existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { createHash } from "node:crypto";
+import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -134,4 +135,57 @@ export function engineRun(bin: string, args: string[], onOut: (chunk: string) =>
     child.on("error", (e) => { clearTimeout(timer); reject(new EngineError(`could not start ${bin}: ${e.message}`)); });
     child.on("close", (code) => { clearTimeout(timer); resolve({ code: code ?? 1, stderr }); });
   });
+}
+
+/** The platform name used in release asset names, or undefined where no prebuilt binary is published. */
+export function enginePlatform(): string | undefined {
+  const os = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : undefined;
+  const arch = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : undefined;
+  return os && arch ? `${os}-${arch}` : undefined;
+}
+
+const RELEASE_BASE = (version: string): string => process.env["CLUTOR_RELEASE_BASE"] ?? `https://github.com/isagarpinninti/clutor/releases/download/v${version}`;
+const MAX_ASSET = 64 * 2 ** 20;
+
+async function download(url: string): Promise<Buffer> {
+  if (!url.startsWith("https://") && !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(url)) throw new EngineError(`refusing to download over an insecure connection: ${url}`);
+  let res: Response;
+  try { res = await fetch(url); } catch (e) { throw new EngineError(`could not reach ${url}: ${e instanceof Error ? e.message : String(e)}`); }
+  if (!res.ok) throw new EngineError(`${url} answered ${res.status}${res.status === 404 ? ": no prebuilt engine is published for this version and platform; use `clutor engine build` instead" : ""}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > MAX_ASSET) throw new EngineError(`${url} is larger than ${MAX_ASSET / 2 ** 20} MiB; refusing it`);
+  return buf;
+}
+
+/**
+ * Installs the prebuilt engine for this platform from the GitHub release of `version`: downloads SHA256SUMS and the tarball, refuses it unless the
+ * SHA-256 matches, unpacks it and puts the binary in `dest` (default ~/.clutor/bin). Returns the path of the installed binary.
+ */
+export async function installPrebuilt(version: string, dest = join(homedir(), ".clutor", "bin")): Promise<string> {
+  const platform = enginePlatform();
+  if (!platform) throw new EngineError(`no prebuilt engine is published for ${process.platform}/${process.arch}; use \`clutor engine build\` (needs a C compiler)`);
+  const base = RELEASE_BASE(version), asset = `clutor-engine-${platform}.tar.gz`;
+  const sums = (await download(`${base}/SHA256SUMS`)).toString("utf8");
+  const line = sums.split("\n").map((l) => l.trim().split(/\s+/)).find((p) => p.length >= 2 && (p[1] as string).replace(/^\*/, "") === asset);
+  if (!line) throw new EngineError(`SHA256SUMS lists no ${asset}`);
+  const tarball = await download(`${base}/${asset}`);
+  const got = createHash("sha256").update(tarball).digest("hex");
+  if (got !== (line[0] as string).toLowerCase()) throw new EngineError(`checksum mismatch for ${asset}: expected ${line[0]}, got ${got}. Nothing was installed`);
+  const work = mkdtempSync(join(tmpdir(), "clutor-engine-install-"));
+  try {
+    const file = join(work, asset);
+    writeFileSync(file, tarball);
+    const x = await run("tar", ["-xzf", file, "-C", work], { timeoutMs: 60_000 });
+    if (x.code !== 0) throw new EngineError(`could not unpack ${asset}: ${x.stderr.trim()}`);
+    const unpacked = join(work, `clutor-engine-${platform}`, EXE);
+    if (!existsSync(unpacked)) throw new EngineError(`${asset} does not contain ${EXE}`);
+    chmodSync(unpacked, 0o755);
+    const probe = await run(unpacked, ["--version"], { timeoutMs: 15_000 }).catch((e: unknown) => { throw new EngineError(`the downloaded engine does not run here: ${e instanceof Error ? e.message : String(e)}`); });
+    if (probe.code !== 0) throw new EngineError(`the downloaded engine does not run here (exit ${probe.code}); use \`clutor engine build\``);
+    mkdirSync(dest, { recursive: true });
+    const out = join(dest, EXE);
+    copyFileSync(unpacked, out);
+    chmodSync(out, 0o755);
+    return out;
+  } finally { rmSync(work, { recursive: true, force: true }); }
 }
