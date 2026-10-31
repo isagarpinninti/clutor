@@ -99,11 +99,12 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   f->kc = calloc(kvn, sizeof(float)); f->vc = calloc(kvn, sizeof(float));
   f->x = calloc(E, 4); f->xn = calloc(E, 4); f->q = calloc(E, 4); f->k = calloc(E, 4); f->v = calloc(E, 4); f->att = calloc(E, 4);
   f->scores = calloc((size_t)f->n_ctx_max, 4); f->moe = calloc(E, 4); f->hg = calloc((size_t)f->n_ff_exp * f->n_used, 4); f->hu = calloc((size_t)f->n_ff_exp * f->n_used, 4); f->hd = calloc(E * (size_t)f->n_used, 4);
-  f->rl = calloc((size_t)f->n_expert, 4);
+  f->rl = calloc((size_t)f->n_expert, 4); f->rlogit = calloc((size_t)f->n_expert, 4);
   f->xq_ffk = calloc((size_t)f->n_used, sizeof(cl_xq));
   if (!f->xq_ffk || !cl_xq_init(&f->xq_e, f->n_embd) || !cl_xq_init(&f->xq_ff, f->n_ff_exp)) { snprintf(err, errlen, "out of memory"); goto fail; }
   for (int k = 0; k < f->n_used; k++) if (!cl_xq_init(&f->xq_ffk[k], f->n_ff_exp)) { snprintf(err, errlen, "out of memory"); goto fail; }
-  if (!f->kc || !f->vc || !f->x || !f->xn || !f->q || !f->k || !f->v || !f->att || !f->scores || !f->moe || !f->hg || !f->hu || !f->hd || !f->rl) { snprintf(err, errlen, "out of memory"); goto fail; }
+  if (!f->kc || !f->vc || !f->x || !f->xn || !f->q || !f->k || !f->v || !f->att || !f->scores || !f->moe || !f->hg || !f->hu || !f->hd || !f->rl || !f->rlogit) { snprintf(err, errlen, "out of memory"); goto fail; }
+  if (opts && opts->smart.enabled && !opts->cache_bytes) { snprintf(err, errlen, "--smart needs --cache-mb: it substitutes experts that are already in the cache"); goto fail; }
   if (opts && opts->cache_bytes) {
     cl_xs_layer *xl = calloc((size_t)f->n_layer, sizeof *xl);
     if (!xl) { snprintf(err, errlen, "out of memory"); goto fail; }
@@ -118,6 +119,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
     free(xl);
     if (!f->xs) goto fail;
     f->prefetch = opts->prefetch;
+    f->smart = opts->smart;
     f->prefetch_n = opts->prefetch_n > 0 && opts->prefetch_n < f->n_used ? opts->prefetch_n : f->n_used;
     f->prev_sel = malloc((size_t)f->n_layer * f->n_used * sizeof(int));
     if (!f->prev_sel) { snprintf(err, errlen, "out of memory"); goto fail; }
@@ -132,7 +134,7 @@ fail:
 void cl_fwd_close(cl_fwd *f) {
   if (f->L) for (int l = 0; l < f->n_layer; l++) { free(f->L[l].attn_norm_f); free(f->L[l].ffn_norm_f); free(f->L[l].qn_f); free(f->L[l].kn_f); free(f->L[l].router_f); }
   free(f->L); free(f->out_norm_f);
-  free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl);
+  free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
   cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_ff);
   if (f->xq_ffk) for (int k = 0; k < f->n_used; k++) cl_xq_free(&f->xq_ffk[k]);
   free(f->xq_ffk);
@@ -162,6 +164,11 @@ static void rope_neox(float *v, int hd, int pos, float base) {
 }
 
 static cl_mv mv(const cl_w *w, const float *xf, const cl_xq *xq, float *out) { cl_mv j = {w->type, w->p, w->rows, w->cols, xf, xq, out}; return j; }
+
+static int resident_cb(void *ctx, int expert) {
+  struct { cl_xs *xs; int layer; } *c = ctx;
+  return cl_xs_resident(c->xs, c->layer, expert);
+}
 
 int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *err, size_t errlen) {
   if (token < 0 || token >= f->n_vocab) { snprintf(err, errlen, "token %d is outside the vocabulary", token); return 1; }
@@ -214,6 +221,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
       for (int i = 0; i < E; i++) s += r[i] * f->xn[i];
       f->rl[e] = s;
     }
+    memcpy(f->rlogit, f->rl, (size_t)f->n_expert * sizeof(float));
     if (route && route->logits) memcpy(route->logits + (size_t)l * f->n_expert, f->rl, (size_t)f->n_expert * sizeof(float));
     float mx = f->rl[0];
     for (int e = 1; e < f->n_expert; e++) if (f->rl[e] > mx) mx = f->rl[e];
@@ -222,18 +230,35 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     for (int e = 0; e < f->n_expert; e++) f->rl[e] = (float)(f->rl[e] / sum);
     int sel[64];
     float wt[64];
-    char used[4096] = {0};
-    for (int k = 0; k < f->n_used; k++) {   /* top-k by probability; ties go to the lower expert id */
-      int best = -1;
-      for (int e = 0; e < f->n_expert; e++) if (!used[e] && (best < 0 || f->rl[e] > f->rl[best])) best = e;
-      used[best] = 1; sel[k] = best; wt[k] = f->rl[best];   /* OLMoE does not renormalise the chosen weights */
+    if (f->smart.enabled) {
+      /* SMART-ROUTE: the true top-J stay; a slot that would need an expert that is not in memory may take a resident one whose router probability is within tau.
+       * A substituted expert is weighted by its OWN router probability. */
+      struct { cl_xs *xs; int layer; } rc = {f->xs, l};
+      cl_route_result rr;
+      if (cl_route(f->rlogit, f->n_expert, f->n_used, &f->smart, resident_cb, &rc, &rr)) { snprintf(err, errlen, "bad SMART-ROUTE settings"); return 1; }
+      for (int k = 0; k < f->n_used; k++) { sel[k] = rr.selected[k]; wt[k] = f->rl[sel[k]]; }
+      f->subs += (uint64_t)rr.substituted; f->dropped_mass += rr.dropped_mass;
+      if (rr.max_delta > f->max_delta) f->max_delta = rr.max_delta;
+    } else {
+      char used[4096] = {0};
+      for (int k = 0; k < f->n_used; k++) {   /* top-k by probability; ties go to the lower expert id */
+        int best = -1;
+        for (int e = 0; e < f->n_expert; e++) if (!used[e] && (best < 0 || f->rl[e] > f->rl[best])) best = e;
+        used[best] = 1; sel[k] = best; wt[k] = f->rl[best];   /* OLMoE does not renormalise the chosen weights */
+      }
     }
+    f->expert_slots += (uint64_t)f->n_used;
     if (route) for (int k = 0; k < f->n_used; k++) { route->experts[l * f->n_used + k] = sel[k]; route->weights[l * f->n_used + k] = wt[k]; }
     memset(f->moe, 0, (size_t)E * 4);
     cl_xq_quantize(&f->xq_e, f->xn);   /* every selected expert reads the same normalised input */
     int hnd[64];
     const uint8_t *P[64];
-    if (f->xs) for (int k = 0; k < f->n_used; k++) hnd[k] = cl_xs_request(f->xs, l, sel[k]);   /* all misses start reading at once */
+    if (f->xs) {   /* ask for what is already in memory first, so a miss cannot evict an expert this layer is about to use */
+      for (int pass = 0; pass < 2; pass++) for (int k = 0; k < f->n_used; k++) {
+        int here = cl_xs_resident(f->xs, l, sel[k]);
+        if ((pass == 0) == (here != 0)) hnd[k] = cl_xs_request(f->xs, l, sel[k]);
+      }
+    }
     for (int k = 0; k < f->n_used; k++) {
       if (f->xs) {
         P[k] = cl_xs_wait(f->xs, hnd[k]);

@@ -30,6 +30,8 @@ int cl_xs_request(cl_xs *x, int layer, int expert);
 /* Blocks until the expert is in memory; returns its bytes (gate, up, down in that order) or NULL if the read failed. */
 const uint8_t *cl_xs_wait(cl_xs *x, int handle);
 void cl_xs_release(cl_xs *x, int handle);
+/* 1 when this expert is in memory right now (in the cache or fully read into staging), so asking for it costs no disk read. */
+int cl_xs_resident(cl_xs *x, int layer, int expert);
 /* A hint: read this expert into staging if there is room and it is not already here. */
 void cl_xs_prefetch(cl_xs *x, int layer, int expert);
 cl_xs_stats cl_xs_get_stats(cl_xs *x);

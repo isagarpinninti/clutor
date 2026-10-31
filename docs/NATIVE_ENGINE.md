@@ -103,7 +103,7 @@ One trace: OLMoE-1B-7B Q4_K_M generated 109 tokens after "Once upon a time, in a
 | real, adaptive + prefetch + smart-route 2,12,0.015 | 56.9% | 55.1 | 0.50 |
 | **synthetic** (locality 1.0), adaptive + prefetch | 77.1% | 29.3 | 0.38 |
 
-What this says, and does not: the synthetic router's default skew was **far too optimistic** for this model (77% against 47% for the same cache and policy), so earlier hit-rate figures from synthetic runs should not be read as what a real model gets. On this trace plain LRU beat the adaptive policy without prefetch; the admission-aware cache has not shown an advantage on real OLMoE routing yet. Prefetch from the previous token helps hit rate but reads 60% more bytes, most of it never used (5,504 of 7,536). Smart-route raises the hit rate further, but this engine does not yet apply its substitutions inside the forward pass, so the cost in output quality is **unmeasured**.
+What this says, and does not: the synthetic router's default skew was **far too optimistic** for this model (77% against 47% for the same cache and policy), so earlier hit-rate figures from synthetic runs should not be read as what a real model gets. On this trace plain LRU beat the adaptive policy without prefetch; the admission-aware cache has not shown an advantage on real OLMoE routing yet. Prefetch from the previous token helps hit rate but reads 60% more bytes, most of it never used (5,504 of 7,536). Smart-route raises the hit rate further; its cost in output quality is now measured inside the real forward pass (next sections): small settings cost about 2-3% perplexity and change the top-1 token at 6-10% of positions.
 
 
 ## Compute speed (measured 2026-10-31)
@@ -136,3 +136,27 @@ What this shows:
 - **Fewer bytes is the only lever left.** The disk tops out near 1.4 GB/s here, so tokens per second is set by bytes read per token: a 1 GiB cache cut that from 0.76 to 0.39 GB/token and the time from 0.35 to 0.16 s. Faster compute or more threads cannot help; a better cache policy, a smarter predictor or router substitution (not yet applied in the real pass) could.
 - **Previous-token prefetch does not pay.** It lifts the hit rate (16.6% to 38.1% at 256 MiB) but reads 66% more bytes, about two thirds of them never used, and every step up in N got slower.
 - **Not demonstrated:** a model larger than RAM (the only real MoE here is 3.9 GiB on a 16 GiB machine), a slower or faster disk, and any comparison with AirLLM or Colibri. The address, undefined and thread sanitizers are clean on the streamed path.
+
+
+## SMART-ROUTE inside the real forward pass (measured 2026-10-31)
+
+`generate` and `quality` accept `--smart J,M,TAU` together with `--cache-mb N`. At each layer the engine asks the cache which experts are in memory right now (`cl_xs_resident`), `cl_route` keeps the true top-J, lets a slot that would need a cold expert take a resident expert from the top-M if its router probability is within TAU, and the substituted expert is weighted by **its own** router probability. Resident experts are requested before cold ones, so a miss cannot evict an expert the same layer is about to use. `quality` runs the same text through exact routing (whole file mapped) and the configured run in lock-step, teacher-forced, and reports perplexity of each, the KL divergence of the run from exact, and how often the highest-probability token differs.
+
+Setup: OLMoE-1B-7B Q4_K_M, 799 tokens scored of this project's own README, this document and the changelog (English technical prose; one text, one machine, one run per row), 256 MiB expert cache, adaptive policy, no prefetch.
+
+| smart-route J,M,TAU | perplexity (exact 10.943) | mean KL | top-1 token agrees | slots substituted | cache hit rate | GB read / token | largest probability moved |
+|---|---|---|---|---|---|---|---|
+| off | 10.943 (x1.000) | 0 | 100% | 0% | 19.7% | 0.392 | 0 |
+| 6,16,0.02 | 11.150 (x1.019) | 0.034 | 93.5% | 6.0% | 29.4% | 0.345 | 0.020 |
+| 4,16,0.02 | 11.198 (x1.023) | 0.048 | 92.1% | 6.3% | 29.5% | 0.344 | 0.020 |
+| 4,16,0.05 | 11.311 (x1.034) | 0.075 | 89.5% | 8.0% | 30.9% | 0.338 | 0.050 |
+| 2,24,0.05 | 11.814 (x1.080) | 0.143 | 84.7% | 11.0% | 34.8% | 0.319 | 0.050 |
+| 2,32,0.2 | 12.354 (x1.129) | 0.191 | 83.1% | 13.5% | 37.5% | 0.305 | 0.166 |
+| 0,64,1.0 (unbounded cache-aware routing) | 29.718 (x2.716) | 1.386 | 61.3% | 18.9% | 40.0% | 0.294 | 0.691 |
+
+What this shows, and does not:
+- **The saving is real but modest.** Mild settings read 12-14% fewer bytes per token (0.392 to 0.338-0.345 GB) for 2-3% higher perplexity. The largest saving, 25%, comes with perplexity 2.7x higher: unbounded cache-aware routing damages this model badly, which is what the probability bound is for.
+- **A bounded probability move is not free.** Even TAU = 0.02 changes the highest-probability token at 6.5% of positions here. Whether that matters depends on the task; perplexity on prose does not measure code or tool-use quality.
+- **The byte saving is measured; a time saving is not.** Reads are 12-14% lower, so a disk-bound run should speed up by about that much at most; the quality runs map the whole file for the exact reference, which warms the OS cache, so their timings say nothing about disk speed.
+- **Not tested:** other models, other text, longer contexts, and any downstream task.
+- A bug check that matters: with SMART-ROUTE off, the streamed run matches exact routing token for token (KL 0, perplexity identical), and `J = 8` (nothing may be substituted) is byte-identical to exact in `c/test/verify_stream.py`.

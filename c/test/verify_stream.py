@@ -13,7 +13,7 @@ def text(*extra):
 
 base = text()
 bad = 0
-for extra in (["--cache-mb", "32"], ["--cache-mb", "64", "--policy", "lru"], ["--cache-mb", "128", "--prefetch", "on"], ["--cache-mb", "128", "--prefetch", "on", "--prefetch-n", "2"], ["--cache-mb", "256", "--io-threads", "1", "--no-os-cache"], ["--cache-mb", "1024"]):
+for extra in (["--cache-mb", "32"], ["--cache-mb", "64", "--policy", "lru"], ["--cache-mb", "128", "--prefetch", "on"], ["--cache-mb", "128", "--prefetch", "on", "--prefetch-n", "2"], ["--cache-mb", "256", "--io-threads", "1", "--no-os-cache"], ["--cache-mb", "1024"], ["--cache-mb", "64", "--smart", "8,16,0.5"]):
     same = text(*extra) == base
     bad += not same
     print("OK  " if same else "FAIL", "identical to the mapped run:", " ".join(extra))

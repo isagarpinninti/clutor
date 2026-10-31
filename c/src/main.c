@@ -20,6 +20,7 @@ static void usage(void) {
        "  tokenize <model.gguf> TEXT [--no-special]    Print the token ids of TEXT (byte-level BPE built from the model's own tables)\n"
        "  logits <model.gguf> PROMPT [--top N] [--ctx N] [--trace FILE]   Run the REAL forward pass over PROMPT and print the next-token logprobs (olmoe models); --trace writes the router's choices\n"
        "  generate <model.gguf> PROMPT [--n N] [--trace FILE] [--quiet] [--cache-mb N --prefetch on|off (off) --prefetch-n N --policy lru|wtinylfu|adaptive --io-threads N --no-os-cache]   Greedy decoding with the real forward pass; --trace records the router's scores for every token; --cache-mb N streams the experts from disk through an N MiB cache instead of mapping the whole file\n"
+       "  quality <model.gguf> TEXTFILE --cache-mb N [--smart J,M,TAU] [--max-tokens N]   Teacher-forced perplexity, KL divergence and top-1 agreement of a streamed (optionally SMART-ROUTE) run against exact routing\n"
        "  stream <model.gguf> [options]    Stream experts from disk through the cache for N tokens of routing (synthetic, or the real router with --trace FILE) and report what was measured\n"
        "\n"
        "stream options:\n  --trace FILE   replay the REAL router recorded by `generate --trace` (cyclically) instead of the synthetic one; prefetch then guesses from the previous token's choices\n"
@@ -241,6 +242,12 @@ static cl_fwd_opts fwd_opts(int argc, char **argv) {
   o.stage_slots = (int)num(argc, argv, "--stage", 0);
   o.prefetch_n = (int)num(argc, argv, "--prefetch-n", 0);
   o.os_bypass = flag(argc, argv, "--no-os-cache");
+  const char *sm = arg(argc, argv, "--smart");
+  if (sm && strcmp(sm, "off")) {
+    int J, M; double tau;
+    if (sscanf(sm, "%d,%d,%lf", &J, &M, &tau) != 3 || J < 0 || M < 1 || tau < 0) { fprintf(stderr, "--smart wants J,M,TAU (for example 4,16,0.02) or off\n"); exit(2); }
+    o.smart.enabled = 1; o.smart.J = J; o.smart.M = M; o.smart.tau = tau;
+  }
   return o;
 }
 
@@ -254,6 +261,7 @@ static void report_xs(cl_fwd *f, double secs, int tokens) {
 #else
   double rss = (double)ru.ru_maxrss / 1024.0;
 #endif
+  if (f->smart.enabled) fprintf(stderr, "[smart-route %d,%d,%g: %llu of %llu expert slots (%.1f%%) used a resident expert instead of the router's own choice; probability moved: largest %.4f (limit %g), total %.3f]\n", f->smart.J, f->smart.M, f->smart.tau, (unsigned long long)f->subs, (unsigned long long)f->expert_slots, f->expert_slots ? 100.0 * f->subs / f->expert_slots : 0.0, f->max_delta, f->smart.tau, f->dropped_mass);
   fprintf(stderr, "[streaming: cache %u experts of %llu bytes; %llu accesses, %.1f%% hits (%llu from prefetch), %llu misses, prefetch %llu issued / %llu never used; read %.2f GB (%.2f GB/token) in %.2f s of read time; compute thread waited %.2f s of %.2f s; peak RSS %.0f MiB]\n",
           cl_xs_cache_slots(f->xs), (unsigned long long)cl_xs_slot_bytes(f->xs), (unsigned long long)s.accesses, s.accesses ? 100.0 * s.hits / s.accesses : 0.0, (unsigned long long)s.stage_hits, (unsigned long long)s.misses,
           (unsigned long long)s.prefetch_issued, (unsigned long long)s.prefetch_wasted, (s.demand_bytes + s.prefetch_bytes) / 1e9, tokens ? (s.demand_bytes + s.prefetch_bytes) / 1e9 / tokens : 0.0, s.read_ns / 1e9, s.wait_ns / 1e9, secs, rss);
@@ -372,11 +380,71 @@ static int cmd_generate(int argc, char **argv) {
   return 0;
 }
 
+static double logprob_of(const float *logits, int n, int tok, double *lse_out) {
+  double mx = logits[0];
+  for (int i = 1; i < n; i++) if (logits[i] > mx) mx = logits[i];
+  double s = 0;
+  for (int i = 0; i < n; i++) s += exp((double)logits[i] - mx);
+  double lse = mx + log(s);
+  if (lse_out) *lse_out = lse;
+  return (double)logits[tok] - lse;
+}
+
+/* Teacher-forced comparison of exact routing (the whole file mapped) with the configured run (streamed experts, optionally SMART-ROUTE) on a text file. */
+static int cmd_quality(int argc, char **argv) {
+  if (argc < 2) { usage(); return 2; }
+  char err[256];
+  cl_meta meta; uint8_t *map; size_t ms; cl_tok *tok;
+  if (load_tok(argv[0], &meta, &map, &ms, &tok)) return 1;
+  FILE *tf = fopen(argv[1], "rb");
+  if (!tf) { fprintf(stderr, "cannot open %s\n", argv[1]); return 1; }
+  fseek(tf, 0, SEEK_END); long tsz = ftell(tf); fseek(tf, 0, SEEK_SET);
+  char *text = malloc((size_t)tsz + 1);
+  if (!text || fread(text, 1, (size_t)tsz, tf) != (size_t)tsz) { fprintf(stderr, "cannot read %s\n", argv[1]); return 1; }
+  fclose(tf);
+  int maxtok = (int)num(argc, argv, "--max-tokens", 512);
+  int32_t *ids = malloc(((size_t)tsz + 8) * sizeof *ids);
+  int n = cl_tok_encode(tok, text, (size_t)tsz, 0, ids, (int)tsz + 8);
+  if (n < 2) { fprintf(stderr, "the text has fewer than 2 tokens\n"); return 1; }
+  if (n > maxtok) n = maxtok;
+  cl_fwd a, b;
+  cl_fwd_opts none = {0}, fo = fwd_opts(argc, argv);
+  if (!fo.cache_bytes) { fprintf(stderr, "quality compares against streamed runs: give --cache-mb N\n"); return 2; }
+  if (cl_fwd_open(&a, argv[0], n + 1, &none, err, sizeof err) || cl_fwd_open(&b, argv[0], n + 1, &fo, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
+  float *la = malloc((size_t)a.n_vocab * sizeof *la), *lb = malloc((size_t)a.n_vocab * sizeof *lb);
+  double nllA = 0, nllB = 0, kl = 0;
+  int agree = 0, used = 0;
+  double t0 = now_s();
+  for (int i = 0; i + 1 < n; i++) {
+    if (cl_fwd_step(&a, ids[i], la, NULL, err, sizeof err) || cl_fwd_step(&b, ids[i], lb, NULL, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
+    double lseA, lseB;
+    double pa = logprob_of(la, a.n_vocab, ids[i + 1], &lseA), pb = logprob_of(lb, a.n_vocab, ids[i + 1], &lseB);
+    nllA -= pa; nllB -= pb;
+    double k = 0;
+    int ba = 0, bb = 0;
+    for (int v = 0; v < a.n_vocab; v++) {
+      double lpa = (double)la[v] - lseA, lpb = (double)lb[v] - lseB;
+      k += exp(lpa) * (lpa - lpb);
+      if (la[v] > la[ba]) ba = v;
+      if (lb[v] > lb[bb]) bb = v;
+    }
+    kl += k; agree += ba == bb; used++;
+  }
+  double secs = now_s() - t0;
+  cl_xs_stats s = cl_xs_get_stats(b.xs);
+  printf("{\"tokensScored\":%d,\"perplexityExact\":%.4f,\"perplexityRun\":%.4f,\"perplexityRatio\":%.4f,\"meanKL\":%.5f,\"top1Agreement\":%.4f,", used, exp(nllA / used), exp(nllB / used), exp((nllB - nllA) / used), kl / used, (double)agree / used);
+  printf("\"smart\":%s,\"substitutions\":%llu,\"expertSlots\":%llu,\"maxProbMoved\":%.5f,\"totalProbMoved\":%.4f,", b.smart.enabled ? "true" : "false", (unsigned long long)b.subs, (unsigned long long)b.expert_slots, b.max_delta, b.dropped_mass);
+  printf("\"cacheSlots\":%u,\"hitRate\":%.4f,\"gbPerToken\":%.4f,\"seconds\":%.1f,\"note\":\"the exact run maps the whole file, so the OS cache is warm: seconds here say nothing about disk speed\"}\n",
+         cl_xs_cache_slots(b.xs), s.accesses ? (double)s.hits / s.accesses : 0.0, (s.demand_bytes + s.prefetch_bytes) / 1e9 / used, secs);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) { usage(); return 2; }
   if (!strcmp(argv[1], "--version")) { puts(VERSION); return 0; }
   if (!strcmp(argv[1], "info")) return cmd_info(argc - 2, argv + 2);
   if (!strcmp(argv[1], "tokenize")) return cmd_tokenize(argc - 2, argv + 2);
+  if (!strcmp(argv[1], "quality")) return cmd_quality(argc - 2, argv + 2);
   if (!strcmp(argv[1], "generate")) return cmd_generate(argc - 2, argv + 2);
   if (!strcmp(argv[1], "logits")) return cmd_logits(argc - 2, argv + 2);
   if (!strcmp(argv[1], "stream")) return cmd_stream(argc - 2, argv + 2);

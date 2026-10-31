@@ -181,6 +181,15 @@ void cl_xs_release(cl_xs *x, int h) {
   pthread_mutex_unlock(&x->mu);
 }
 
+int cl_xs_resident(cl_xs *x, int layer, int expert) {
+  if (layer < 0 || layer >= x->n_layer || expert < 0 || expert >= x->n_expert) return 0;
+  pthread_mutex_lock(&x->mu);
+  int slot = cl_cache_find(x->cache, (uint32_t)(layer * x->n_expert + expert));
+  int r = slot >= 0 && x->state[slot] == S_READY;
+  pthread_mutex_unlock(&x->mu);
+  return r;
+}
+
 void cl_xs_prefetch(cl_xs *x, int layer, int expert) {
   if (layer < 0 || layer >= x->n_layer || expert < 0 || expert >= x->n_expert) return;
   pthread_mutex_lock(&x->mu);

@@ -162,7 +162,7 @@ One token needs 624 experts, so `CL-102` warns at every size: the cache holds 78
 | substitutions per token (largest probability moved) | 0 | 0 | 96.7 (0.0150) |
 | passes per second | 14.6 | 17.3 | 22.6 |
 
-Smart-route is not free accuracy: it swaps about 15% of lookups for cached experts, which is why its hit rate is highest. Passes per second depend on whether the OS had the freshly written file in memory; two runs gave 1.18x and 1.35x for prefetch, and 1.55x and 1.77x for smart-route. Hit rates and misses were stable to within a few points.
+Smart-route is not free accuracy: it swaps about 15% of lookups for cached experts, which is why its hit rate is highest. On the real OLMoE forward pass the cost is measured: mild settings read 12-14% fewer bytes for 2-3% higher perplexity and a different top-1 token at 6-10% of positions (docs/NATIVE_ENGINE.md). Passes per second depend on whether the OS had the freshly written file in memory; two runs gave 1.18x and 1.35x for prefetch, and 1.55x and 1.77x for smart-route. Hit rates and misses were stable to within a few points.
 
 **Scan pollution (`stream --shift 80,10 --window 10`, 200 tokens, 256 MB cache).** Tokens 81 to 90 are uniform noise over all 256 experts; the rest use one tight topic. The lookahead predictor gets an independent random draw during the noise, so it cannot predict it. Hit rate per 10-token window:
 
