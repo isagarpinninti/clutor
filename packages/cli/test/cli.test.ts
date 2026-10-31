@@ -265,6 +265,41 @@ describe("downloads", () => {
     await expect(downloadFile("http://x/y", join(dir, "c.gguf"), { fetch: noLength })).rejects.toThrow(/how large/);
     expect(existsSync(join(dir, "b.gguf"))).toBe(false);
   });
+  it("resumes an interrupted download and verifies the SHA-256 of the whole file", async () => {
+    const { downloadFile } = await import("../src/models");
+    const { createHash } = await import("node:crypto");
+    const dir = tmp();
+    const data = new Uint8Array(5000).map((_, i) => (i * 31) % 251);
+    const sha = createHash("sha256").update(data).digest("hex");
+    const ranges: string[] = [];
+    let calls = 0;
+    const flaky = (async (_url: string, init?: RequestInit) => {
+      calls++;
+      const range = (init?.headers as Record<string, string> | undefined)?.["Range"];
+      ranges.push(range ?? "none");
+      if (!range) {   // first attempt: 2000 bytes, then the connection dies
+        let n = 0;
+        const body = new ReadableStream({ async pull(c) { if (n++ === 0) c.enqueue(data.slice(0, 2000)); else { await new Promise((r) => setTimeout(r, 30)); c.error(new Error("connection reset")); } } });
+        return new Response(body, { headers: { "content-length": "5000" } });
+      }
+      const from = Number(/bytes=(\d+)-/.exec(range)?.[1]);
+      return new Response(data.slice(from), { status: 206, headers: { "content-range": `bytes ${from}-4999/5000`, "content-length": String(5000 - from) } });
+    }) as unknown as typeof fetch;
+    const dest = join(dir, "r.gguf");
+    await expect(downloadFile("http://x/y", dest, { fetch: flaky, expectedSha256: sha })).rejects.toThrow(/run the same command again to resume/);
+    expect(existsSync(`${dest}.part`)).toBe(true);
+    expect(await downloadFile("http://x/y", dest, { fetch: flaky, expectedSha256: sha })).toBe(5000);
+    expect(ranges.length).toBe(2);
+    expect(ranges[1]).toMatch(/^bytes=\d+-$/);
+    expect(Buffer.compare(readFileSync(dest), Buffer.from(data))).toBe(0);
+    expect(existsSync(`${dest}.part`)).toBe(false);
+    expect(calls).toBe(2);
+    // a wrong hash deletes the file instead of keeping a corrupt model
+    const whole = (async () => new Response(data, { headers: { "content-length": "5000" } })) as unknown as typeof fetch;
+    await expect(downloadFile("http://x/y", join(dir, "bad.gguf"), { fetch: whole, expectedSha256: "0".repeat(64) })).rejects.toThrow(/SHA-256/);
+    expect(existsSync(join(dir, "bad.gguf"))).toBe(false);
+    expect(existsSync(join(dir, "bad.gguf.part"))).toBe(false);
+  });
   it("asks before downloading, and lists the choices", async () => {
     const h = harness(tmp(), ["n"]);
     expect(await h.run("pull")).toBe(0);

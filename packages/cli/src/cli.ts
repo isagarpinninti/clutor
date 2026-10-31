@@ -606,7 +606,7 @@ async function pull(io: Io, args: ReturnType<typeof parseArgs>, id: string | und
     if (!/^y(es)?$/i.test((await io.prompt(`Download ${d.file} (${fmtBytes(d.bytes)}) from huggingface.co to ${dir}? [y/N] `)).trim())) { io.out("Nothing downloaded."); return 0; }
   }
   let last = 0;
-  const bytes = await downloadFile(downloadUrl(d), dest, { expectedBytes: d.bytes, onProgress: (done, total) => { const p = Math.floor((done / total) * 10); if (p > last) { last = p; io.err(`  ${p * 10}%`); } } });
+  const bytes = await downloadFile(downloadUrl(d), dest, { expectedBytes: d.bytes, expectedSha256: d.sha256, onProgress: (done, total) => { const p = Math.floor((done / total) * 10); if (p > last) { last = p; io.err(`  ${p * 10}%`); } } });
   io.out(`Saved ${dest} (${fmtBytes(bytes)}).`);
   return 0;
 }
