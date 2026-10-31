@@ -357,6 +357,8 @@ static int cmd_generate(int argc, char **argv) {
   if (!quiet) { fputs(argv[1], stdout); fflush(stdout); }
   double t0 = now_s();
   int fed = 0, gen = 0, cur = ids[0];
+  int *outids = malloc((size_t)(want + 2) * sizeof(int));
+  int nout = 0;
   for (;;) {
     if (cl_fwd_step(&f, cur, logits, &rt, err, sizeof err)) { fprintf(stderr, "\n%s\n", err); return 1; }
     if (tf) write_trace(tf, &f, &rt, fed);
@@ -370,10 +372,24 @@ static int cmd_generate(int argc, char **argv) {
     int pl = cl_tok_piece(tok, b, piece, sizeof piece);
     if (!quiet) { fwrite(piece, 1, (size_t)pl, stdout); fflush(stdout); }
     cur = b;
+    outids[nout++] = b;
     if (gen == want) break;
   }
   double secs = now_s() - t0;
   if (tf) fclose(tf);
+  const char *idf = arg(argc, argv, "--ids");   /* the token ids in the format colibri's olmoe harness reads (ref.json): prompt and prompt + generated */
+  if (idf) {
+    FILE *jf = fopen(idf, "w");
+    if (jf) {
+      fprintf(jf, "{\n  \"prompt_ids\": [");
+      for (int i = 0; i < n; i++) fprintf(jf, "%s%d", i ? ", " : "", ids[i]);
+      fprintf(jf, "],\n  \"full_ids\": [");
+      for (int i = 0; i < n; i++) fprintf(jf, "%s%d", i ? ", " : "", ids[i]);
+      for (int i = 0; i < nout; i++) fprintf(jf, ", %d", outids[i]);
+      fprintf(jf, "]\n}\n");
+      fclose(jf);
+    }
+  }
   fprintf(stderr, "\n[%d tokens fed (%d prompt + %d generated) in %.1f s = %.2f s/token on %d threads, %s]\n", fed, n, fed - n, secs, secs / fed, cl_get_threads(), tr ? "route trace written" : "no trace");
   report_xs(&f, secs, fed);
   cl_fwd_close(&f);
