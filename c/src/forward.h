@@ -9,6 +9,7 @@
 #define CL_FORWARD_H
 #include "gguf.h"
 #include "meta.h"
+#include "xs.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -31,6 +32,9 @@ typedef struct {
   cl_fwd_layer *L;
   float *kc, *vc;          /* [layer][position][n_head_kv * head_dim] */
   float *x, *xn, *q, *k, *v, *att, *scores, *logits_buf, *moe, *hg, *hu, *hd, *rl;
+  cl_xs *xs;               /* when set, experts come from disk through the cache instead of from the mapped file */
+  int prefetch;            /* guess the next layer's experts from the previous token's choices and read them early */
+  int *prev_sel;           /* [layer][n_used]: the experts each layer chose for the previous token, -1 before the first */
   int pos;                 /* tokens already in the KV cache */
 } cl_fwd;
 
@@ -38,7 +42,10 @@ typedef struct {
  * receives the router's raw scores for all experts, which is what the streaming engine replays. */
 typedef struct { int *experts; float *weights; float *logits; /* optional: n_layer * n_expert raw router logits */ int n_layer, n_used; } cl_fwd_route;
 
-int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, char *err, size_t errlen);
+/* Streaming options. cache_bytes == 0 keeps the whole file mapped (fast, but resident memory grows with the model); otherwise experts are read
+ * on demand into a cache of that many bytes and the rest of the model stays on disk. */
+typedef struct { uint64_t cache_bytes; int stage_slots, io_threads, os_bypass, prefetch; cl_policy policy; } cl_fwd_opts;
+int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen);
 void cl_fwd_close(cl_fwd *f);
 void cl_fwd_reset(cl_fwd *f);
 /* Runs one token at position f->pos (then advances it). Writes n_vocab logits. `route` may be NULL, else it must hold n_layer*n_used entries. */

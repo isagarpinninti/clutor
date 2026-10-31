@@ -6,7 +6,7 @@ A C11 program with no dependencies beyond libc, libm and pthreads. Build: `npm r
 
 **What it is not (yet):** a general inference engine. Streaming (`stream`) still computes on bytes that are not the model's weights: its "compute" step is a real **Q4_0 x Q8_0 dot-product kernel** (`c/src/kernel.c`: ARM NEON, with the dot-product instruction when the CPU target has it; AVX2; portable C11) run over every byte the streamer loads, read as Q4_0 whatever their true type (the OLMoE file is Q4_K/Q6_K). `--compute checksum` swaps it for a cheap hash, which makes a run measure I/O alone. Without `--trace` the router is **synthetic**. Every report carries `provenance: {routing: "synthetic" | "real", disk: "measured", compute: ...}`.
 
-**What it can do now: a real forward pass for `olmoe` models** (`generate`, `logits`, `tokenize`). `c/src/forward.c` runs embedding, RMSNorm, attention with QK-norm and NeoX rotary embeddings, the softmax router over all experts, the top-8 SwiGLU experts, and the output projection, in float32, reading Q4_K/Q6_K/Q4_0/Q5_0/Q8_0/F16/F32 weights straight from the memory-mapped GGUF (`c/src/quant.c`). `c/src/tokenizer.c` is a byte-level BPE built from the file's own tables. It is slow (about 0.3 s per token on an M2 with 8 threads, weights dequantized on the fly, no batching) and it maps the whole file: it is a **reference path that produces real routing**, not yet the memory-bounded one. `generate --trace FILE` records the router's raw scores for every token and layer; `stream --trace FILE` replays that real routing through the cache, prefetch and smart-route code.
+**What it can do now: a real forward pass for `olmoe` models** (`generate`, `logits`, `tokenize`). `c/src/forward.c` runs embedding, RMSNorm, attention with QK-norm and NeoX rotary embeddings, the softmax router over all experts, the top-8 SwiGLU experts, and the output projection, in float32, reading Q4_K/Q6_K/Q4_0/Q5_0/Q8_0/F16/F32 weights straight from the memory-mapped GGUF (`c/src/quant.c`). `c/src/tokenizer.c` is a byte-level BPE built from the file's own tables. It is slow (about 0.3 s per token on an M2 with 8 threads, weights dequantized on the fly, no batching). By default it maps the whole file; with `--cache-mb N` the experts are instead **streamed from disk through the cache inside the forward pass** (below). `generate --trace FILE` records the router's raw scores for every token and layer; `stream --trace FILE` replays that real routing through the cache, prefetch and smart-route code.
 
 **How it was checked against llama.cpp** (`make verify-llama MODEL=...`, `c/test/verify_llama.py`; OLMoE-1B-7B-0924-Instruct Q4_K_M, this Mac, CPU only):
 - Tokenizer: identical token ids on 10 test strings (ASCII, code, numbers, whitespace runs, accents, CJK, Cyrillic, emoji, special tokens). Letter/number/punctuation classes above U+007F are approximated, so unusual scripts could still differ.
@@ -104,3 +104,27 @@ One trace: OLMoE-1B-7B Q4_K_M generated 109 tokens after "Once upon a time, in a
 | **synthetic** (locality 1.0), adaptive + prefetch | 77.1% | 29.3 | 0.38 |
 
 What this says, and does not: the synthetic router's default skew was **far too optimistic** for this model (77% against 47% for the same cache and policy), so earlier hit-rate figures from synthetic runs should not be read as what a real model gets. On this trace plain LRU beat the adaptive policy without prefetch; the admission-aware cache has not shown an advantage on real OLMoE routing yet. Prefetch from the previous token helps hit rate but reads 60% more bytes, most of it never used (5,504 of 7,536). Smart-route raises the hit rate further, but this engine does not yet apply its substitutions inside the forward pass, so the cost in output quality is **unmeasured**.
+
+
+## Streaming inside the real forward pass (measured 2026-10-31)
+
+`generate --cache-mb N` serves each layer's experts from `c/src/xs.c`: an I/O thread pool reads the eight chosen experts at once, misses go through the same LRU / W-TinyLFU / adaptive policy and staging area as `stream`, and while layer L computes, the experts that layer L+1 chose for the **previous token** are read early (a causal guess, not an oracle). The dense weights (attention, norms, routers, embeddings) stay mapped.
+
+Setup: OLMoE-1B-7B Q4_K_M (3.92 GiB), the 80-token prompt "Once upon a time, in a small village by the sea, there lived an old fisherman who" plus 40 generated tokens, the model file copied with `fastcopy` so it was not sitting in the OS cache, reads with `F_NOCACHE`, 3 I/O threads, 8 compute threads, M2 MacBook Air with an internal SSD (a single thread reads this file at about 2.0 GB/s). One run per row.
+
+| mode | s / token | peak RSS | hit rate | GB read / token |
+|---|---|---|---|---|
+| whole file mapped | 0.31-0.36 | 3,548 MiB | n/a | n/a |
+| stream, 128 MiB cache, adaptive + prefetch | 0.32 | 533 MiB | 34.6% | 0.80 |
+| stream, 256 MiB, adaptive + prefetch | 0.46 | 648 MiB | 36.9% | 0.72 |
+| stream, 512 MiB, adaptive + prefetch | 0.37 | 917 MiB | 43.6% | 0.53 |
+| stream, 1024 MiB, adaptive + prefetch | 0.35 | 1,420 MiB | 56.8% | 0.39 |
+| stream, 256 MiB, LRU + prefetch | 0.49 | 657 MiB | 34.5% | 0.80 |
+| stream, 256 MiB, adaptive, no prefetch | 0.52 | 600 MiB | 15.1% | 0.41 |
+
+What this shows:
+- **Same output.** The generated text is byte-identical in every mode (`c/test/verify_stream.py` checks five more cache, policy, thread and prefetch settings). Streaming changes where the bytes come from, not the maths.
+- **Bounded memory.** Peak resident memory is 533 MiB to 1.4 GiB depending on the cache, against 3.5 GiB when the file is mapped: 6.7x lower at the smallest cache.
+- **No visible slowdown on this machine**, because the compute thread waited for the disk only 0.5-3 s of 19-30 s. That is a property of a fast internal SSD and a slow float32 compute path (0.3 s/token); the run-to-run spread (0.31 to 0.52 s/token across rows) is larger than most gaps between rows, so do not read a ranking into the timings.
+- **Prefetch trades bandwidth for hits.** It lifts the 256 MiB hit rate from 15% to 37%, but reads 75% more bytes and about 60% of the prefetched experts are never used. On a slower disk that extra traffic would compete with demand reads; this machine could not show that.
+- **Not demonstrated:** a model larger than RAM (the only real MoE here is 3.9 GiB on a 16 GiB machine), a slow disk, and any comparison with AirLLM or Colibri. The sanitizers (address, undefined, thread) are clean on the streamed path.

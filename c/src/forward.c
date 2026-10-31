@@ -36,7 +36,7 @@ static float *to_float(const cl_w *w, size_t n) {
 
 #define REQ_U(key, dst) do { uint64_t v_; if (!cl_meta_u64(&f->meta, key, &v_)) { snprintf(err, errlen, "the model does not state %s", key); goto fail; } dst = (int)v_; } while (0)
 
-int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, char *err, size_t errlen) {
+int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen) {
   memset(f, 0, sizeof *f);
   if (cl_model_open(&f->model, path, err, errlen)) return 1;
   if (strcmp(f->model.arch, "olmoe")) { snprintf(err, errlen, "the forward pass supports the \"olmoe\" architecture so far, not \"%s\"", f->model.arch); goto fail; }
@@ -100,6 +100,24 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, char *err, size_t errlen
   f->scores = calloc((size_t)f->n_ctx_max, 4); f->moe = calloc(E, 4); f->hg = calloc((size_t)f->n_ff_exp, 4); f->hu = calloc((size_t)f->n_ff_exp, 4); f->hd = calloc(E, 4);
   f->rl = calloc((size_t)f->n_expert, 4);
   if (!f->kc || !f->vc || !f->x || !f->xn || !f->q || !f->k || !f->v || !f->att || !f->scores || !f->moe || !f->hg || !f->hu || !f->hd || !f->rl) { snprintf(err, errlen, "out of memory"); goto fail; }
+  if (opts && opts->cache_bytes) {
+    cl_xs_layer *xl = calloc((size_t)f->n_layer, sizeof *xl);
+    if (!xl) { snprintf(err, errlen, "out of memory"); goto fail; }
+    for (int l = 0; l < f->n_layer; l++) {
+      const cl_fwd_layer *y = &f->L[l];
+      xl[l].off[0] = (uint64_t)(y->gate.p - f->map); xl[l].slab[0] = y->gate_slab;
+      xl[l].off[1] = (uint64_t)(y->up.p - f->map);   xl[l].slab[1] = y->up_slab;
+      xl[l].off[2] = (uint64_t)(y->down.p - f->map); xl[l].slab[2] = y->down_slab;
+    }
+    int stage = opts->stage_slots > 0 ? opts->stage_slots : (opts->prefetch ? 2 * f->n_used : 0);
+    f->xs = cl_xs_open(path, xl, f->n_layer, f->n_expert, f->n_used, opts->cache_bytes, stage, opts->policy, opts->io_threads > 0 ? opts->io_threads : 3, opts->os_bypass, err, errlen);
+    free(xl);
+    if (!f->xs) goto fail;
+    f->prefetch = opts->prefetch;
+    f->prev_sel = malloc((size_t)f->n_layer * f->n_used * sizeof(int));
+    if (!f->prev_sel) { snprintf(err, errlen, "out of memory"); goto fail; }
+    for (int i = 0; i < f->n_layer * f->n_used; i++) f->prev_sel[i] = -1;
+  }
   return 0;
 fail:
   cl_fwd_close(f);
@@ -110,6 +128,7 @@ void cl_fwd_close(cl_fwd *f) {
   if (f->L) for (int l = 0; l < f->n_layer; l++) { free(f->L[l].attn_norm_f); free(f->L[l].ffn_norm_f); free(f->L[l].qn_f); free(f->L[l].kn_f); free(f->L[l].router_f); }
   free(f->L); free(f->out_norm_f);
   free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl);
+  cl_xs_close(f->xs); free(f->prev_sel);
   cl_meta_free(&f->meta);
   if (f->map) munmap(f->map, f->map_size);
   cl_model_close(&f->model);
@@ -141,8 +160,11 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
   if (f->pos >= f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
   const int E = f->n_embd, H = f->n_head, hd = f->head_dim, pos = f->pos;
   cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)token * cl_row_bytes(f->tok_embd.type, (uint64_t)E), f->x, E);
+  if (f->xs && f->prefetch) for (int k = 0; k < f->n_used; k++) cl_xs_prefetch(f->xs, 0, f->prev_sel[k]);   /* layer 0, as the previous token chose it */
   for (int l = 0; l < f->n_layer; l++) {
     cl_fwd_layer *y = &f->L[l];
+    /* while this layer's attention and experts compute, read the experts the NEXT layer chose for the previous token */
+    if (f->xs && f->prefetch && l + 1 < f->n_layer) for (int k = 0; k < f->n_used; k++) cl_xs_prefetch(f->xs, l + 1, f->prev_sel[(l + 1) * f->n_used + k]);
     rmsnorm(f->xn, f->x, y->attn_norm_f, E, f->rms_eps);
     matvec(&y->wq, f->xn, f->q); matvec(&y->wk, f->xn, f->k); matvec(&y->wv, f->xn, f->v);
     rmsnorm(f->q, f->q, y->qn_f, E, f->rms_eps);   /* QK-norm runs over the whole projected vector, before it is split into heads */
@@ -198,14 +220,25 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     }
     if (route) for (int k = 0; k < f->n_used; k++) { route->experts[l * f->n_used + k] = sel[k]; route->weights[l * f->n_used + k] = wt[k]; }
     memset(f->moe, 0, (size_t)E * 4);
+    int hnd[64];
+    if (f->xs) for (int k = 0; k < f->n_used; k++) hnd[k] = cl_xs_request(f->xs, l, sel[k]);   /* all misses start reading at once */
     for (int k = 0; k < f->n_used; k++) {
-      const uint8_t *g = y->gate.p + (size_t)sel[k] * y->gate_slab, *u = y->up.p + (size_t)sel[k] * y->up_slab, *d = y->down.p + (size_t)sel[k] * y->down_slab;
+      const uint8_t *g, *u, *d;
+      if (f->xs) {
+        const uint8_t *slot = cl_xs_wait(f->xs, hnd[k]);
+        if (!slot) { snprintf(err, errlen, "reading expert %d of layer %d from disk failed", sel[k], l); for (int j = k; j < f->n_used; j++) cl_xs_release(f->xs, hnd[j]); return 1; }
+        g = slot; u = slot + y->gate_slab; d = slot + y->gate_slab + y->up_slab;
+      } else {
+        g = y->gate.p + (size_t)sel[k] * y->gate_slab; u = y->up.p + (size_t)sel[k] * y->up_slab; d = y->down.p + (size_t)sel[k] * y->down_slab;
+      }
       cl_matvec(y->gate.type, g, f->n_ff_exp, E, f->xn, f->hg);
       cl_matvec(y->up.type, u, f->n_ff_exp, E, f->xn, f->hu);
       for (int i = 0; i < f->n_ff_exp; i++) f->hg[i] = f->hg[i] / (1.0f + expf(-f->hg[i])) * f->hu[i];   /* silu(gate) * up */
       cl_matvec(y->down.type, d, E, f->n_ff_exp, f->hg, f->hd);
       for (int i = 0; i < E; i++) f->moe[i] += wt[k] * f->hd[i];
+      if (f->xs) cl_xs_release(f->xs, hnd[k]);
     }
+    if (f->prev_sel) memcpy(f->prev_sel + l * f->n_used, sel, (size_t)f->n_used * sizeof(int));
     for (int i = 0; i < E; i++) f->x[i] += f->moe[i];
   }
   rmsnorm(f->xn, f->x, f->out_norm_f, E, f->rms_eps);

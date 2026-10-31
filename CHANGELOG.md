@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ### Added
 - **A real forward pass for `olmoe` models in the native engine**: byte-level BPE tokenizer, quantized weight readers (Q4_0, Q5_0, Q8_0, Q4_K, Q5_K, Q6_K, F16, BF16, F32), attention, router and experts. New engine commands `tokenize`, `logits`, `generate`. Checked against llama.cpp on OLMoE-1B-7B Q4_K_M: identical token ids on 10 test strings, same top-1 token on 6 prompts, 96.5-98% of visible router choices inside this engine's top-8 (see docs/NATIVE_ENGINE.md for the numbers and limits). Slow reference path (about 0.3 s per token), not memory-bounded.
+- **Experts streamed inside the real forward pass**: `generate --cache-mb N` reads each layer's experts from disk through the cache (policies, staging, previous-token prefetch) so resident memory is bounded by the cache. On OLMoE-1B-7B Q4_K_M: output byte-identical to the mapped run, peak RSS 533 MiB to 1.4 GiB against 3.5 GiB, no visible slowdown on an internal SSD (one run per setting; see docs/NATIVE_ENGINE.md for the table and what was not tested).
 - `generate --trace FILE` records the model's real router scores; `clutor stream --trace FILE` replays them through the cache, prefetch and smart-route code, and the report says `routing: real`. On one 130-token trace the old synthetic default overstated the hit rate (77% against 47%).
 
 ### Changed

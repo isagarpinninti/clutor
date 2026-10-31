@@ -4,6 +4,7 @@
 #include "kernel.h"
 #include "quant.h"
 #include "meta.h"
+#include "xs.h"
 #include <math.h>
 #include "route.h"
 #include <math.h>
@@ -312,8 +313,46 @@ static void test_meta(const char *fixture) {
   cl_meta_free(&m);
 }
 
+static void test_xs(const char *fixture) {
+  if (!fixture) return;
+  FILE *fp = fopen(fixture, "rb");
+  if (!fp) return;
+  static uint8_t file[1 << 20];
+  size_t n = fread(file, 1, sizeof file, fp);
+  fclose(fp);
+  if (n < 200000) return;
+  /* two fake layers of 4 "experts"; each expert's gate/up/down are 1000/2000/3000-byte slabs at known places in the file */
+  cl_xs_layer lay[2];
+  for (int l = 0; l < 2; l++) for (int i = 0; i < 3; i++) { lay[l].slab[i] = 1000u * (uint64_t)(i + 1); lay[l].off[i] = (uint64_t)(l * 60000 + i * 20000); }
+  char err[128];
+  cl_xs *x = cl_xs_open(fixture, lay, 2, 4, 2, 3 * 6000, 2, CL_LRU, 2, 0, err, sizeof err);
+  CHECK(x != NULL, "store opens: %s", err);
+  if (!x) return;
+  int bad = 0, pass;
+  for (pass = 0; pass < 3; pass++) {
+    for (int l = 0; l < 2; l++) for (int e = 0; e < 4; e++) {
+      int h[2], k;
+      h[0] = cl_xs_request(x, l, e); h[1] = cl_xs_request(x, l, (e + 1) % 4);
+      for (k = 0; k < 2; k++) {
+        int ex = k == 0 ? e : (e + 1) % 4;
+        const uint8_t *p = cl_xs_wait(x, h[k]);
+        if (!p) { bad++; continue; }
+        uint64_t at = 0;
+        for (int i = 0; i < 3; i++) { if (memcmp(p + at, file + lay[l].off[i] + (uint64_t)ex * lay[l].slab[i], lay[l].slab[i])) bad++; at += lay[l].slab[i]; }
+      }
+      cl_xs_release(x, h[0]); cl_xs_release(x, h[1]);
+      cl_xs_prefetch(x, l, (e + 2) % 4);
+    }
+  }
+  CHECK(bad == 0, "every expert served from the store equals the bytes in the file (%d wrong)", bad);
+  cl_xs_stats st = cl_xs_get_stats(x);
+  CHECK(st.accesses == 3 * 2 * 4 * 2 && st.hits > 0 && st.misses > 0 && st.hits + st.misses == st.accesses, "hits and misses add up (%llu + %llu of %llu)", (unsigned long long)st.hits, (unsigned long long)st.misses, (unsigned long long)st.accesses);
+  CHECK(cl_xs_request(x, 2, 0) < 0 && cl_xs_request(x, 0, 4) < 0, "out-of-range requests are refused");
+  cl_xs_close(x);
+}
+
 int main(int argc, char **argv) {
-  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
+  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   test_gguf(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;

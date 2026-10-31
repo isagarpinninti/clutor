@@ -10,7 +10,7 @@ endif
 LDLIBS = -lm -lpthread
 # BUILD can point somewhere writable when the source sits in a read-only installed package: make BUILD=$HOME/.clutor/bin
 BUILD ?= build
-SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/quant.c src/meta.c src/forward.c src/tokenizer.c src/stream.c
+SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/quant.c src/meta.c src/xs.c src/forward.c src/tokenizer.c src/stream.c
 BIN = $(BUILD)/clutor-engine
 
 all: $(BIN)

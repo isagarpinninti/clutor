@@ -7,6 +7,7 @@
 #include "quant.h"
 #include <math.h>
 #include <time.h>
+#include <sys/resource.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,7 +19,7 @@ static void usage(void) {
        "  info <model.gguf> [--json]       Read the header and print where every layer's bytes and experts live\n"
        "  tokenize <model.gguf> TEXT [--no-special]    Print the token ids of TEXT (byte-level BPE built from the model's own tables)\n"
        "  logits <model.gguf> PROMPT [--top N] [--ctx N] [--trace FILE]   Run the REAL forward pass over PROMPT and print the next-token logprobs (olmoe models); --trace writes the router's choices\n"
-       "  generate <model.gguf> PROMPT [--n N] [--trace FILE] [--quiet]   Greedy decoding with the real forward pass; --trace records the router's scores for every token\n"
+       "  generate <model.gguf> PROMPT [--n N] [--trace FILE] [--quiet] [--cache-mb N --prefetch on|off --policy lru|wtinylfu|adaptive --io-threads N --no-os-cache]   Greedy decoding with the real forward pass; --trace records the router's scores for every token; --cache-mb N streams the experts from disk through an N MiB cache instead of mapping the whole file\n"
        "  stream <model.gguf> [options]    Stream experts from disk through the cache for N tokens of routing (synthetic, or the real router with --trace FILE) and report what was measured\n"
        "\n"
        "stream options:\n  --trace FILE   replay the REAL router recorded by `generate --trace` (cyclically) instead of the synthetic one; prefetch then guesses from the previous token's choices\n"
@@ -228,6 +229,35 @@ static int cmd_tokenize(int argc, char **argv) {
   return 0;
 }
 
+/* --cache-mb N turns on streaming: experts come from disk through an N MiB cache. --prefetch on|off, --policy, --io-threads, --no-os-cache tune it. */
+static cl_fwd_opts fwd_opts(int argc, char **argv) {
+  cl_fwd_opts o = {0};
+  o.cache_bytes = (uint64_t)(num(argc, argv, "--cache-mb", 0) * 1048576.0);
+  const char *pf = arg(argc, argv, "--prefetch");
+  o.prefetch = !(pf && !strcmp(pf, "off"));
+  const char *pol = arg(argc, argv, "--policy");
+  o.policy = !pol || !strcmp(pol, "adaptive") ? CL_ADAPTIVE : !strcmp(pol, "lru") ? CL_LRU : CL_WTINYLFU;
+  o.io_threads = (int)num(argc, argv, "--io-threads", 3);
+  o.stage_slots = (int)num(argc, argv, "--stage", 0);
+  o.os_bypass = flag(argc, argv, "--no-os-cache");
+  return o;
+}
+
+static void report_xs(cl_fwd *f, double secs, int tokens) {
+  if (!f->xs) return;
+  cl_xs_stats s = cl_xs_get_stats(f->xs);
+  struct rusage ru;
+  getrusage(RUSAGE_SELF, &ru);
+#if defined(__APPLE__)
+  double rss = (double)ru.ru_maxrss / 1048576.0;
+#else
+  double rss = (double)ru.ru_maxrss / 1024.0;
+#endif
+  fprintf(stderr, "[streaming: cache %u experts of %llu bytes; %llu accesses, %.1f%% hits (%llu from prefetch), %llu misses, prefetch %llu issued / %llu never used; read %.2f GB (%.2f GB/token) in %.2f s of read time; compute thread waited %.2f s of %.2f s; peak RSS %.0f MiB]\n",
+          cl_xs_cache_slots(f->xs), (unsigned long long)cl_xs_slot_bytes(f->xs), (unsigned long long)s.accesses, s.accesses ? 100.0 * s.hits / s.accesses : 0.0, (unsigned long long)s.stage_hits, (unsigned long long)s.misses,
+          (unsigned long long)s.prefetch_issued, (unsigned long long)s.prefetch_wasted, (s.demand_bytes + s.prefetch_bytes) / 1e9, tokens ? (s.demand_bytes + s.prefetch_bytes) / 1e9 / tokens : 0.0, s.read_ns / 1e9, s.wait_ns / 1e9, secs, rss);
+}
+
 /* One line per (token, layer): "token layer" then the router's raw score for every expert. */
 static void write_trace(FILE *tf, const cl_fwd *f, const cl_fwd_route *rt, int tok) {
   for (int l = 0; l < f->n_layer; l++) {
@@ -253,7 +283,8 @@ static int cmd_logits(int argc, char **argv) {
   if (n == 0) { fprintf(stderr, "the prompt has no tokens\n"); return 1; }
   int ctx = (int)num(argc, argv, "--ctx", n + 8), top = (int)num(argc, argv, "--top", 20);
   cl_fwd f;
-  if (cl_fwd_open(&f, argv[0], ctx, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
+  cl_fwd_opts fo = fwd_opts(argc, argv);
+  if (cl_fwd_open(&f, argv[0], ctx, &fo, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
   float *logits = malloc((size_t)f.n_vocab * sizeof *logits);
   cl_fwd_route rt = {malloc((size_t)f.n_layer * f.n_used * sizeof(int)), malloc((size_t)f.n_layer * f.n_used * sizeof(float)), malloc((size_t)f.n_layer * f.n_expert * sizeof(float)), f.n_layer, f.n_used};
   const char *tr = arg(argc, argv, "--trace");
@@ -306,7 +337,8 @@ static int cmd_generate(int argc, char **argv) {
   n += k;
   if (n == 0 || want < 1) { fprintf(stderr, "need a prompt and --n >= 1\n"); return 1; }
   cl_fwd f;
-  if (cl_fwd_open(&f, argv[0], n + want + 1, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
+  cl_fwd_opts fo = fwd_opts(argc, argv);
+  if (cl_fwd_open(&f, argv[0], n + want + 1, &fo, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
   float *logits = malloc((size_t)f.n_vocab * sizeof *logits);
   cl_fwd_route rt = {malloc((size_t)f.n_layer * f.n_used * sizeof(int)), malloc((size_t)f.n_layer * f.n_used * sizeof(float)), malloc((size_t)f.n_layer * f.n_expert * sizeof(float)), f.n_layer, f.n_used};
   const char *tr = arg(argc, argv, "--trace");
@@ -334,6 +366,7 @@ static int cmd_generate(int argc, char **argv) {
   double secs = now_s() - t0;
   if (tf) fclose(tf);
   fprintf(stderr, "\n[%d tokens fed (%d prompt + %d generated) in %.1f s = %.2f s/token on %d threads, %s]\n", fed, n, fed - n, secs, secs / fed, cl_get_threads(), tr ? "route trace written" : "no trace");
+  report_xs(&f, secs, fed);
   cl_fwd_close(&f);
   return 0;
 }
