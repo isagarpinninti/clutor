@@ -3,11 +3,15 @@
 converter, experts re-quantized to int8), same 20-token prompt, 80 greedy tokens, one machine, runs one after another. Memory-bounded modes read from
 fresh copies of the files that nothing has mapped or read through the OS cache."""
 import json, os, re, subprocess, sys, time
-B = "/Users/sagarpinninti/Desktop/MyProjects/bench"
-CL = "/Users/sagarpinninti/Desktop/MyProjects/clutor/c/build/clutor-engine"
-GGUF = "/Users/sagarpinninti/Desktop/MyProjects/clutor-models/olmoe-cold.gguf"
-COLI = B + "/colibri/c/olmoe"
-SNAP = B + "/olmoe-colibri-cold"
+# Paths come from the environment so the script runs anywhere; the defaults assume this layout next to the repo:
+#   $BENCH_DIR/colibri (a checkout with `make olmoe` built), $BENCH_DIR/olmoe-colibri-cold (Colibri's converted copy), $BENCH_DIR/ref_story.json
+#   $CLUTOR_GGUF_COLD: a fresh copy of the GGUF that nothing has mapped (copy it with `fastcopy`, or any tool that bypasses the OS cache)
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+B = os.environ.get("BENCH_DIR", os.path.join(REPO, "..", "bench"))
+CL = os.environ.get("CLUTOR_ENGINE", os.path.join(REPO, "c", "build", "clutor-engine"))
+GGUF = os.environ.get("CLUTOR_GGUF_COLD", os.path.join(REPO, "..", "clutor-models", "olmoe-cold.gguf"))
+COLI = os.path.join(B, "colibri", "c", "olmoe")
+SNAP = os.path.join(B, "olmoe-colibri-cold")
 PROMPT = "Once upon a time, in a small village by the sea, there lived an old fisherman who"
 rows = []
 
@@ -27,7 +31,7 @@ def clutor(label, *extra):
 def colibri(label, cap, env):
     e = dict(os.environ, SNAP=SNAP, **env)
     t = time.time()
-    r = subprocess.run([COLI, str(cap), "8", B + "/ref_story.json"], capture_output=True, text=True, env=e)
+    r = subprocess.run([COLI, str(cap), "8", os.path.join(B, "ref_story.json")], capture_output=True, text=True, env=e)
     wall = time.time() - t
     o = r.stdout
     sp = re.search(r"Speed: ([\d.]+) tok/s \(([\d.]+)s for (\d+) tokens\)", o)
@@ -43,5 +47,5 @@ for mb in (128, 256, 512, 1024):
 for cap in (4, 8, 16, 32):
     colibri(f"cache {cap}/layer, EXPERT_DROP=1", cap, {"EXPERT_DROP": "1", "PILOT": "0"})
 colibri("cache 16/layer, EXPERT_DROP=1, PILOT=1 (its prefetch)", 16, {"EXPERT_DROP": "1", "PILOT": "1"})
-json.dump(rows, open(B + "/bench_results.json", "w"), indent=1)
+json.dump(rows, open(os.path.join(B, "bench_results.json"), "w"), indent=1)
 print("done", flush=True)
