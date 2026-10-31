@@ -10,6 +10,6 @@ What the native engine can do with which model. "Real forward pass" means `cluto
 | DeepSeek, GLM, Kimi, Mixtral | no | catalog / planner only | no | The memory planner knows their published shapes; the engine has never opened one |
 | Dense models (Llama, Qwen dense, ...) | no | no | no | No experts to cache: each token reads the whole model |
 
-Quantization support in `c/src/quant.c`: F32, F16, BF16, Q4_0, Q5_0, Q8_0, Q4_K, Q5_K, Q6_K (dequantization); integer dot products for Q4_K and Q6_K (NEON with the dot-product instruction, AVX2 [cross-compiled only], portable C). The tokenizer is byte-level BPE with the `olmo` pre-tokenizer; letter and number classes are exact for ASCII and approximate above U+007F.
+Quantization support in `c/src/quant.c`: F32, F16, BF16, Q4_0, Q5_0, Q8_0, Q4_K, Q5_K, Q6_K (dequantization); integer dot products for Q4_K and Q6_K (NEON with the dot-product instruction, AVX2 [unit test passed on a CI x86 Linux runner; not run by the author locally], portable C). The tokenizer is byte-level BPE with the `olmo` pre-tokenizer; letter and number classes are exact for ASCII and approximate above U+007F.
 
-Platforms: macOS arm64 is where everything was measured. Linux builds the same code (CI); the AVX2 kernels have never been executed by the author. Windows is not supported by the native engine.
+Platforms: macOS arm64 is where everything was measured. Linux builds the same code (CI); the AVX2 kernels passed their unit test on a CI x86 runner but the author has not run them locally. Windows is not supported by the native engine.

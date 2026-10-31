@@ -50,7 +50,9 @@ golden-files: build
 golden: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q3) --arch qwen3moe
-golden-paths: golden-files
+golden-paths: $(BIN) golden-files
+	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
+	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q3) --arch qwen3moe
 	$(CC) $(PATH_FLAGS) -DCL_FORCE_SCALAR $(SRC) src/main.c -o build/engine-scalar $(LDLIBS)
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_Q3) --arch qwen3moe
