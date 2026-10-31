@@ -67,7 +67,7 @@ Usage: clutor <command> [options]
                                      Measure real disk reads on this machine; with the native engine, also compare cache and prefetch strategies
   stream <model.gguf> [--tokens N] [--cache-mb N] [--policy lru|wtinylfu|adaptive] [--smart J,M,TAU|off] [--prefetch on|off] [--dense auto|resident|ring] [--compute kernel|checksum] [--trace FILE] [--json]
                                      Stream a model's experts from disk through the native engine (synthetic routing; measured I/O and cache)
-  generate <model.gguf> "<prompt>" [--n N] [--cache-mb N] [--smart J,M,TAU] [--prefetch on|off] [--trace FILE]
+  generate <model.gguf> "<prompt>" [--n N] [--cache-mb N] [--smart J,M,TAU] [--prefetch off|prev|ahead] [--trace FILE]
                                      Generate text with the native engine's real forward pass (olmoe models). With --cache-mb the experts stream from disk through a cache of that size
   quality <model.gguf> <text-file> --cache-mb N [--smart J,M,TAU] [--max-tokens N] [--json]
                                      Perplexity, KL divergence and top-token agreement of a streamed (optionally smart-route) run against exact routing
@@ -673,7 +673,7 @@ function engineFlags(args: ReturnType<typeof parseArgs>): string[] {
   const pol = flagString(args, "policy");
   if (pol) { if (!["lru", "wtinylfu", "adaptive"].includes(pol)) throw new UsageError("--policy must be lru, wtinylfu or adaptive"); out.push("--policy", pol); }
   const pf = flagString(args, "prefetch");
-  if (pf) { if (!["on", "off"].includes(pf)) throw new UsageError("--prefetch must be on or off"); out.push("--prefetch", pf); }
+  if (pf) { if (!["on", "off", "prev", "ahead"].includes(pf)) throw new UsageError("--prefetch must be off, prev or ahead"); out.push("--prefetch", pf); }
   const sm = flagString(args, "smart");
   if (sm && sm !== "off") { if (!/^\d+,\d+,[\d.]+$/.test(sm)) throw new UsageError("--smart wants J,M,TAU, for example 4,16,0.02"); out.push("--smart", sm); }
   if (flagBool(args, "no-os-cache")) out.push("--no-os-cache");

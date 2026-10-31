@@ -1,6 +1,6 @@
 /*
- * Byte-level BPE tokenizer (GPT-2 family) built from a GGUF file's own tokenizer tables. The pre-tokenizer implemented is the one llama.cpp
- * calls "olmo". Letter, number and punctuation classes are exact for ASCII and approximate above U+007F (see tokenizer.c), so non-English
+ * Byte-level BPE tokenizer (GPT-2 family) built from a GGUF file's own tokenizer tables. The pre-tokenizers implemented are the ones llama.cpp
+ * calls "olmo" and "qwen2". Letter, number and punctuation classes are exact for ASCII and approximate above U+007F (see tokenizer.c), so non-English
  * text can tokenize differently from llama.cpp; `make verify-llama` checks agreement on a fixed set of prompts.
  */
 #ifndef CL_TOKENIZER_H

@@ -43,16 +43,21 @@ test-avx2: build
 # Golden test: a tiny generated OLMoE with random K-quant weights, checked against an independent pure-Python forward pass (needs only python3).
 # Run on the default build and, to cover every kernel path, on the portable-C and NEON-without-dotprod builds.
 GOLDEN_GGUF = build/tiny_olmoe.gguf
-golden: $(BIN) build
+GOLDEN_Q3 = build/tiny_qwen3moe.gguf
+golden-files: build
 	python3 test/tiny_olmoe.py write $(GOLDEN_GGUF)
+	python3 test/tiny_olmoe.py write $(GOLDEN_Q3) --arch qwen3moe
+golden: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
-golden-paths: build
-	python3 test/tiny_olmoe.py write $(GOLDEN_GGUF)
+	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q3) --arch qwen3moe
+golden-paths: golden-files
 	$(CC) $(PATH_FLAGS) -DCL_FORCE_SCALAR $(SRC) src/main.c -o build/engine-scalar $(LDLIBS)
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_GGUF)
+	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_Q3) --arch qwen3moe
 ifeq ($(shell uname -m),arm64)
 	$(CC) $(PATH_FLAGS) -mcpu=native -DCL_NO_DOTPROD $(SRC) src/main.c -o build/engine-neon $(LDLIBS)
 	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_GGUF)
+	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_Q3) --arch qwen3moe
 endif
 
 # Mutation fuzzing of the file readers under ASan + UBSan: corrupt a valid model many ways, expect clean errors and never a crash or hang.
@@ -75,4 +80,4 @@ verify-llama: $(BIN)
 	python3 test/verify_llama.py $(MODEL) --engine $(BIN)
 clean:
 	rm -rf build
-.PHONY: fuzz golden golden-paths verify-llama all test test-paths test-avx2 sanitize clean
+.PHONY: fuzz golden golden-files golden-paths verify-llama all test test-paths test-avx2 sanitize clean

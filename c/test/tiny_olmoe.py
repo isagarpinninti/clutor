@@ -10,9 +10,21 @@ weights against 8-bit-quantized activations (as llama.cpp does) while this refer
 """
 import json, math, random, struct, subprocess, sys
 
-E, HEADS, FF, NEXP, USED, LAYERS = 256, 4, 256, 8, 2, 2
-HD = E // HEADS
-EPS, THETA, CTX = 1e-5, 10000.0, 64
+# Two tiny architectures. olmoe: full-width QK-norm, equal head counts, raw softmax weights. qwen3moe: grouped-query attention, head_dim larger than
+# embedding / heads, per-head QK-norm with one shared weight, and chosen weights renormalised to sum to 1.
+E, FF, NEXP, USED, LAYERS = 256, 256, 8, 2, 2
+ARCH, HEADS, KVH, HD, PRE, EPS, THETA, CTX = "olmoe", 4, 4, 64, "olmo", 1e-5, 10000.0, 64
+NQ = NKV = E
+QKPH = NORMTOP = False
+
+def configure(arch):
+    global ARCH, HEADS, KVH, HD, PRE, EPS, THETA, NQ, NKV, QKPH, NORMTOP
+    ARCH = arch
+    if arch == "qwen3moe":
+        HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP = 4, 2, 128, "qwen2", 1e-6, 1000000.0, True, True
+    else:
+        HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP = 4, 4, 64, "olmo", 1e-5, 10000.0, False, False
+    NQ, NKV = HEADS * HD, KVH * HD
 
 def byte_to_unicode():
     bs = list(range(33, 127)) + list(range(161, 173)) + list(range(174, 256))
@@ -91,24 +103,26 @@ def write(path, seed=1):
     for l in range(LAYERS):
         p = "blk.%d." % l
         add(p + "attn_norm.weight", [E], F32, f32(E, 0.2))
-        add(p + "attn_q.weight", [E, E], Q4K, rand_q4k(rng, E))
-        add(p + "attn_k.weight", [E, E], Q4K, rand_q4k(rng, E))
-        add(p + "attn_v.weight", [E, E], Q6K, rand_q6k(rng, E))
-        add(p + "attn_output.weight", [E, E], Q4K, rand_q4k(rng, E))
-        add(p + "attn_q_norm.weight", [E], F32, f32(E, 0.2))
-        add(p + "attn_k_norm.weight", [E], F32, f32(E, 0.2))
+        add(p + "attn_q.weight", [E, NQ], Q4K, rand_q4k(rng, NQ))
+        add(p + "attn_k.weight", [E, NKV], Q4K, rand_q4k(rng, NKV))
+        add(p + "attn_v.weight", [E, NKV], Q6K, rand_q6k(rng, NKV))
+        add(p + "attn_output.weight", [NQ, E], Q4K, rand_q4k(rng, E * (NQ // 256)))
+        add(p + "attn_q_norm.weight", [HD if QKPH else NQ], F32, f32(HD if QKPH else NQ, 0.2))
+        add(p + "attn_k_norm.weight", [HD if QKPH else NKV], F32, f32(HD if QKPH else NKV, 0.2))
         add(p + "ffn_norm.weight", [E], F32, f32(E, 0.2))
         add(p + "ffn_gate_inp.weight", [E, NEXP], F32, f32(E * NEXP, 0.5, 0.0))
         add(p + "ffn_gate_exps.weight", [E, FF, NEXP], Q4K, rand_q4k(rng, FF * NEXP))
         add(p + "ffn_up_exps.weight", [E, FF, NEXP], Q4K, rand_q4k(rng, FF * NEXP))
         add(p + "ffn_down_exps.weight", [FF, E, NEXP], Q6K, rand_q6k(rng, E * NEXP))
+    A = ARCH
     meta = [
-        kv("general.architecture", 8, "olmoe"), kv("general.name", 8, "tiny-olmoe-test"),
-        kv("olmoe.block_count", 4, LAYERS), kv("olmoe.context_length", 4, CTX), kv("olmoe.embedding_length", 4, E),
-        kv("olmoe.feed_forward_length", 4, FF), kv("olmoe.attention.head_count", 4, HEADS), kv("olmoe.attention.head_count_kv", 4, HEADS),
-        kv("olmoe.rope.freq_base", 6, THETA), kv("olmoe.expert_used_count", 4, USED), kv("olmoe.attention.layer_norm_rms_epsilon", 6, EPS),
-        kv("olmoe.expert_count", 4, NEXP),
-        kv("tokenizer.ggml.model", 8, "gpt2"), kv("tokenizer.ggml.pre", 8, "olmo"),
+        kv("general.architecture", 8, A), kv("general.name", 8, "tiny-%s-test" % A),
+        kv(A + ".block_count", 4, LAYERS), kv(A + ".context_length", 4, CTX), kv(A + ".embedding_length", 4, E),
+        kv(A + (".expert_feed_forward_length" if QKPH else ".feed_forward_length"), 4, FF), kv(A + ".attention.head_count", 4, HEADS), kv(A + ".attention.head_count_kv", 4, KVH),
+        kv(A + ".rope.freq_base", 6, THETA), kv(A + ".expert_used_count", 4, USED), kv(A + ".attention.layer_norm_rms_epsilon", 6, EPS),
+        kv(A + ".expert_count", 4, NEXP),
+    ] + ([kv(A + ".attention.key_length", 4, HD), kv(A + ".attention.value_length", 4, HD)] if QKPH else []) + [
+        kv("tokenizer.ggml.model", 8, "gpt2"), kv("tokenizer.ggml.pre", 8, PRE),
         kv("tokenizer.ggml.tokens", 9, (8, toks)), kv("tokenizer.ggml.token_type", 9, (5, types)), kv("tokenizer.ggml.merges", 9, (8, MERGES)),
         kv("tokenizer.ggml.bos_token_id", 4, V - 2), kv("tokenizer.ggml.eos_token_id", 4, V - 2), kv("tokenizer.ggml.padding_token_id", 4, V - 1),
         kv("tokenizer.ggml.add_bos_token", 7, False),
@@ -221,26 +235,33 @@ class Ref:
                                down=[down[e * E:(e + 1) * E] for e in range(NEXP)]))
         self.K = [[] for _ in range(LAYERS)]; self.V = [[] for _ in range(LAYERS)]
     def step(self, tok):
-        x = self.emb[tok][:]; pos = len(self.K[0])
+        x = self.emb[tok][:]; pos = len(self.K[0]); grp = HEADS // KVH
         for l, L in enumerate(self.L):
-            xn = rms(x, L["an"]); q = rms(matvec(L["q"], xn), L["qn"]); k = rms(matvec(L["k"], xn), L["kn"]); v = matvec(L["v"], xn)
-            q = sum((rope(q[h * HD:(h + 1) * HD], pos) for h in range(HEADS)), []); k = sum((rope(k[h * HD:(h + 1) * HD], pos) for h in range(HEADS)), [])
+            xn = rms(x, L["an"]); q = matvec(L["q"], xn); k = matvec(L["k"], xn); v = matvec(L["v"], xn)
+            if QKPH:   # one weight of head_dim, applied to every head separately
+                q = sum((rms(q[h * HD:(h + 1) * HD], L["qn"]) for h in range(HEADS)), []); k = sum((rms(k[h * HD:(h + 1) * HD], L["kn"]) for h in range(KVH)), [])
+            else:
+                q = rms(q, L["qn"]); k = rms(k, L["kn"])
+            q = sum((rope(q[h * HD:(h + 1) * HD], pos) for h in range(HEADS)), []); k = sum((rope(k[h * HD:(h + 1) * HD], pos) for h in range(KVH)), [])
             self.K[l].append(k); self.V[l].append(v)
             att = []
             for h in range(HEADS):
-                sl = slice(h * HD, (h + 1) * HD)
-                sc = [dot(q[sl], kk[sl]) / math.sqrt(HD) for kk in self.K[l]]
+                qs = q[h * HD:(h + 1) * HD]; ks = slice((h // grp) * HD, (h // grp + 1) * HD)
+                sc = [dot(qs, kk[ks]) / math.sqrt(HD) for kk in self.K[l]]
                 m = max(sc); w = [math.exp(a - m) for a in sc]; z = sum(w)
-                att += [sum(w[t] / z * self.V[l][t][sl][i] for t in range(len(w))) for i in range(HD)]
+                att += [sum(w[t] / z * self.V[l][t][ks][i] for t in range(len(w))) for i in range(HD)]
             x = [a + b for a, b in zip(x, matvec(L["o"], att))]
             xn = rms(x, L["fn"]); lg = matvec(L["router"], xn); m = max(lg); p = [math.exp(a - m) for a in lg]; z = sum(p); p = [a / z for a in p]
             top = sorted(range(NEXP), key=lambda e: (-p[e], e))[:USED]
+            wts = {e: p[e] for e in top}
+            if NORMTOP:
+                zz = sum(wts.values()); wts = {e: w / zz for e, w in wts.items()}
             moe = [0.0] * E
             for e in top:
                 gg, uu = matvec(L["gate"][e], xn), matvec(L["up"][e], xn)
                 hh = [a / (1 + math.exp(-a)) * b for a, b in zip(gg, uu)]
                 y = matvec(L["down"][e], hh)
-                moe = [a + p[e] * b for a, b in zip(moe, y)]
+                moe = [a + wts[e] * b for a, b in zip(moe, y)]
             x = [a + b for a, b in zip(x, moe)]
         lo = matvec(self.out, rms(x, self.on)); m = max(lo); lse = m + math.log(sum(math.exp(a - m) for a in lo))
         return [a - lse for a in lo]
@@ -274,6 +295,8 @@ def check(engine, path):
     return 1 if bad else 0
 
 if __name__ == "__main__":
+    if "--arch" in sys.argv:
+        configure(sys.argv[sys.argv.index("--arch") + 1])
     if sys.argv[1] == "write":
         write(sys.argv[2], int(sys.argv[sys.argv.index("--seed") + 1]) if "--seed" in sys.argv else 1)
     elif sys.argv[1] == "check":

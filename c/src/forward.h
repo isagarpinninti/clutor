@@ -1,6 +1,6 @@
 /*
- * A real forward pass for OLMoE-style models (llama.cpp's "olmoe" architecture): token embedding, RMSNorm, attention with QK-norm and NeoX
- * rotary embeddings, a softmax router over every expert, the top-k experts' SwiGLU feed-forwards, and the output projection.
+ * A real forward pass for two mixture-of-experts architectures (llama.cpp's "olmoe" and "qwen3moe"): token embedding, RMSNorm, attention with QK-norm and
+ * NeoX rotary embeddings (grouped-query for qwen3moe), a softmax router over every expert, the top-k experts' SwiGLU feed-forwards, and the output projection.
  * Weights are read straight from the memory-mapped GGUF and dequantized block by block; the arithmetic is float32.
  *
  * Every step is checked against llama.cpp (see `make verify-llama`). Routing here is the model's own: the gate sees the real hidden state.
@@ -27,21 +27,27 @@ typedef struct {
   cl_model model;
   cl_meta meta;
   uint8_t *map; size_t map_size;
+  char arch[16];           /* "olmoe" or "qwen3moe" */
   int n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff_exp, n_expert, n_used, n_vocab, n_ctx_max;
+  int n_q, n_kvw;          /* width of the query projection (n_head * head_dim) and of the key / value projections (n_head_kv * head_dim) */
+  int qk_per_head;         /* qwen3moe: RMSNorm over each head_dim vector with one shared weight; olmoe: over the whole projected vector */
+  int norm_topk;           /* qwen3moe renormalises the chosen experts' weights to sum to 1; olmoe uses the raw softmax probabilities */
   float rms_eps, rope_base;
   cl_w tok_embd, output;
   float *out_norm_f;
   cl_fwd_layer *L;
   float *kc, *vc;          /* [layer][position][n_head_kv * head_dim] */
   float *x, *xn, *q, *k, *v, *att, *scores, *logits_buf, *moe, *hg, *hu, *hd, *rl;
-  cl_xq xq_e, xq_ff, *xq_ffk;       /* the current activation vector, quantized for the integer dot products */
+  cl_xq xq_e, xq_q, xq_ff, *xq_ffk;       /* the current activation vector, quantized for the integer dot products */
   cl_xs *xs;               /* when set, experts come from disk through the cache instead of from the mapped file */
   cl_smart smart;
   uint64_t subs, expert_slots; /* experts used in place of the router's own choice, out of all expert slots filled */
   double dropped_mass, max_delta;
   float *rlogit;           /* the router's raw scores for the layer being processed */
   int prefetch_n;          /* experts per layer to prefetch */
-  int prefetch;            /* guess the next layer's experts from the previous token's choices and read them early */
+  int prefetch;            /* 0 off; 1 "prev": guess the next layer's experts from the previous token's choices; 2 "ahead": apply the next layer's router to the current hidden state; either way read them early */
+  int *pred_sel;           /* [layer][prefetch_n]: what was predicted for this token's layer, -1 for none */
+  uint64_t pred_total, pred_hit; /* predicted experts, and how many of them the router then chose */
   int *prev_sel;           /* [layer][n_used]: the experts each layer chose for the previous token, -1 before the first */
   int pos;                 /* tokens already in the KV cache */
 } cl_fwd;

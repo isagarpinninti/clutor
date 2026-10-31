@@ -160,3 +160,20 @@ What this shows, and does not:
 - **The byte saving is measured; a time saving is not.** Reads are 12-14% lower, so a disk-bound run should speed up by about that much at most; the quality runs map the whole file for the exact reference, which warms the OS cache, so their timings say nothing about disk speed.
 - **Not tested:** other models, other text, longer contexts, and any downstream task.
 - A bug check that matters: with SMART-ROUTE off, the streamed run matches exact routing token for token (KL 0, perplexity identical), and `J = 8` (nothing may be substituted) is byte-identical to exact in `c/test/verify_stream.py`.
+
+
+## Router-ahead prefetch (measured 2026-10-31)
+
+`--prefetch ahead` applies the NEXT layer's router to the current hidden state (right after this layer's attention) and starts reading the experts it picks, so the reads overlap this layer's experts. `--prefetch prev` is the earlier guess from the previous token's choices; `off` is the default. The engine reports what share of the predicted experts the router then chose.
+
+Setup: OLMoE-1B-7B Q4_K_M, a fresh cold copy of the file, `F_NOCACHE` reads, 256 MiB cache, 80 generated tokens, two runs per row (the Qwen3 download was running in the background, which adds a little noise).
+
+| mode | job seconds | hit rate | GB read / token | predicted experts chosen |
+|---|---|---|---|---|
+| off | 26.5, 24.8 | 15.5% | 0.41 | n/a |
+| prev | 35.7, 35.9 | 38% | 0.68 | 37% |
+| ahead | 26.1, 25.9 | 84% | 0.48 | 82% |
+
+- **The predictor is good:** 82% of the experts it picks are chosen, against 37% for the previous-token guess, and the hit rate rises from 15% to 84%.
+- **It does not make this run faster.** The run is bandwidth-bound (the compute thread waits on the disk about 88% of the time at roughly 1.5 GB/s), so time is bytes read divided by bandwidth. Starting reads earlier cannot beat that, and the 18% of wrong guesses add about 17% more bytes. Time with `ahead` equals time with no prefetch; `prev` is slower because most of what it fetches is unused.
+- **So prefetch stays off by default.** Prediction should help where the run is latency-bound or compute-bound (a faster disk or a heavier model); that is untested here. The only levers that cut time on this machine are the ones that cut bytes: a larger cache, a better eviction policy, smart-route, and lower-bit experts.

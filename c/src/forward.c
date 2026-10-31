@@ -34,12 +34,16 @@ static float *to_float(const cl_w *w, size_t n) {
   return o;
 }
 
-#define REQ_U(key, dst) do { uint64_t v_; if (!cl_meta_u64(&f->meta, key, &v_)) { snprintf(err, errlen, "the model does not state %s", key); goto fail; } dst = (int)v_; } while (0)
+/* A metadata key of this model's architecture, for example "olmoe.block_count". */
+#define AKEY(buf, suffix) snprintf(buf, sizeof buf, "%s.%s", f->arch, suffix)
+#define REQ_U(suffix, dst) do { char k_[96]; uint64_t v_; AKEY(k_, suffix); if (!cl_meta_u64(&f->meta, k_, &v_)) { snprintf(err, errlen, "the model does not state %s", k_); goto fail; } dst = (int)v_; } while (0)
 
 int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen) {
   memset(f, 0, sizeof *f);
   if (cl_model_open(&f->model, path, err, errlen)) return 1;
-  if (strcmp(f->model.arch, "olmoe")) { snprintf(err, errlen, "the forward pass supports the \"olmoe\" architecture so far, not \"%s\"", f->model.arch); goto fail; }
+  if (strcmp(f->model.arch, "olmoe") && strcmp(f->model.arch, "qwen3moe")) { snprintf(err, errlen, "the forward pass supports the \"olmoe\" and \"qwen3moe\" architectures, not \"%s\"", f->model.arch); goto fail; }
+  snprintf(f->arch, sizeof f->arch, "%s", f->model.arch);
+  f->qk_per_head = f->norm_topk = !strcmp(f->arch, "qwen3moe");
   int fd = open(path, O_RDONLY);
   struct stat st;
   if (fd < 0 || fstat(fd, &st)) { snprintf(err, errlen, "cannot open %s", path); if (fd >= 0) close(fd); goto fail; }
@@ -48,21 +52,26 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   close(fd);
   if (f->map == MAP_FAILED) { f->map = NULL; snprintf(err, errlen, "cannot map %s", path); goto fail; }
   if (cl_meta_parse(&f->meta, f->map, f->map_size, err, errlen)) goto fail;
-  REQ_U("olmoe.embedding_length", f->n_embd);
-  REQ_U("olmoe.attention.head_count", f->n_head);
-  REQ_U("olmoe.attention.head_count_kv", f->n_head_kv);
-  { uint64_t v_; if (cl_meta_u64(&f->meta, "olmoe.expert_feed_forward_length", &v_) || cl_meta_u64(&f->meta, "olmoe.feed_forward_length", &v_)) f->n_ff_exp = (int)v_; else { snprintf(err, errlen, "the model does not state its feed-forward length"); goto fail; } }   /* olmoe files store the per-expert width under the plain key */
-  REQ_U("olmoe.context_length", f->n_ctx_max);
+  REQ_U("embedding_length", f->n_embd);
+  REQ_U("attention.head_count", f->n_head);
+  REQ_U("attention.head_count_kv", f->n_head_kv);
+  { char k1[96], k2[96]; uint64_t v_; AKEY(k1, "expert_feed_forward_length"); AKEY(k2, "feed_forward_length");
+    if (cl_meta_u64(&f->meta, k1, &v_) || (!f->qk_per_head && cl_meta_u64(&f->meta, k2, &v_))) f->n_ff_exp = (int)v_; else { snprintf(err, errlen, "the model does not state its expert feed-forward length"); goto fail; } }   /* olmoe files store the per-expert width under the plain key */
+  REQ_U("context_length", f->n_ctx_max);
   f->n_layer = (int)f->model.n_layers; f->n_expert = (int)f->model.n_experts; f->n_used = (int)f->model.n_used;
   double d = 0;
-  f->rms_eps = cl_meta_f64(&f->meta, "olmoe.attention.layer_norm_rms_epsilon", &d) ? (float)d : 1e-5f;
-  f->rope_base = cl_meta_f64(&f->meta, "olmoe.rope.freq_base", &d) ? (float)d : 10000.0f;
+  { char k[96];
+    AKEY(k, "attention.layer_norm_rms_epsilon"); f->rms_eps = cl_meta_f64(&f->meta, k, &d) ? (float)d : 1e-5f;
+    AKEY(k, "rope.freq_base"); f->rope_base = cl_meta_f64(&f->meta, k, &d) ? (float)d : 10000.0f; }
   if (f->n_embd < 256 || f->n_head < 1 || f->n_head > f->n_embd || f->n_embd % f->n_head || f->n_layer < 1 || f->n_expert < 1 || f->n_used < 1 || f->n_used > f->n_expert || f->n_ff_exp < 1) {
     snprintf(err, errlen, "implausible hyper-parameters (embedding %d, heads %d, layers %d, experts %d, used %d, expert width %d)", f->n_embd, f->n_head, f->n_layer, f->n_expert, f->n_used, f->n_ff_exp); goto fail;
   }
   f->head_dim = f->n_embd / f->n_head;
-  if (f->n_embd % 256 || f->n_ff_exp % 256) { snprintf(err, errlen, "embedding width %d / expert width %d must be multiples of 256 for the K-quant kernels", f->n_embd, f->n_ff_exp); goto fail; }
-  if (f->n_head_kv != f->n_head) { snprintf(err, errlen, "grouped-query attention (%d KV heads for %d heads) is not implemented", f->n_head_kv, f->n_head); goto fail; }
+  { char k[96]; uint64_t v_; AKEY(k, "attention.key_length"); if (cl_meta_u64(&f->meta, k, &v_) && v_ >= 2 && v_ <= 1024 && v_ % 2 == 0) f->head_dim = (int)v_; }   /* qwen3moe: 128, not n_embd / n_head */
+  if (f->n_head_kv < 1 || f->n_head_kv > f->n_head || f->n_head % f->n_head_kv) { snprintf(err, errlen, "implausible head counts (%d query heads, %d key/value heads)", f->n_head, f->n_head_kv); goto fail; }
+  if (f->head_dim * f->n_head != f->n_embd && !f->qk_per_head) { snprintf(err, errlen, "head_dim * heads must equal the embedding width for this architecture"); goto fail; }
+  f->n_q = f->n_head * f->head_dim; f->n_kvw = f->n_head_kv * f->head_dim;
+  if (f->n_embd % 256 || f->n_ff_exp % 256 || f->n_q % 256) { snprintf(err, errlen, "embedding width %d / expert width %d / query width %d must be multiples of 256 for the K-quant kernels", f->n_embd, f->n_ff_exp, f->n_q); goto fail; }
   if (f->n_used > 64 || f->n_expert > 4096) { snprintf(err, errlen, "unsupported expert counts"); goto fail; }
   if (n_ctx > f->n_ctx_max) n_ctx = f->n_ctx_max;
   if (n_ctx < 1) n_ctx = 512;
@@ -85,8 +94,9 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
         bind(f, &y->kn, "attn_k_norm.weight", l, 1, err, errlen) || bind(f, &y->ffn_norm, "ffn_norm.weight", l, 1, err, errlen) || bind(f, &y->router, "ffn_gate_inp.weight", l, 2, err, errlen) ||
         bind(f, &y->gate, "ffn_gate_exps.weight", l, 3, err, errlen) || bind(f, &y->up, "ffn_up_exps.weight", l, 3, err, errlen) || bind(f, &y->down, "ffn_down_exps.weight", l, 3, err, errlen)) goto fail;
     const int N = f->n_embd;
-    if (y->attn_norm.cols != N || y->ffn_norm.cols != N || y->qn.cols != N || y->kn.cols != N ||
-        y->wq.rows != N || y->wq.cols != N || y->wk.rows != N || y->wk.cols != N || y->wv.rows != N || y->wv.cols != N || y->wo.rows != N || y->wo.cols != N ||
+    const int QN = f->qk_per_head ? f->head_dim : f->n_q, KN = f->qk_per_head ? f->head_dim : f->n_kvw;
+    if (y->attn_norm.cols != N || y->ffn_norm.cols != N || y->qn.cols != QN || y->kn.cols != KN ||
+        y->wq.rows != f->n_q || y->wq.cols != N || y->wk.rows != f->n_kvw || y->wk.cols != N || y->wv.rows != f->n_kvw || y->wv.cols != N || y->wo.rows != N || y->wo.cols != f->n_q ||
         y->up.rows != f->n_ff_exp || y->up.cols != N || y->gate.cols != N) {
       snprintf(err, errlen, "layer %d: attention or norm tensor shapes do not match the embedding width %d", l, N); goto fail;
     }
@@ -100,21 +110,25 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
     y->up_slab = (uint64_t)y->up.rows * cl_row_bytes(y->up.type, (uint64_t)y->up.cols);
     y->down_slab = (uint64_t)y->down.rows * cl_row_bytes(y->down.type, (uint64_t)y->down.cols);
     y->attn_norm_f = to_float(&y->attn_norm, (size_t)f->n_embd); y->ffn_norm_f = to_float(&y->ffn_norm, (size_t)f->n_embd);
-    y->qn_f = to_float(&y->qn, (size_t)f->n_embd); y->kn_f = to_float(&y->kn, (size_t)f->n_embd);
+    y->qn_f = to_float(&y->qn, (size_t)QN); y->kn_f = to_float(&y->kn, (size_t)KN);
     y->router_f = malloc((size_t)f->n_expert * f->n_embd * sizeof(float));
     if (!y->attn_norm_f || !y->ffn_norm_f || !y->qn_f || !y->kn_f || !y->router_f) { snprintf(err, errlen, "out of memory"); goto fail; }
     for (int e = 0; e < f->n_expert; e++) cl_dequant_row(y->router.type, y->router.p + (size_t)e * cl_row_bytes(y->router.type, (uint64_t)f->n_embd), y->router_f + (size_t)e * f->n_embd, f->n_embd);
   }
-  size_t kvn = (size_t)f->n_layer * f->n_ctx_max * f->n_embd;
+  size_t kvn = (size_t)f->n_layer * f->n_ctx_max * f->n_kvw;
   size_t E = (size_t)f->n_embd;
   f->kc = calloc(kvn, sizeof(float)); f->vc = calloc(kvn, sizeof(float));
-  f->x = calloc(E, 4); f->xn = calloc(E, 4); f->q = calloc(E, 4); f->k = calloc(E, 4); f->v = calloc(E, 4); f->att = calloc(E, 4);
+  f->x = calloc(E, 4); f->xn = calloc(E, 4); f->q = calloc((size_t)f->n_q, 4); f->k = calloc((size_t)f->n_kvw, 4); f->v = calloc((size_t)f->n_kvw, 4); f->att = calloc((size_t)f->n_q, 4);
   f->scores = calloc((size_t)f->n_ctx_max, 4); f->moe = calloc(E, 4); f->hg = calloc((size_t)f->n_ff_exp * f->n_used, 4); f->hu = calloc((size_t)f->n_ff_exp * f->n_used, 4); f->hd = calloc(E * (size_t)f->n_used, 4);
   f->rl = calloc((size_t)f->n_expert, 4); f->rlogit = calloc((size_t)f->n_expert, 4);
   f->xq_ffk = calloc((size_t)f->n_used, sizeof(cl_xq));
-  if (!f->xq_ffk || !cl_xq_init(&f->xq_e, f->n_embd) || !cl_xq_init(&f->xq_ff, f->n_ff_exp)) { snprintf(err, errlen, "out of memory"); goto fail; }
+  if (!f->xq_ffk || !cl_xq_init(&f->xq_e, f->n_embd) || !cl_xq_init(&f->xq_q, f->n_q) || !cl_xq_init(&f->xq_ff, f->n_ff_exp)) { snprintf(err, errlen, "out of memory"); goto fail; }
   for (int k = 0; k < f->n_used; k++) if (!cl_xq_init(&f->xq_ffk[k], f->n_ff_exp)) { snprintf(err, errlen, "out of memory"); goto fail; }
   if (!f->kc || !f->vc || !f->x || !f->xn || !f->q || !f->k || !f->v || !f->att || !f->scores || !f->moe || !f->hg || !f->hu || !f->hd || !f->rl || !f->rlogit) { snprintf(err, errlen, "out of memory"); goto fail; }
+  { long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
+    if ((!opts || !opts->cache_bytes) && pages > 0 && psz > 0 && f->map_size > (size_t)pages * (size_t)psz * 8 / 10) {
+      snprintf(err, errlen, "the model file (%.1f GiB) is larger than 80%% of this machine's memory (%.1f GiB): mapping it whole would thrash; stream its experts with --cache-mb N", f->map_size / 1073741824.0, (double)pages * (double)psz / 1073741824.0); goto fail;
+    } }
   if (opts && opts->smart.enabled && !opts->cache_bytes) { snprintf(err, errlen, "--smart needs --cache-mb: it substitutes experts that are already in the cache"); goto fail; }
   if (opts && opts->cache_bytes) {
     cl_xs_layer *xl = calloc((size_t)f->n_layer, sizeof *xl);
@@ -134,7 +148,9 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
     f->prefetch_n = opts->prefetch_n > 0 && opts->prefetch_n < f->n_used ? opts->prefetch_n : f->n_used;
     f->prev_sel = malloc((size_t)f->n_layer * f->n_used * sizeof(int));
     if (!f->prev_sel) { snprintf(err, errlen, "out of memory"); goto fail; }
-    for (int i = 0; i < f->n_layer * f->n_used; i++) f->prev_sel[i] = -1;
+    f->pred_sel = malloc((size_t)f->n_layer * f->n_used * sizeof(int));
+    if (!f->pred_sel) { snprintf(err, errlen, "out of memory"); goto fail; }
+    for (int i = 0; i < f->n_layer * f->n_used; i++) f->prev_sel[i] = f->pred_sel[i] = -1;
   }
   return 0;
 fail:
@@ -146,10 +162,10 @@ void cl_fwd_close(cl_fwd *f) {
   if (f->L) for (int l = 0; l < f->n_layer; l++) { free(f->L[l].attn_norm_f); free(f->L[l].ffn_norm_f); free(f->L[l].qn_f); free(f->L[l].kn_f); free(f->L[l].router_f); }
   free(f->L); free(f->out_norm_f);
   free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
-  cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_ff);
+  cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_q); cl_xq_free(&f->xq_ff);
   if (f->xq_ffk) for (int k = 0; k < f->n_used; k++) cl_xq_free(&f->xq_ffk[k]);
   free(f->xq_ffk);
-  cl_xs_close(f->xs); free(f->prev_sel);
+  cl_xs_close(f->xs); free(f->prev_sel); free(f->pred_sel);
   cl_meta_free(&f->meta);
   if (f->map) munmap(f->map, f->map_size);
   cl_model_close(&f->model);
@@ -184,27 +200,35 @@ static int resident_cb(void *ctx, int expert) {
 int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *err, size_t errlen) {
   if (token < 0 || token >= f->n_vocab) { snprintf(err, errlen, "token %d is outside the vocabulary", token); return 1; }
   if (f->pos >= f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
-  const int E = f->n_embd, H = f->n_head, hd = f->head_dim, pos = f->pos;
+  const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos, KW = f->n_kvw, GROUP = f->n_head / f->n_head_kv;
   cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)token * cl_row_bytes(f->tok_embd.type, (uint64_t)E), f->x, E);
-  if (f->xs && f->prefetch) for (int k = 0; k < f->prefetch_n; k++) cl_xs_prefetch(f->xs, 0, f->prev_sel[k]);   /* layer 0, as the previous token chose it */
+  if (f->pred_sel) for (int i = 0; i < f->n_layer * f->n_used; i++) f->pred_sel[i] = -1;
+  if (f->xs && f->prefetch) for (int k = 0; k < f->prefetch_n; k++) { cl_xs_prefetch(f->xs, 0, f->prev_sel[k]); f->pred_sel[k] = f->prev_sel[k]; }   /* layer 0, as the previous token chose it (nothing else is known yet) */
   for (int l = 0; l < f->n_layer; l++) {
     cl_fwd_layer *y = &f->L[l];
     /* while this layer's attention and experts compute, read the experts the NEXT layer chose for the previous token */
-    if (f->xs && f->prefetch && l + 1 < f->n_layer) for (int k = 0; k < f->prefetch_n; k++) cl_xs_prefetch(f->xs, l + 1, f->prev_sel[(l + 1) * f->n_used + k]);
+    if (f->xs && f->prefetch == 1 && l + 1 < f->n_layer) for (int k = 0; k < f->prefetch_n; k++) { int e = f->prev_sel[(l + 1) * f->n_used + k]; cl_xs_prefetch(f->xs, l + 1, e); f->pred_sel[(l + 1) * f->n_used + k] = e; }
     rmsnorm(f->xn, f->x, y->attn_norm_f, E, f->rms_eps);
     cl_xq_quantize(&f->xq_e, f->xn);
     { cl_mv j[3] = {mv(&y->wq, f->xn, &f->xq_e, f->q), mv(&y->wk, f->xn, &f->xq_e, f->k), mv(&y->wv, f->xn, &f->xq_e, f->v)}; cl_matvec_batch(j, 3); }
-    rmsnorm(f->q, f->q, y->qn_f, E, f->rms_eps);   /* QK-norm runs over the whole projected vector, before it is split into heads */
-    rmsnorm(f->k, f->k, y->kn_f, E, f->rms_eps);
-    for (int h = 0; h < H; h++) { rope_neox(f->q + h * hd, hd, pos, f->rope_base); rope_neox(f->k + h * hd, hd, pos, f->rope_base); }
-    float *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * E, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * E;
-    memcpy(kc, f->k, (size_t)E * 4); memcpy(vc, f->v, (size_t)E * 4);
+    if (f->qk_per_head) {   /* qwen3moe: each head's vector is normalised on its own, with one weight shared by all heads */
+      for (int h = 0; h < H; h++) rmsnorm(f->q + h * hd, f->q + h * hd, y->qn_f, hd, f->rms_eps);
+      for (int h = 0; h < KVH; h++) rmsnorm(f->k + h * hd, f->k + h * hd, y->kn_f, hd, f->rms_eps);
+    } else {   /* olmoe: over the whole projected vector, before it is split into heads */
+      rmsnorm(f->q, f->q, y->qn_f, f->n_q, f->rms_eps);
+      rmsnorm(f->k, f->k, y->kn_f, f->n_kvw, f->rms_eps);
+    }
+    for (int h = 0; h < H; h++) rope_neox(f->q + h * hd, hd, pos, f->rope_base);
+    for (int h = 0; h < KVH; h++) rope_neox(f->k + h * hd, hd, pos, f->rope_base);
+    float *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
+    memcpy(kc, f->k, (size_t)KW * 4); memcpy(vc, f->v, (size_t)KW * 4);
     const float scale = 1.0f / sqrtf((float)hd);
     for (int h = 0; h < H; h++) {
       const float *qh = f->q + h * hd;
+      const int kvo = (h / GROUP) * hd;   /* grouped-query attention: GROUP query heads share one key/value head */
       float mx = -INFINITY;
       for (int t = 0; t <= pos; t++) {
-        const float *kt = f->kc + ((size_t)l * f->n_ctx_max + t) * E + h * hd;
+        const float *kt = f->kc + ((size_t)l * f->n_ctx_max + t) * KW + kvo;
         float s = 0;
         for (int i = 0; i < hd; i++) s += qh[i] * kt[i];
         f->scores[t] = s * scale;
@@ -215,14 +239,28 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
       float *oh = f->att + h * hd;
       memset(oh, 0, (size_t)hd * 4);
       for (int t = 0; t <= pos; t++) {
-        const float *vt = f->vc + ((size_t)l * f->n_ctx_max + t) * E + h * hd;
+        const float *vt = f->vc + ((size_t)l * f->n_ctx_max + t) * KW + kvo;
         float p = f->scores[t] / sum;
         for (int i = 0; i < hd; i++) oh[i] += p * vt[i];
       }
     }
-    cl_xq_quantize(&f->xq_e, f->att);
-    { cl_mv j = mv(&y->wo, f->att, &f->xq_e, f->hd); cl_matvec_batch(&j, 1); }
+    cl_xq_quantize(&f->xq_q, f->att);
+    { cl_mv j = mv(&y->wo, f->att, &f->xq_q, f->hd); cl_matvec_batch(&j, 1); }
     for (int i = 0; i < E; i++) f->x[i] += f->hd[i];
+
+    /* router-ahead: apply the NEXT layer's router to this layer's hidden state (the residual stream changes slowly) and start reading what it picks,
+     * so the reads overlap this layer's experts */
+    if (f->xs && f->prefetch == 2 && l + 1 < f->n_layer) {
+      const cl_fwd_layer *nx = &f->L[l + 1];
+      rmsnorm(f->xn, f->x, nx->ffn_norm_f, E, f->rms_eps);
+      for (int e = 0; e < f->n_expert; e++) { const float *r = nx->router_f + (size_t)e * E; float a = 0; for (int i = 0; i < E; i++) a += r[i] * f->xn[i]; f->rl[e] = a; }
+      char taken[4096] = {0};
+      for (int k = 0; k < f->prefetch_n; k++) {
+        int best = -1;
+        for (int e = 0; e < f->n_expert; e++) if (!taken[e] && (best < 0 || f->rl[e] > f->rl[best])) best = e;
+        taken[best] = 1; cl_xs_prefetch(f->xs, l + 1, best); f->pred_sel[(l + 1) * f->n_used + k] = best;
+      }
+    }
 
     /* mixture of experts */
     rmsnorm(f->xn, f->x, y->ffn_norm_f, E, f->rms_eps);
@@ -258,6 +296,13 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
         used[best] = 1; sel[k] = best; wt[k] = f->rl[best];   /* OLMoE does not renormalise the chosen weights */
       }
     }
+    if (f->pred_sel) for (int k = 0; k < f->prefetch_n; k++) {
+      int pe = f->pred_sel[l * f->n_used + k];
+      if (pe < 0) continue;
+      f->pred_total++;
+      for (int j = 0; j < f->n_used; j++) if (sel[j] == pe) { f->pred_hit++; break; }
+    }
+    if (f->norm_topk) { float z = 0; for (int k = 0; k < f->n_used; k++) z += wt[k]; if (z > 0) for (int k = 0; k < f->n_used; k++) wt[k] /= z; }   /* qwen3moe: the chosen weights sum to 1 */
     f->expert_slots += (uint64_t)f->n_used;
     if (route) for (int k = 0; k < f->n_used; k++) { route->experts[l * f->n_used + k] = sel[k]; route->weights[l * f->n_used + k] = wt[k]; }
     memset(f->moe, 0, (size_t)E * 4);

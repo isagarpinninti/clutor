@@ -25,6 +25,7 @@ struct cl_tok {
   smap vocab, merges;
   char *merge_buf;
   int bos, eos, add_bos;
+  int pre;                           /* 0: olmo (GPT-2 style), 1: qwen2 */
   int *special; int n_special;       /* ids of control / user-defined tokens, longest text first */
   int byte_cp[256];                  /* GPT-2 byte -> code point */
   int cp_byte[512];                  /* code point (< 512) -> byte, or -1 */
@@ -95,6 +96,51 @@ static size_t m_gpt2(const uint8_t *s, size_t i, size_t end) {   /* 's|'t|'re|'v
   return last > i ? last - i : 0;
 }
 
+static int is_nl(int c) { return c == '\r' || c == '\n'; }
+static size_t ws_run_end(const uint8_t *s, size_t i, size_t end) {   /* end of the whitespace run starting at i */
+  size_t k = i;
+  while (k < end) { int cp, n = cp_at(s, k, end, &cp); if (!is_space(cp)) break; k += (size_t)n; }
+  return k;
+}
+/* Qwen2's pre-tokenizer: (?i:'s|'t|'re|'ve|'m|'ll|'d) | [^\r\n\p{L}\p{N}]?\p{L}+ | \p{N} | ?[^\s\p{L}\p{N}]+[\r\n]* | \s*[\r\n]+ | \s+(?!\S) | \s+ */
+static size_t m_qwen2(const uint8_t *s, size_t i, size_t end) {
+  static const char *contr[] = {"'s", "'t", "'m", "'d", "'re", "'ve", "'ll"};
+  for (size_t c = 0; c < sizeof contr / sizeof *contr; c++) {
+    size_t n = strlen(contr[c]);
+    if (end - i < n) continue;
+    size_t k = 0;
+    while (k < n && (s[i + k] == (uint8_t)contr[c][k] || (k > 0 && s[i + k] >= 'A' && s[i + k] <= 'Z' && s[i + k] + 32 == (uint8_t)contr[c][k]))) k++;
+    if (k == n) return n;
+  }
+  int cp, n0 = cp_at(s, i, end, &cp);
+  if (is_letter(cp)) return run(s, i, end, is_letter, 0);                 /* the optional leading character is absent */
+  if (!is_nl(cp) && !is_digit(cp)) {                                       /* one leading character that is not a letter, digit or newline, then letters */
+    size_t m = run(s, i + (size_t)n0, end, is_letter, 0);
+    if (m) return (size_t)n0 + m;
+  }
+  if (is_digit(cp)) return (size_t)n0;                                     /* digits are one token each */
+  size_t j = i;
+  if (s[j] == ' ') j++;
+  if (j < end) {
+    size_t m = run(s, j, end, NULL, 1);
+    if (m) {
+      size_t k = j + m;
+      while (k < end && (s[k] == '\r' || s[k] == '\n')) k++;
+      return k - i;
+    }
+  }
+  size_t we = ws_run_end(s, i, end);
+  if (we == i) return 0;
+  size_t last_nl = 0; int has_nl = 0;
+  for (size_t k = i; k < we;) { int c2, n = cp_at(s, k, end, &c2); if (is_nl(c2)) { last_nl = k + (size_t)n; has_nl = 1; } k += (size_t)n; }
+  if (has_nl) return last_nl - i;                                          /* \s*[\r\n]+ : up to the last newline of the run */
+  if (we == end) return we - i;                                            /* \s+(?!\S) at the end of the text */
+  size_t lastc = i;
+  for (size_t k = i; k < we;) { lastc = k; int c2, n = cp_at(s, k, end, &c2); k += (size_t)n; }
+  if (lastc > i) return lastc - i;                                         /* \s+(?!\S) gives the last space back to the next token */
+  return we - i;                                                           /* \s+ : a single space before text */
+}
+
 typedef size_t (*matcher)(const uint8_t *, size_t, size_t);
 typedef struct { size_t a, b; } seg;
 typedef struct { seg *v; size_t n, cap; } segs;
@@ -121,9 +167,12 @@ static int split(const uint8_t *s, const segs *in, segs *out, matcher m) {
 cl_tok *cl_tok_load(const cl_meta *m, char *err, size_t errlen) {
   cl_str mdl, pre;
   if (!cl_meta_str(m, "tokenizer.ggml.model", &mdl) || mdl.len != 4 || memcmp(mdl.p, "gpt2", 4)) { snprintf(err, errlen, "only the gpt2 (byte-level BPE) tokenizer is supported"); return NULL; }
-  if (!cl_meta_str(m, "tokenizer.ggml.pre", &pre) || pre.len != 4 || memcmp(pre.p, "olmo", 4)) { snprintf(err, errlen, "only the \"olmo\" pre-tokenizer is implemented"); return NULL; }
+  int pre_kind = -1;
+  if (cl_meta_str(m, "tokenizer.ggml.pre", &pre)) { if (pre.len == 4 && !memcmp(pre.p, "olmo", 4)) pre_kind = 0; else if (pre.len == 5 && !memcmp(pre.p, "qwen2", 5)) pre_kind = 1; }
+  if (pre_kind < 0) { snprintf(err, errlen, "only the \"olmo\" and \"qwen2\" pre-tokenizers are implemented"); return NULL; }
   cl_tok *t = calloc(1, sizeof *t);
   if (!t) { snprintf(err, errlen, "out of memory"); return NULL; }
+  t->pre = pre_kind;
   t->tokens = cl_meta_str_array(m, "tokenizer.ggml.tokens", &t->n);
   uint64_t nt = 0, nm = 0;
   t->types = cl_meta_i32_array(m, "tokenizer.ggml.token_type", &nt);
@@ -197,7 +246,7 @@ static int bpe(const cl_tok *t, const uint8_t *s, size_t len, int32_t *out, int 
 static int encode_plain(const cl_tok *t, const uint8_t *s, size_t len, int32_t *out, int cap, int *n) {
   segs a = {0}, b = {0}, c = {0}, d = {0};
   int rc = 1;
-  if (!segs_add(&a, 0, len) || !split(s, &a, &d, m_gpt2)) rc = 0;
+  if (!segs_add(&a, 0, len) || !split(s, &a, &d, t->pre == 1 ? m_qwen2 : m_gpt2)) rc = 0;
   for (size_t i = 0; rc == 1 && i < d.n; i++) rc = bpe(t, s + d.v[i].a, d.v[i].b - d.v[i].a, out, cap, n);
   free(a.v); free(b.v); free(c.v); free(d.v);
   return rc;

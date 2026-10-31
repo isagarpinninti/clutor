@@ -19,7 +19,7 @@ static void usage(void) {
        "  info <model.gguf> [--json]       Read the header and print where every layer's bytes and experts live\n"
        "  tokenize <model.gguf> TEXT [--no-special]    Print the token ids of TEXT (byte-level BPE built from the model's own tables)\n"
        "  logits <model.gguf> PROMPT [--top N] [--ctx N] [--trace FILE]   Run the REAL forward pass over PROMPT and print the next-token logprobs (olmoe models); --trace writes the router's choices\n"
-       "  generate <model.gguf> PROMPT [--n N] [--trace FILE] [--quiet] [--cache-mb N --prefetch on|off (off) --prefetch-n N --policy lru|wtinylfu|adaptive --io-threads N --no-os-cache]   Greedy decoding with the real forward pass; --trace records the router's scores for every token; --cache-mb N streams the experts from disk through an N MiB cache instead of mapping the whole file\n"
+       "  generate <model.gguf> PROMPT [--n N] [--trace FILE] [--quiet] [--cache-mb N --prefetch off|prev|ahead (off) --prefetch-n N --policy lru|wtinylfu|adaptive --io-threads N --no-os-cache]   Greedy decoding with the real forward pass; --trace records the router's scores for every token; --cache-mb N streams the experts from disk through an N MiB cache instead of mapping the whole file\n"
        "  quality <model.gguf> TEXTFILE --cache-mb N [--smart J,M,TAU] [--max-tokens N]   Teacher-forced perplexity, KL divergence and top-1 agreement of a streamed (optionally SMART-ROUTE) run against exact routing\n"
        "  stream <model.gguf> [options]    Stream experts from disk through the cache for N tokens of routing (synthetic, or the real router with --trace FILE) and report what was measured\n"
        "\n"
@@ -242,7 +242,7 @@ static cl_fwd_opts fwd_opts(int argc, char **argv) {
   cl_fwd_opts o = {0};
   o.cache_bytes = (uint64_t)(num(argc, argv, "--cache-mb", 0) * 1048576.0);
   const char *pf = arg(argc, argv, "--prefetch");
-  o.prefetch = pf && !strcmp(pf, "on");   /* off by default: previous-token prefetch lost on every disk-bound measurement (docs/NATIVE_ENGINE.md) */
+  o.prefetch = pf ? (!strcmp(pf, "on") || !strcmp(pf, "prev") ? 1 : !strcmp(pf, "ahead") ? 2 : 0) : 0;   /* off by default: previous-token prefetch lost on every disk-bound measurement (docs/NATIVE_ENGINE.md) */
   const char *pol = arg(argc, argv, "--policy");
   o.policy = !pol || !strcmp(pol, "adaptive") ? CL_ADAPTIVE : !strcmp(pol, "lru") ? CL_LRU : CL_WTINYLFU;
   o.io_threads = (int)num(argc, argv, "--io-threads", 3);
@@ -269,9 +269,9 @@ static void report_xs(cl_fwd *f, double secs, int tokens) {
   double rss = (double)ru.ru_maxrss / 1024.0;
 #endif
   if (f->smart.enabled) fprintf(stderr, "[smart-route %d,%d,%g: %llu of %llu expert slots (%.1f%%) used a resident expert instead of the router's own choice; probability moved: largest %.4f (limit %g), total %.3f]\n", f->smart.J, f->smart.M, f->smart.tau, (unsigned long long)f->subs, (unsigned long long)f->expert_slots, f->expert_slots ? 100.0 * f->subs / f->expert_slots : 0.0, f->max_delta, f->smart.tau, f->dropped_mass);
-  fprintf(stderr, "[streaming: cache %u experts of %llu bytes; %llu accesses, %.1f%% hits (%llu from prefetch), %llu misses, prefetch %llu issued / %llu never used; read %.2f GB (%.2f GB/token) in %.2f s of read time; compute thread waited %.2f s of %.2f s; peak RSS %.0f MiB]\n",
+  fprintf(stderr, "[streaming: cache %u experts of %llu bytes; %llu accesses, %.1f%% hits (%llu from prefetch), %llu misses, prefetch %llu issued / %llu never used (%.0f%% of predicted experts were chosen); read %.2f GB (%.2f GB/token) in %.2f s of read time; compute thread waited %.2f s of %.2f s; peak RSS %.0f MiB]\n",
           cl_xs_cache_slots(f->xs), (unsigned long long)cl_xs_slot_bytes(f->xs), (unsigned long long)s.accesses, s.accesses ? 100.0 * s.hits / s.accesses : 0.0, (unsigned long long)s.stage_hits, (unsigned long long)s.misses,
-          (unsigned long long)s.prefetch_issued, (unsigned long long)s.prefetch_wasted, (s.demand_bytes + s.prefetch_bytes) / 1e9, tokens ? (s.demand_bytes + s.prefetch_bytes) / 1e9 / tokens : 0.0, s.read_ns / 1e9, s.wait_ns / 1e9, secs, rss);
+          (unsigned long long)s.prefetch_issued, (unsigned long long)s.prefetch_wasted, f->pred_total ? 100.0 * f->pred_hit / f->pred_total : 0.0, (s.demand_bytes + s.prefetch_bytes) / 1e9, tokens ? (s.demand_bytes + s.prefetch_bytes) / 1e9 / tokens : 0.0, s.read_ns / 1e9, s.wait_ns / 1e9, secs, rss);
 }
 
 /* One line per (token, layer): "token layer" then the router's raw score for every expert. */
