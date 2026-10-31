@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Compares the engine's real forward pass with llama.cpp on the same model: tokenization, then the next-token distribution.
 
-Needs `llama-server` and `llama-tokenize` on PATH. Usage: verify_llama.py MODEL.gguf [--engine build/clutor-engine]
+Needs `llama-server` and `llama-tokenize` on PATH. Usage: verify_llama.py MODEL.gguf [--engine build/clutor-engine] [--engine-args "--cache-mb 4096"]
+(--engine-args is required for a model larger than memory: the engine refuses to map it. llama.cpp itself maps the file, so on such a model it is slow.)
 llama.cpp runs with a Q8_K-quantized activation path and Metal/NEON kernels; this engine uses float32 activations, so the two agree closely but
 not bit for bit. What is checked: the same token ids, the same top-1 token, top-5 sets that overlap, and logprobs within a stated tolerance.
 """
@@ -21,10 +22,11 @@ TOL_MEAN = 0.35      # mean |delta| over the tokens both list in their top 20
 def main():
     model = sys.argv[1]
     engine = sys.argv[sys.argv.index("--engine") + 1] if "--engine" in sys.argv else os.path.join(os.path.dirname(__file__), "..", "build", "clutor-engine")
+    extra = sys.argv[sys.argv.index("--engine-args") + 1].split() if "--engine-args" in sys.argv else []
     port = 8099
     srv = subprocess.Popen(["llama-server", "-m", model, "-c", "1024", "--port", str(port), "-ngl", "0", "--no-webui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        for _ in range(120):
+        for _ in range(900):
             try:
                 if b"ok" in urllib.request.urlopen(f"http://127.0.0.1:{port}/health").read(): break
             except Exception: time.sleep(1)
@@ -33,7 +35,7 @@ def main():
         failed = 0
         for p in PROMPTS:
             ids = subprocess.run(["llama-tokenize", "-m", model, "-p", p, "--ids", "--no-bos"], capture_output=True, text=True).stdout.strip().splitlines()[-1]
-            mine = json.loads(subprocess.run([engine, "logits", model, p, "--top", "20"], capture_output=True, text=True, check=True).stdout)
+            mine = json.loads(subprocess.run([engine, "logits", model, p, "--top", "20", *extra], capture_output=True, text=True, check=True).stdout)
             req = urllib.request.Request(f"http://127.0.0.1:{port}/completion", data=json.dumps({"prompt": p, "n_predict": 1, "n_probs": 20, "temperature": 0, "samplers": []}).encode(), headers={"Content-Type": "application/json"})
             ref = json.load(urllib.request.urlopen(req))["completion_probabilities"][0]["top_logprobs"]
             r = {t["id"]: t["logprob"] for t in ref}

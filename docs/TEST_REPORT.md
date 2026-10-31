@@ -1,0 +1,56 @@
+# Test report
+
+Run on 2026-10-31 on one MacBook Air (Apple M2, 16 GiB, macOS), repository state at commit `8aa3c36` plus the test tooling committed with this report. "Re-run now" means run again while writing this report; "earlier" means run earlier the same day and not repeated (llama.cpp needs about 30 minutes for a full pass on the 17 GiB model). Every number is measured. The re-run commands are in the last column.
+
+## 1. Automated suites (re-run now)
+
+| Suite | Result | What it covers | Re-run |
+|---|---|---|---|
+| C unit tests, three kernel builds | 41,811 checks, 0 failed, on NEON+dotprod, NEON, and portable C | cache policies and invariants, router and SMART-ROUTE bounds, GGUF and metadata readers, dequantizers, integer dot products against dequantize-and-multiply, the expert store | `make -C c test test-paths` |
+| Sanitizer build of the unit tests | 41,811 checks, 0 failed under AddressSanitizer + UBSan | memory safety of the same code | `make -C c sanitize` |
+| Golden test | 36 checks OK, 0 FAIL, in 6 blocks (olmoe and qwen3moe, each on 3 builds) | the engine against an independent pure-Python forward pass on a tiny generated model with random Q4_K/Q6_K weights: exact float math agrees to 6e-5 in logprob; the 8-bit integer path stays inside a stated tolerance (mean 0.1, max 0.4; measured mean 0.03-0.05, max 0.2) | `make -C c golden-paths` |
+| Fuzzing | 600 corrupted model files this run (3,600 earlier), 0 crashes or hangs under ASan + UBSan | the GGUF, metadata and tokenizer readers, and the forward pass on bad shapes | `make -C c fuzz` |
+| TypeScript | typecheck clean, lint clean, 168 core tests and 98 CLI tests pass | planner, agent, receipts, server, CLI, installer (checksum match, tamper, missing line, insecure URL), resumable verified downloads, `generate` and `quality` | `npm run typecheck && npm run lint && npm test` |
+| CI on GitHub | all 6 jobs green on the last pushed commit (Linux and macOS, Node 20 and 22, sanitizers + fuzz, dependency audit) | includes the AVX2 kernels on a real x86 Linux runner: `kernel path: avx2`, 41,811 checks, 0 failed | `gh run list` |
+
+## 2. Agreement with llama.cpp, OLMoE-1B-7B Q4_K_M (re-run now)
+
+| Check | Result |
+|---|---|
+| Tokenizer, 24 strings (ASCII, code, digits, newlines, accents, CJK, Cyrillic, emoji, special tokens) | identical, 0 mismatches |
+| Next-token distribution, 6 prompts | token ids identical 6/6; same top token 6/6; top-5 overlap 4-5 of 5; mean abs logprob difference 0.04-0.22 (worst single 0.49) |
+| Router choices (visible 6 of 8 experts, all 16 layers) | 455/456 = **99.8%** inside this engine's top-8 (llama.cpp with an f32 KV cache) |
+| Streamed from disk equals mapped, 8 cache/policy/prefetch/smart settings | byte-identical text in all 8 |
+| Perplexity against Colibri's engine on the same 799 tokens (earlier) | 10.943 (this engine) against 10.87 (Colibri) |
+
+## 3. Agreement with llama.cpp, Qwen3-30B-A3B Q4_K_M (17.3 GiB, larger than this machine's RAM)
+
+The file was downloaded and verified byte-exact: 18,556,685,824 bytes, SHA-256 `0d003f66...a8f5`, equal to the publisher's hash. Results from earlier today:
+
+| Check | Result |
+|---|---|
+| Tokenizer, 24 strings | identical, 0 mismatches |
+| Runs end to end on a 16 GiB machine | yes: "The capital of France is Paris. The capital of Italy is Rome." at 0.52 s/token, peak RSS 4.0 GiB, 4 GiB expert cache, 65% hit rate. Without `--cache-mb` the engine refuses to map the file, by design |
+| Router choices, 3 prompts, all 48 layers | 98.0%, 96.7%, 97.0% of visible experts inside this engine's top-8 |
+| **Greedy continuation, 3 prompts, 24 tokens each** | **identical in all three** (llama.cpp against this engine) |
+| Next-token logprobs, 6 prompts | token ids identical 6/6, top token 6/6, top-5 overlap 5/5 on all; but mean abs logprob difference 0.16-2.23 (worst single 6.0). 3 of 6 exceed the tolerances set on OLMoE and are marked FAIL by the script |
+
+How to read the last row. The script's tolerances were tuned on OLMoE and Qwen3 is far more sensitive: it is 48 layers deep with 8-of-128 routing, so tiny numerical differences (8-bit activation rounding, accumulation order, llama.cpp's f16 KV cache against this engine's f32) are amplified. Evidence that it is noise and not a bug: the routing and the greedy text match, the tiny Qwen3-style model agrees with its independent reference to 6e-5, and for one prompt the engine's exact-float logits differ from its own integer-path logits by up to 1.3, larger than the gap to llama.cpp. The worst prompt (mean 2.23) is OLMoE's chat-tag text, which Qwen was never trained on, so its distribution is flat and fragile. This is judged noise on the evidence, not proven; a comparison on longer continuations or a perplexity run against llama.cpp would tighten it.
+
+## 4. Speed and memory (earlier; one run per setting, about 30% run-to-run spread)
+
+OLMoE, 100-token job: this engine 9.6-9.9 s with the file in RAM against Colibri 15.4-16.9 s; with experts streamed from a cold disk under a memory budget, 481 MiB-1.4 GiB peak RSS and 15.5-26.6 s depending on the cache (docs/BENCHMARKS.md). Streaming is disk-bound at about 1.4 GB/s on this SSD. The Qwen3 out-of-core benchmark against llama.cpp memory-mapping, three runs each, has **not** been run yet.
+
+## 5. Bugs the testing found (all fixed)
+
+1. A corrupted tensor shape in a model file made the forward pass write past a buffer (found by fuzzing).
+2. `logits` JSON could contain invalid UTF-8 for half-character tokens (found by the golden test).
+3. An earlier "no slowdown from streaming" result was wrong: the mapped run warmed the OS cache, so the streamed runs read RAM (found by an impossible 11 GB/s). Docs corrected.
+4. The routing-comparison script mis-aligned tokens on prompts longer than six (llama.cpp elides middle rows), briefly showing a false 61.5% (fixed; true value 96.7%).
+
+## 6. Not tested or not proven
+
+- The Qwen3 out-of-core benchmark against llama.cpp mmap, and any comparison with Colibri on Qwen3-30B-A3B (Colibri lists only the sibling Qwen3-Coder-30B-A3B in its own int4 format, so a same-model comparison is not possible).
+- The AVX2 kernels beyond the CI unit test; Windows (the native engine does not support it); other architectures (only olmoe and qwen3moe have a forward pass); non-ASCII letter/number classes in the tokenizers are approximations (the 24-string sets include accents, CJK, Cyrillic and emoji and pass).
+- The last 5 local commits have not been through CI (not pushed).
+- Perplexity against llama.cpp on Qwen3; behaviour past a few hundred tokens of context.
