@@ -28,6 +28,7 @@ const prompt = (q: string): Promise<string> => new Promise((resolve) => {
 
 main(process.argv.slice(2), {
   out: (l) => console.log(l),
+  write: (s) => void process.stdout.write(s),
   err: (l) => console.error(l),
   cwd: process.cwd(),
   ...(process.stdin.isTTY ? { prompt } : {}),

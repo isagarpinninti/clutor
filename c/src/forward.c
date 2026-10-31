@@ -57,6 +57,9 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   double d = 0;
   f->rms_eps = cl_meta_f64(&f->meta, "olmoe.attention.layer_norm_rms_epsilon", &d) ? (float)d : 1e-5f;
   f->rope_base = cl_meta_f64(&f->meta, "olmoe.rope.freq_base", &d) ? (float)d : 10000.0f;
+  if (f->n_embd < 256 || f->n_head < 1 || f->n_head > f->n_embd || f->n_embd % f->n_head || f->n_layer < 1 || f->n_expert < 1 || f->n_used < 1 || f->n_used > f->n_expert || f->n_ff_exp < 1) {
+    snprintf(err, errlen, "implausible hyper-parameters (embedding %d, heads %d, layers %d, experts %d, used %d, expert width %d)", f->n_embd, f->n_head, f->n_layer, f->n_expert, f->n_used, f->n_ff_exp); goto fail;
+  }
   f->head_dim = f->n_embd / f->n_head;
   if (f->n_embd % 256 || f->n_ff_exp % 256) { snprintf(err, errlen, "embedding width %d / expert width %d must be multiples of 256 for the K-quant kernels", f->n_embd, f->n_ff_exp); goto fail; }
   if (f->n_head_kv != f->n_head) { snprintf(err, errlen, "grouped-query attention (%d KV heads for %d heads) is not implemented", f->n_head_kv, f->n_head); goto fail; }
@@ -67,9 +70,11 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
 
   if (bind(f, &f->tok_embd, "token_embd.weight", -1, 2, err, errlen)) goto fail;
   f->n_vocab = f->tok_embd.rows;
+  if (f->tok_embd.cols != f->n_embd || f->n_vocab < 1) { snprintf(err, errlen, "token_embd.weight is %d x %d, expected a vocabulary of rows by %d columns", f->tok_embd.rows, f->tok_embd.cols, f->n_embd); goto fail; }
   if (bind(f, &f->output, "output.weight", -1, 2, err, errlen)) goto fail;
   cl_w on;
   if (bind(f, &on, "output_norm.weight", -1, 1, err, errlen)) goto fail;
+  if (on.cols != f->n_embd || f->output.cols != f->n_embd || f->output.rows != f->n_vocab) { snprintf(err, errlen, "output tensors do not match the embedding width and vocabulary"); goto fail; }
   f->out_norm_f = to_float(&on, (size_t)f->n_embd);
   f->L = calloc((size_t)f->n_layer, sizeof *f->L);
   if (!f->L || !f->out_norm_f) { snprintf(err, errlen, "out of memory"); goto fail; }
@@ -79,10 +84,16 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
         bind(f, &y->wv, "attn_v.weight", l, 2, err, errlen) || bind(f, &y->wo, "attn_output.weight", l, 2, err, errlen) || bind(f, &y->qn, "attn_q_norm.weight", l, 1, err, errlen) ||
         bind(f, &y->kn, "attn_k_norm.weight", l, 1, err, errlen) || bind(f, &y->ffn_norm, "ffn_norm.weight", l, 1, err, errlen) || bind(f, &y->router, "ffn_gate_inp.weight", l, 2, err, errlen) ||
         bind(f, &y->gate, "ffn_gate_exps.weight", l, 3, err, errlen) || bind(f, &y->up, "ffn_up_exps.weight", l, 3, err, errlen) || bind(f, &y->down, "ffn_down_exps.weight", l, 3, err, errlen)) goto fail;
+    const int N = f->n_embd;
+    if (y->attn_norm.cols != N || y->ffn_norm.cols != N || y->qn.cols != N || y->kn.cols != N ||
+        y->wq.rows != N || y->wq.cols != N || y->wk.rows != N || y->wk.cols != N || y->wv.rows != N || y->wv.cols != N || y->wo.rows != N || y->wo.cols != N ||
+        y->up.rows != f->n_ff_exp || y->up.cols != N || y->gate.cols != N) {
+      snprintf(err, errlen, "layer %d: attention or norm tensor shapes do not match the embedding width %d", l, N); goto fail;
+    }
     char nm[200];
     snprintf(nm, sizeof nm, "blk.%d.ffn_gate_exps.weight", l);
     const cl_tensor *tg = find(&f->model, nm);
-    if (y->router.rows != f->n_expert || y->router.cols != f->n_embd || (int)tg->dims[2] != f->n_expert || y->gate.rows != f->n_ff_exp || y->down.rows != f->n_embd || y->down.cols != f->n_ff_exp) {
+    if (y->router.rows != f->n_expert || y->router.cols != f->n_embd || (int)tg->dims[2] != f->n_expert || y->up.cols != N || y->gate.rows != f->n_ff_exp || y->down.rows != f->n_embd || y->down.cols != f->n_ff_exp) {
       snprintf(err, errlen, "layer %d: tensor shapes do not match the hyper-parameters", l); goto fail;
     }
     y->gate_slab = (uint64_t)y->gate.rows * cl_row_bytes(y->gate.type, (uint64_t)y->gate.cols);

@@ -40,6 +40,28 @@ test-avx2: build
 	$(CC) -arch x86_64 $(PATH_FLAGS) -mavx2 $(TEST_SRC) -o build/test-avx2 $(LDLIBS)
 	arch -x86_64 ./build/test-avx2 $(FIXTURE)
 
+# Golden test: a tiny generated OLMoE with random K-quant weights, checked against an independent pure-Python forward pass (needs only python3).
+# Run on the default build and, to cover every kernel path, on the portable-C and NEON-without-dotprod builds.
+GOLDEN_GGUF = build/tiny_olmoe.gguf
+golden: $(BIN) build
+	python3 test/tiny_olmoe.py write $(GOLDEN_GGUF)
+	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
+golden-paths: build
+	python3 test/tiny_olmoe.py write $(GOLDEN_GGUF)
+	$(CC) $(PATH_FLAGS) -DCL_FORCE_SCALAR $(SRC) src/main.c -o build/engine-scalar $(LDLIBS)
+	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_GGUF)
+ifeq ($(shell uname -m),arm64)
+	$(CC) $(PATH_FLAGS) -mcpu=native -DCL_NO_DOTPROD $(SRC) src/main.c -o build/engine-neon $(LDLIBS)
+	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_GGUF)
+endif
+
+# Mutation fuzzing of the file readers under ASan + UBSan: corrupt a valid model many ways, expect clean errors and never a crash or hang.
+fuzz: build
+	$(CC) -O1 -g -std=c11 -fsanitize=address,undefined -fno-omit-frame-pointer $(SRC) src/main.c -o build/engine-asan $(LDLIBS)
+	python3 test/tiny_olmoe.py write $(GOLDEN_GGUF)
+	python3 test/fuzz_mutate.py build/engine-asan $(GOLDEN_GGUF) --iterations $(or $(ITER),600)
+	python3 test/fuzz_mutate.py build/engine-asan $(FIXTURE) --iterations $(or $(ITER),600) --seed 7
+
 # Address + undefined-behaviour sanitizers on the unit tests and a threaded streaming run, then the thread sanitizer on the same run.
 SAN_RUN = stream $(SMALL) --tokens 60 --cache-mb 1 --stage 1 --io-threads 3 --smart 1,8,1 --policy adaptive
 sanitize: build
@@ -53,4 +75,4 @@ verify-llama: $(BIN)
 	python3 test/verify_llama.py $(MODEL) --engine $(BIN)
 clean:
 	rm -rf build
-.PHONY: verify-llama all test test-paths test-avx2 sanitize clean
+.PHONY: fuzz golden golden-paths verify-llama all test test-paths test-avx2 sanitize clean

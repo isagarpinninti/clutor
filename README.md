@@ -20,7 +20,7 @@
 
 Clutor has three parts, and the line between them is the point of this README:
 
-1. **A native engine** (`c/`, plain C, no dependencies) that reads a GGUF file directly and streams its routed experts from disk through an adaptive cache with next-layer prefetch and probability-bounded cache-aware routing. It **measures** disk reads, waits, hit rates and prefetch behaviour. It does **not** yet run a transformer, so it does not generate text.
+1. **A native engine** (`c/`, plain C, no dependencies) that reads a GGUF file directly and streams its routed experts from disk through an adaptive cache with next-layer prefetch and probability-bounded cache-aware routing. It **measures** disk reads, waits, hit rates and prefetch behaviour. For `olmoe` models (OLMoE-1B-7B) it also runs a **real forward pass**, so it generates text and uses the model's own routing (`clutor generate`, `clutor quality`); other architectures can still be streamed on synthetic routing but not generated with.
 2. **An honest planner and CLI** (`packages/core`, `packages/cli`, TypeScript): will this model fit, where does every byte go, how fast could the disk possibly let it go. It drives `llama.cpp` to actually generate text, and serves OpenAI- and Ollama-compatible APIs.
 3. **A sandboxed coding agent**: it works in a held-aside copy, asks before running project code, shows an exact diff, and signs a receipt of what it did.
 
@@ -102,6 +102,8 @@ Clutor exists to answer, with measurements, the question every "run a huge model
 | --- | --- |
 | `plan <model>` | Memory plan from a catalog id or a real `.gguf` header: fits or not, where the memory goes, disk-bound speed ceiling at several hit rates |
 | `simulate <model>` | Replays a synthetic routing trace through LRU and Clutor's cache (simulated, labelled) |
+| `generate <file.gguf> "<prompt>"` | **Native engine, real forward pass** (`olmoe` models). Generates text; `--cache-mb N` streams the experts from disk through a cache of that size, `--smart J,M,TAU` lets resident experts stand in for cold ones, `--trace FILE` records the router's scores for replay |
+| `quality <file.gguf> <text>` | Perplexity, KL divergence and top-token agreement of a streamed or smart-route run against exact routing on a text file (needs `--cache-mb`) |
 | `stream <file.gguf>` | **Native engine.** Streams the file's experts from disk for N tokens of synthetic routing; reports measured I/O, waits, cache, prefetch and peak RSS. `--shift AT,LEN` makes those tokens uniform scan noise; `--window N` prints hit rate and peak RSS per N tokens |
 | `bench --file <f>` | Measures random expert reads, then compares LRU, adaptive cache + prefetch, and + smart-route on that file. `--receipt` signs the result into the receipt log |
 | `engine build\|where` | Compile the engine, or show which binary is used |
@@ -182,7 +184,7 @@ LRU is flushed by the noise and needs another window to recover; the frequency f
 
 Every layer of every token goes through the same steps, and the engine times each one:
 
-1. **Route.** The router picks the top-k experts for the layer (synthetic until the engine runs a real model).
+1. **Route.** The router picks the top-k experts for the layer (the model's own router in `generate` and `quality`; synthetic in `stream` unless you replay a recorded trace with `--trace`).
 2. **Look up.** The expert cache answers hits from RAM. It is an adaptive-window W-TinyLFU (a 4-bit Count-Min Sketch in front of a segmented LRU) so a burst of one-off experts cannot flush the hot ones.
 3. **Prefetch.** While layer L computes, the engine predicts layer L+1's experts and a pool of `pread` workers stages them.
 4. **Overlap.** The compute thread only waits for bytes that are not there yet; the time it waits is reported.

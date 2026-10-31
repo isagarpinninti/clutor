@@ -19,6 +19,8 @@ npm run typecheck   # tsc for core and cli
 npm run lint
 npm run engine      # compile c/
 npm run engine:test # C unit tests
+npm run engine:golden # the engine against an independent pure-Python forward pass (float and integer paths, every kernel this machine compiles)
+npm run engine:fuzz   # corrupted model files under ASan + UBSan: errors, never crashes or hangs
 npm test            # core, cli (includes the engine integration tests)
 npm run bench       # hot-path budgets
 npm run smoke       # runs the built CLI end to end
@@ -42,6 +44,7 @@ npm run gates       # everything above, in order
 - **Untrusted by default.** The model's replies, file contents and command output are data. Nothing a file says may widen what the agent is allowed to do.
 - **Refusals say why.** Return a reason the user can act on.
 - **No `any`, no `eval`, no TODOs** left in the tree.
+- **A change to the forward pass or a kernel keeps `npm run engine:golden` passing**, and a change to `c/src/gguf.c`, `meta.c` or `tokenizer.c` keeps `npm run engine:fuzz` clean. Neither needs a model download.
 - **C code is sanitizer-clean.** Run `make -C c sanitize` before sending a change to `c/`; a new concurrency path needs a ThreadSanitizer run.
 - **Do not add a dependency to `@clutor/core`.** It has none, deliberately.
 

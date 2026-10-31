@@ -31,7 +31,7 @@ The original brief asked for a 100% terminal tool that beats Colibri and Ollama 
 | `zod` as a peer dependency of core | Core does not use zod (it has its own validators), so declaring it would be false. The CLI uses it. |
 | Agent tool named `verify_build` | Verification is a `--verify` option and a final check, not a tool the model calls. |
 | "744B", "scan rejects 0", "96.8% hit" in the sample screen | Those were illustrative. Hit rates here come from simulation until the engine can measure real routing. |
-| Lookahead L to L+1 prefetch on a real model | Built in the C engine and measured, but on a synthetic router: without a forward pass there is no hidden state to predict from. |
+| Lookahead L to L+1 prefetch on a real model | Built in the C engine and measured on synthetic routing; on the real OLMoE forward pass a previous-token predictor was measured and lost on time (docs/NATIVE_ENGINE.md). A router-ahead predictor (the next layer's router applied to the current hidden state) is not built yet. |
 | `buildSyntheticMoeShardFile` | Exists as `writeSyntheticGguf`. |
 
 ## Done since the first audit
@@ -49,4 +49,4 @@ The original brief asked for a 100% terminal tool that beats Colibri and Ollama 
 
 ## Still to build
 
-The forward pass: attention, RoPE, norms and quantized matmuls (Q4_K, Q8_0 at least), a tokenizer and a KV cache, so the engine can generate text and be validated against llama.cpp's logits. Until then `chat`, `decide` and `code` need a llama-server or any OpenAI-compatible endpoint, and the engine's hit rates are for synthetic routing only.
+More architectures for the forward pass. It exists for `olmoe` (attention, RoPE, norms, Q4_K/Q6_K integer kernels, a tokenizer, a KV cache) and is validated against llama.cpp's logits and routing; Qwen3-MoE is next. Until other architectures land, `chat`, `decide` and `code` use a llama-server or any OpenAI-compatible endpoint. A model larger than RAM has not been run through the real forward pass yet.

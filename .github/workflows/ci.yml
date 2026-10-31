@@ -27,6 +27,8 @@ jobs:
       - run: npm ci
       - run: npm run engine
       - run: npm run engine:test
+      # An independent pure-Python forward pass checks the engine on every kernel path this runner compiles (AVX2 on Linux x86, NEON on macOS arm64).
+      - run: npm run engine:golden
       # @clutor/cli type-checks against the built @clutor/core, so build first.
       - run: npm run build
       - run: npm run typecheck
@@ -51,6 +53,8 @@ jobs:
       - name: Generate a small MoE test file
         run: node -e "import('@clutor/core/node').then(m=>m.writeSyntheticGguf('/tmp/small.gguf',{arch:'qwen2moe',name:'small-moe',layers:6,embedding:256,heads:8,kvHeads:4,contextLength:2048,expertCount:32,expertsUsed:4,expertFfn:256,denseFfn:0,vocab:1024,sharedExperts:0}))"
       - run: make -C c sanitize SMALL=/tmp/small.gguf
+      - name: Fuzz the file readers (corrupted models must give errors, never crashes or hangs)
+        run: make -C c fuzz
 
   audit:
     name: Dependency audit

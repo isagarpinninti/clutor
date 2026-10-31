@@ -121,3 +121,17 @@ export async function engineStream(bin: string, file: string, o: StreamOptions =
   if (r.code !== 0) throw new EngineError(r.stderr.trim() || `engine exited with ${r.code}`);
   try { return JSON.parse(r.stdout) as StreamReport; } catch { throw new EngineError("the engine printed something that is not a report"); }
 }
+
+/** Runs an engine command whose output should reach the user as it is produced (`generate` writes each token as it is chosen). */
+export function engineRun(bin: string, args: string[], onOut: (chunk: string) => void, timeoutMs = 3_600_000): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new EngineError(`${bin} did not finish within ${timeoutMs / 1000} seconds`)); }, timeoutMs);
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", onOut);
+    child.stderr.on("data", (b: Buffer) => { stderr += b.toString(); });
+    child.on("error", (e) => { clearTimeout(timer); reject(new EngineError(`could not start ${bin}: ${e.message}`)); });
+    child.on("close", (code) => { clearTimeout(timer); resolve({ code: code ?? 1, stderr }); });
+  });
+}

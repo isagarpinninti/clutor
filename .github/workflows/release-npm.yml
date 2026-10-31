@@ -22,6 +22,7 @@ jobs:
       - run: npm ci
       - run: npm run engine
       - run: npm run engine:test
+      - run: npm run engine:golden
       - run: npm run build
       - run: npm run typecheck
       - run: npm run lint
@@ -36,9 +37,16 @@ jobs:
           done
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=high
-      - name: Publish (core first; cli depends on it)
+      - name: Publish (core first; cli depends on it). A package whose version is already on npm is skipped, so re-running a release does not fail.
         run: |
-          npm publish -w @clutor/core --access public --provenance
-          npm publish -w @clutor/cli --access public --provenance
+          for p in core cli; do
+            name="@clutor/$p"
+            v=$(node -p "require('./packages/$p/package.json').version")
+            if npm view "$name@$v" version >/dev/null 2>&1; then
+              echo "$name@$v is already published; skipping"
+            else
+              npm publish -w "$name" --access public --provenance
+            fi
+          done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

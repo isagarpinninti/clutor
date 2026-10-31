@@ -189,13 +189,20 @@ static int cmd_stream(int argc, char **argv) {
 
 static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
 
+/* A JSON string from bytes that may not be valid UTF-8 (a byte-level token can be half a character): bad bytes become U+FFFD, so the output always parses. */
 static void json_str(const char *p, int n) {
   putchar('"');
-  for (int i = 0; i < n; i++) {
+  for (int i = 0; i < n;) {
     unsigned char c = (unsigned char)p[i];
-    if (c == '"' || c == '\\') printf("\\%c", c);
-    else if (c < 0x20) printf("\\u%04x", c);
-    else putchar(c);
+    if (c == '"' || c == '\\') { printf("\\%c", c); i++; }
+    else if (c < 0x20) { printf("\\u%04x", c); i++; }
+    else if (c < 0x80) { putchar(c); i++; }
+    else {
+      int len = c >= 0xF0 && c < 0xF8 ? 4 : c >= 0xE0 ? 3 : c >= 0xC2 && c < 0xE0 ? 2 : 0, ok = len > 0 && i + len <= n && c < 0xF8;
+      for (int k = 1; ok && k < len; k++) if (((unsigned char)p[i + k] & 0xC0) != 0x80) ok = 0;
+      if (ok) { fwrite(p + i, 1, (size_t)len, stdout); i += len; }
+      else { fputs("\xef\xbf\xbd", stdout); i++; }
+    }
   }
   putchar('"');
 }

@@ -13,12 +13,14 @@ import { runDecide } from "./decide";
 import { BackendManager, buildLlamaArgs, findLlamaServer, probeLlamaServer } from "./backend";
 import { CONFIG_FILE, ConfigError, DEFAULT_PORT, loadConfig, type ClutorConfig } from "./config";
 import { formatGates, formatPlan, formatSimulation, pct, table, tps } from "./format";
-import { EngineError, buildEngine, engineInfo, engineStream, findEngine, type StreamOptions, type StreamReport } from "./engine";
+import { EngineError, buildEngine, run, engineInfo, engineRun, engineStream, findEngine, type StreamOptions, type StreamReport } from "./engine";
 import { DOWNLOADS, downloadFile, downloadUrl, listLocalModels, resolveModel } from "./models";
 import { createClutorServer } from "./server";
 
 export interface Io {
   out(line: string): void;
+  /** Writes text with no newline added (a model's reply as it is generated). Falls back to `out` when absent. */
+  write?(text: string): void;
   err(line: string): void;
   cwd: string;
   /** Asks the user a question and returns the answer. Absent when there is no terminal. */
@@ -65,6 +67,10 @@ Usage: clutor <command> [options]
                                      Measure real disk reads on this machine; with the native engine, also compare cache and prefetch strategies
   stream <model.gguf> [--tokens N] [--cache-mb N] [--policy lru|wtinylfu|adaptive] [--smart J,M,TAU|off] [--prefetch on|off] [--dense auto|resident|ring] [--compute kernel|checksum] [--trace FILE] [--json]
                                      Stream a model's experts from disk through the native engine (synthetic routing; measured I/O and cache)
+  generate <model.gguf> "<prompt>" [--n N] [--cache-mb N] [--smart J,M,TAU] [--prefetch on|off] [--trace FILE]
+                                     Generate text with the native engine's real forward pass (olmoe models). With --cache-mb the experts stream from disk through a cache of that size
+  quality <model.gguf> <text-file> --cache-mb N [--smart J,M,TAU] [--max-tokens N] [--json]
+                                     Perplexity, KL divergence and top-token agreement of a streamed (optionally smart-route) run against exact routing
   engine build|where                 Compile the native engine from c/ (needs a C compiler), or show which one is used
   code "<task>" [--dir folder] [--apply] [--yes] [--verify "npm test"] [--max-steps N]
                                      Run the coding agent on a folder; review the diff before anything is written
@@ -101,6 +107,8 @@ export async function main(argv: string[], io: Io, session?: SessionState): Prom
       case "init": return await init(io, rest[0]);
       case "models": return await models(io, args, rest[0], json);
       case "stream": return await streamCmd(io, args, rest[0], json);
+      case "generate": return await generateCmd(io, args, rest[0], rest.slice(1).join(" "));
+      case "quality": return await qualityCmd(io, args, rest[0], rest[1], json);
       case "engine": return await engineCmd(io, rest[0]);
       case "pull": return await pull(io, args, rest[0]);
       case "inspect": return await inspect(io, rest[0], json);
@@ -655,6 +663,63 @@ function formatComparison(c: Array<{ name: string; report: StreamReport }>): str
     `Disk reads, waits and cache behaviour are real. The routing is SYNTHETIC (a skewed random router with drifting topics), so hit rates here are not what a real model would see. ${r0.config.computeMode === "kernel" ? `The compute is a real Q4_0 x Q8_0 kernel (${r0.config.computeKernel}) run over every loaded byte, read as Q4_0 whatever its true type: genuine CPU work, not this model's maths.` : "The compute is a checksum, so this run measures I/O alone."}`,
     table(rows, ["", ...c.map((x) => x.name)]),
   ].join("\n");
+}
+
+/** The engine flags `generate` and `quality` share, checked here so a typo fails before a model is opened. */
+function engineFlags(args: ReturnType<typeof parseArgs>): string[] {
+  const out: string[] = [];
+  const num = (n: string, lo: number, hi: number): void => { const v = flagInt(args, n, lo, hi); if (v !== undefined) out.push(`--${n}`, String(v)); };
+  num("cache-mb", 1, 10_000_000); num("io-threads", 1, 16); num("prefetch-n", 1, 64); num("stage", 1, 100_000);
+  const pol = flagString(args, "policy");
+  if (pol) { if (!["lru", "wtinylfu", "adaptive"].includes(pol)) throw new UsageError("--policy must be lru, wtinylfu or adaptive"); out.push("--policy", pol); }
+  const pf = flagString(args, "prefetch");
+  if (pf) { if (!["on", "off"].includes(pf)) throw new UsageError("--prefetch must be on or off"); out.push("--prefetch", pf); }
+  const sm = flagString(args, "smart");
+  if (sm && sm !== "off") { if (!/^\d+,\d+,[\d.]+$/.test(sm)) throw new UsageError("--smart wants J,M,TAU, for example 4,16,0.02"); out.push("--smart", sm); }
+  if (flagBool(args, "no-os-cache")) out.push("--no-os-cache");
+  return out;
+}
+
+async function generateCmd(io: Io, args: ReturnType<typeof parseArgs>, file: string | undefined, prompt: string): Promise<number> {
+  if (!file || !prompt.trim()) throw new UsageError('usage: clutor generate <model.gguf> "<prompt>" [--n N] [--cache-mb N] [--smart J,M,TAU]');
+  const bin = findEngine();
+  if (!bin) throw new UsageError("the native engine is not built: run `clutor engine build` (needs a C compiler)");
+  const path = resolve(io.cwd, file);
+  if (!existsSync(path)) throw new UsageError(`${path} does not exist`);
+  const n = flagInt(args, "n", 1, 100_000) ?? 64;
+  const trace = flagString(args, "trace");
+  const argv = ["generate", path, prompt, "--n", String(n), ...engineFlags(args), ...(trace ? ["--trace", resolve(io.cwd, trace)] : [])];
+  const r = await engineRun(bin, argv, (s) => (io.write ?? ((t: string) => io.out(t.replace(/\n$/, ""))))(s));
+  io.write?.("\n");
+  if (r.stderr.trim()) io.err(r.stderr.trim());
+  if (r.code !== 0) { io.err(`the engine exited with ${r.code}`); return 1; }
+  return 0;
+}
+
+async function qualityCmd(io: Io, args: ReturnType<typeof parseArgs>, file: string | undefined, text: string | undefined, json: boolean): Promise<number> {
+  if (!file || !text) throw new UsageError("usage: clutor quality <model.gguf> <text-file> --cache-mb N [--smart J,M,TAU] [--max-tokens N]");
+  if (flagInt(args, "cache-mb", 1, 10_000_000) === undefined) throw new UsageError("quality compares against a streamed run: give --cache-mb N");
+  const bin = findEngine();
+  if (!bin) throw new UsageError("the native engine is not built: run `clutor engine build` (needs a C compiler)");
+  const path = resolve(io.cwd, file), textPath = resolve(io.cwd, text);
+  if (!existsSync(path)) throw new UsageError(`${path} does not exist`);
+  if (!existsSync(textPath)) throw new UsageError(`${textPath} does not exist`);
+  const mt = flagInt(args, "max-tokens", 2, 1_000_000);
+  const r = await run(bin, ["quality", path, textPath, ...engineFlags(args), ...(mt ? ["--max-tokens", String(mt)] : [])], { timeoutMs: 3_600_000 });
+  if (r.code !== 0) { io.err(r.stderr.trim() || `the engine exited with ${r.code}`); return 1; }
+  if (json) { io.out(r.stdout.trim()); return 0; }
+  let q: Record<string, number | boolean | string>;
+  try { q = JSON.parse(r.stdout) as typeof q; } catch { throw new EngineError("the engine printed something that is not a report"); }
+  const n = (k: string): number => q[k] as number;
+  io.out([
+    `MEASURED  ${n("tokensScored")} tokens scored, teacher-forced`,
+    `MEASURED  perplexity ${n("perplexityExact").toFixed(3)} exact routing, ${n("perplexityRun").toFixed(3)} this run (x${n("perplexityRatio").toFixed(4)})`,
+    `MEASURED  KL divergence from exact ${n("meanKL").toFixed(4)}; the top token is unchanged at ${(n("top1Agreement") * 100).toFixed(1)}% of positions`,
+    q["smart"] ? `MEASURED  smart-route used a resident expert for ${(100 * n("substitutions") / n("expertSlots")).toFixed(1)}% of expert slots; the largest probability moved was ${n("maxProbMoved").toFixed(4)}` : "smart-route off",
+    `MEASURED  expert cache hit rate ${(n("hitRate") * 100).toFixed(1)}%, ${n("gbPerToken").toFixed(3)} GB read per token`,
+    "The exact reference maps the whole file, so the OS cache is warm: time is not reported here.",
+  ].join("\n"));
+  return 0;
 }
 
 async function streamCmd(io: Io, args: ReturnType<typeof parseArgs>, file: string | undefined, json: boolean): Promise<number> {
