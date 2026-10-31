@@ -39,7 +39,17 @@ How to read the last row. The script's tolerances were tuned on OLMoE and Qwen3 
 
 ## 4. Speed and memory (earlier; one run per setting, about 30% run-to-run spread)
 
-OLMoE, 100-token job: this engine 9.6-9.9 s with the file in RAM against Colibri 15.4-16.9 s; with experts streamed from a cold disk under a memory budget, 481 MiB-1.4 GiB peak RSS and 15.5-26.6 s depending on the cache (docs/BENCHMARKS.md). Streaming is disk-bound at about 1.4 GB/s on this SSD. The Qwen3 out-of-core benchmark against llama.cpp memory-mapping, three runs each, has **not** been run yet.
+OLMoE, 100-token job: this engine 9.6-9.9 s with the file in RAM against Colibri 15.4-16.9 s; with experts streamed from a cold disk under a memory budget, 481 MiB-1.4 GiB peak RSS and 15.5-26.6 s depending on the cache (docs/BENCHMARKS.md). Streaming is disk-bound at about 1.4 GB/s on this SSD.
+
+**Qwen3-30B-A3B (17.3 GiB) on this 16 GiB machine, this engine only (partial).** A fresh cold copy of the model, `F_NOCACHE` reads, a one-token prompt and 48 greedy tokens, three runs per setting (`scripts/bench/qwen3_outofcore.py`):
+
+| expert cache | tokens / second | s / token | cache hit rate | GB read / token | peak RSS |
+|---|---|---|---|---|---|
+| 2 GiB | 2.04-2.17 | 0.46-0.49 | 45.7% | 0.60 | 2.9 GiB |
+| 4 GiB | 2.17-2.70 | 0.37-0.46 | 62.4% | 0.41 | 4.7-4.8 GiB |
+| 8 GiB | 2.56-3.03 | 0.33-0.39 | 81.7% | 0.20 | 5.7-8.1 GiB |
+
+So a model 1.08 times the size of RAM generates 2-3 tokens per second with a 3-8 GiB resident footprint. The runs improved a little from the first to the third at every setting (for example 0.46 to 0.37 s/token at 4 GiB), which I did not explain; it may be thermal or dense-weight page-cache warming, so treat the spread as the noise. **The llama.cpp comparison was not completed**: the benchmark was stopped at the user's request while llama.cpp was loading the file, so there is no measured speed ratio against llama.cpp memory-mapping, and no claim of one is made here.
 
 ## 5. Bugs the testing found (all fixed)
 
@@ -50,7 +60,7 @@ OLMoE, 100-token job: this engine 9.6-9.9 s with the file in RAM against Colibri
 
 ## 6. Not tested or not proven
 
-- The Qwen3 out-of-core benchmark against llama.cpp mmap, and any comparison with Colibri on Qwen3-30B-A3B (Colibri lists only the sibling Qwen3-Coder-30B-A3B in its own int4 format, so a same-model comparison is not possible).
+- The llama.cpp half of the Qwen3 out-of-core benchmark (stopped), and any comparison with Colibri on Qwen3-30B-A3B (Colibri lists only the sibling Qwen3-Coder-30B-A3B in its own int4 format, so a same-model comparison is not possible).
 - The AVX2 kernels beyond the CI unit test; Windows (the native engine does not support it); other architectures (only olmoe and qwen3moe have a forward pass); non-ASCII letter/number classes in the tokenizers are approximations (the 24-string sets include accents, CJK, Cyrillic and emoji and pass).
 - The last 5 local commits have not been through CI (not pushed).
 - Perplexity against llama.cpp on Qwen3; behaviour past a few hundred tokens of context.
