@@ -299,7 +299,8 @@ int cl_stream_run(const cl_model *m, const char *path, const cl_stream_opts *o, 
     const uint8_t *dbuf = resident ? e->dense_res[l] : e->ring[s & 1];
     if (!resident) { uint64_t t0 = now_ns(); int waited = 0; while (e->ring_step[s & 1] != s && !e->failed) { waited = 1; pthread_cond_wait(&e->cv_done, &e->mu); } if (waited) { lw += now_ns() - t0; } }
     if (ly->n_exp) {
-      router_logits(&rt, tok, l, 0, rmode, logits);
+      if (o->trace) memcpy(logits, o->trace + ((size_t)(tok % o->trace_tokens) * L + (size_t)l) * E, (size_t)E * sizeof(float));
+      else router_logits(&rt, tok, l, 0, rmode, logits);
       resctx rc = {e, l, E};
       cl_route_result rr;
       cl_route(logits, E, K, &o->smart, resident_cb, &rc, &rr);
@@ -323,8 +324,10 @@ int cl_stream_run(const cl_model *m, const char *path, const cl_stream_opts *o, 
       e->t.dropped_mass += rr.dropped_mass;
       if (rr.max_delta > e->t.max_delta) e->t.max_delta = rr.max_delta;
       /* while this layer's bytes arrive and are used, start reading the next layer's predicted experts */
-      if (o->prefetch && l + 1 < L && m->layers[l + 1].n_exp && stage_slots) {
-        router_logits(&rt, tok, l + 1, 1, rmode, logits);
+      /* With a recorded trace the predictor is causal: it guesses layer l+1 from what that layer chose for the PREVIOUS token (nothing is known for the first). */
+      if (o->prefetch && l + 1 < L && m->layers[l + 1].n_exp && stage_slots && (!o->trace || tok > 0)) {
+        if (o->trace) memcpy(logits, o->trace + ((size_t)((tok - 1) % o->trace_tokens) * L + (size_t)(l + 1)) * E, (size_t)E * sizeof(float));
+        else router_logits(&rt, tok, l + 1, 1, rmode, logits);
         cl_route_result pr;
         cl_route(logits, E, K, NULL, NULL, NULL, &pr);
         for (int i = 0; i < K; i++) {

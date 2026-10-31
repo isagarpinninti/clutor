@@ -10,7 +10,7 @@ endif
 LDLIBS = -lm -lpthread
 # BUILD can point somewhere writable when the source sits in a read-only installed package: make BUILD=$HOME/.clutor/bin
 BUILD ?= build
-SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/stream.c
+SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/quant.c src/meta.c src/forward.c src/tokenizer.c src/stream.c
 BIN = $(BUILD)/clutor-engine
 
 all: $(BIN)
@@ -48,6 +48,9 @@ sanitize: build
 	$(CC) -O1 -g -std=c11 -fsanitize=address,undefined -fno-omit-frame-pointer $(SRC) src/main.c -o build/engine-asan $(LDLIBS)
 	$(CC) -O1 -g -std=c11 -fsanitize=thread $(SRC) src/main.c -o build/engine-tsan $(LDLIBS)
 	@if [ -n "$(SMALL)" ]; then ./build/engine-asan $(SAN_RUN) >/dev/null && ./build/engine-tsan $(SAN_RUN) >/dev/null && echo "sanitizers clean on $(SMALL)"; else echo "(set SMALL=<moe.gguf> to also run the streaming engine under the sanitizers)"; fi
+# Compares tokenization, logits and routing with llama.cpp (needs llama-server and llama-tokenize on PATH): make verify-llama MODEL=path/to/olmoe.gguf
+verify-llama: $(BIN)
+	python3 test/verify_llama.py $(MODEL) --engine $(BIN)
 clean:
 	rm -rf build
-.PHONY: all test test-paths test-avx2 sanitize clean
+.PHONY: verify-llama all test test-paths test-avx2 sanitize clean

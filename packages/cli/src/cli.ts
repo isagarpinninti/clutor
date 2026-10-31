@@ -63,7 +63,7 @@ Usage: clutor <command> [options]
                                      Replay a routing trace through the expert cache: baseline LRU against clutor
   bench [--file model.gguf] [--engine] [--cache-mb N] [--tokens N] [--compute kernel|checksum]
                                      Measure real disk reads on this machine; with the native engine, also compare cache and prefetch strategies
-  stream <model.gguf> [--tokens N] [--cache-mb N] [--policy lru|wtinylfu|adaptive] [--smart J,M,TAU|off] [--prefetch on|off] [--dense auto|resident|ring] [--compute kernel|checksum] [--json]
+  stream <model.gguf> [--tokens N] [--cache-mb N] [--policy lru|wtinylfu|adaptive] [--smart J,M,TAU|off] [--prefetch on|off] [--dense auto|resident|ring] [--compute kernel|checksum] [--trace FILE] [--json]
                                      Stream a model's experts from disk through the native engine (synthetic routing; measured I/O and cache)
   engine build|where                 Compile the native engine from c/ (needs a C compiler), or show which one is used
   code "<task>" [--dir folder] [--apply] [--yes] [--verify "npm test"] [--max-steps N]
@@ -680,6 +680,7 @@ async function streamCmd(io: Io, args: ReturnType<typeof parseArgs>, file: strin
     ...(dn ? { dense: dn as StreamOptions["dense"] } : {}),
     ...(computeFlag(args) ? { compute: computeFlag(args) as StreamOptions["compute"] } : {}),
     ...(flagBool(args, "no-os-cache") ? { noOsCache: true } : {}),
+    ...(flagString(args, "trace") ? { trace: flagString(args, "trace") as string } : {}),
     ...(num("window", 1, 100_000) !== undefined ? { window: num("window", 1, 100_000) as number } : {}),
     ...shiftFlag(args),
   };
@@ -706,7 +707,7 @@ function describeStream(r: StreamReport): string {
     const note = r.scenario.shiftLen > 0 ? `; tokens ${r.scenario.shiftAt + 1}-${r.scenario.shiftAt + r.scenario.shiftLen} are uniform scan noise, the rest one tight topic` : "";
     lines.push(`MEASURED  hit rate and peak RSS per window of tokens${note}:\n${table(r.windows.map((w, i) => [`${i ? r.windows[i - 1]!.tokEnd + 1 : 1}-${w.tokEnd}`, pct(w.accesses ? w.hits / w.accesses : 0), `${(w.peakRssBytes / 2 ** 20).toFixed(0)} MiB`]), ["tokens", "hit rate", "peak RSS"])}`);
   }
-  lines.push(`${t.tokensPerSecond.toFixed(1)} passes per second over SYNTHETIC routing; the compute is ${r.config.computeMode === "kernel" ? `a Q4_0 x Q8_0 kernel (${r.config.computeKernel}) over the loaded bytes (${t.computeSeconds.toFixed(2)} s in total), not this model's maths` : "a checksum"}: this is not model tokens per second.`);
+  lines.push(`${t.tokensPerSecond.toFixed(1)} passes per second over ${r.provenance.routing === "real" ? "REAL (replayed) routing recorded from this model" : "SYNTHETIC routing"}; the compute is ${r.config.computeMode === "kernel" ? `a Q4_0 x Q8_0 kernel (${r.config.computeKernel}) over the loaded bytes (${t.computeSeconds.toFixed(2)} s in total), not this model's maths` : "a checksum"}: this is not model tokens per second.`);
   return lines.join("\n");
 }
 

@@ -2,6 +2,9 @@
 #include "cache.h"
 #include "gguf.h"
 #include "kernel.h"
+#include "quant.h"
+#include "meta.h"
+#include <math.h>
 #include "route.h"
 #include <math.h>
 #include <unistd.h>
@@ -255,8 +258,62 @@ static void test_kernel(void) {
   CHECK(cl_q4_0_pass(bad, sizeof bad, act, 8) == (0ull * 1099511628211ull + 0), "a non-finite row counts as zero");
 }
 
+static void test_quant(void) {
+  /* Q8_0: scale 1.0, values -16..15 */
+  uint8_t b8[34] = {0x00, 0x3c};
+  for (int i = 0; i < 32; i++) b8[2 + i] = (uint8_t)(int8_t)(i - 16);
+  float y[256];
+  cl_dequant_row(CL_T_Q8_0, b8, y, 32);
+  CHECK(y[0] == -16.0f && y[31] == 15.0f, "Q8_0 dequantizes to scale * value");
+  /* Q4_K: d = 1, dmin = 0, every sub-block scale 1, every byte 0x21: low nibbles read 1, high nibbles read 2, in groups of 32 */
+  uint8_t q4k[144] = {0};
+  q4k[0] = 0x00; q4k[1] = 0x3c;
+  for (int i = 0; i < 4; i++) { q4k[4 + i] = 1; q4k[12 + i] = 1; }   /* scales 0..3 */
+  for (int i = 8; i < 12; i++) q4k[4 + i] = 1;                       /* scales 4..7 (low nibble of bytes 8..11, mins stay 0) */
+  memset(q4k + 16, 0x21, 128);
+  cl_dequant_row(CL_T_Q4_K, q4k, y, 256);
+  CHECK(y[0] == 1.0f && y[31] == 1.0f && y[32] == 2.0f && y[63] == 2.0f && y[64] == 1.0f && y[255] == 2.0f, "Q4_K: low nibbles then high nibbles per 64 values");
+  /* Q6_K: all-zero quants decode to -32 * scale * d */
+  uint8_t q6k[210] = {0};
+  for (int i = 0; i < 16; i++) q6k[192 + i] = 1;
+  q6k[208] = 0x00; q6k[209] = 0x3c;
+  cl_dequant_row(CL_T_Q6_K, q6k, y, 256);
+  CHECK(y[0] == -32.0f && y[255] == -32.0f, "Q6_K: zero quants are -32");
+  /* the threaded matvec equals a plain dot product, row by row */
+  enum { R = 301, C = 512 };
+  static float w[R * C], x[C], out[R];
+  uint32_t s = 12345;
+  for (int i = 0; i < R * C; i++) { s = s * 1664525u + 1013904223u; w[i] = (float)(s >> 8) / (1 << 24) - 0.5f; }
+  for (int i = 0; i < C; i++) { s = s * 1664525u + 1013904223u; x[i] = (float)(s >> 8) / (1 << 24) - 0.5f; }
+  cl_set_threads(4);
+  cl_matvec(CL_T_F32, w, R, C, x, out);
+  int bad = 0;
+  for (int r = 0; r < R; r++) { double a = 0; for (int c = 0; c < C; c++) a += (double)w[r * C + c] * x[c]; if (fabs(a - out[r]) > 1e-3) bad++; }
+  CHECK(bad == 0, "threaded matvec matches a plain dot product (%d rows differ)", bad);
+}
+
+static void test_meta(const char *fixture) {
+  if (!fixture) return;
+  FILE *fp = fopen(fixture, "rb");
+  if (!fp) return;
+  static uint8_t buf[1 << 20];
+  size_t n = fread(buf, 1, sizeof buf, fp);
+  fclose(fp);
+  cl_meta m; char err[128];
+  CHECK(cl_meta_parse(&m, buf, n, err, sizeof err) == 0, "metadata parses: %s", err);
+  cl_str arch;
+  CHECK(cl_meta_str(&m, "general.architecture", &arch) && arch.len == 5 && !memcmp(arch.p, "llama", 5), "architecture is read");
+  uint64_t layers = 0, nt = 0;
+  CHECK(cl_meta_u64(&m, "llama.block_count", &layers) && layers > 0, "a numeric key is read");
+  cl_str *toks = cl_meta_str_array(&m, "tokenizer.ggml.tokens", &nt);
+  CHECK(toks && nt > 0, "the token table is read");
+  free(toks);
+  CHECK(cl_meta_get(&m, "no.such.key") == NULL, "a missing key is NULL");
+  cl_meta_free(&m);
+}
+
 int main(int argc, char **argv) {
-  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel();
+  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   test_gguf(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;

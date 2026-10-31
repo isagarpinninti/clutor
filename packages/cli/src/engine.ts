@@ -69,6 +69,8 @@ export interface StreamOptions {
   policy?: "lru" | "wtinylfu" | "adaptive";
   smart?: string; prefetch?: boolean; ioThreads?: number; seed?: number; locality?: number; predictCorr?: number; computeUs?: number; windowPct?: number;
   noOsCache?: boolean;
+  /** A route trace recorded by `generate --trace`: the model's real router scores, replayed instead of the synthetic router. */
+  trace?: string;
   /** auto: keep the dense weights in RAM when they fit in a quarter of it; ring: re-read two layers at a time every token. */
   dense?: "auto" | "resident" | "ring";
   /** kernel: a Q4_0 x Q8_0 dot-product kernel over every loaded byte (default); checksum: a cheap hash, so the run measures I/O alone. */
@@ -104,6 +106,7 @@ function streamArgs(file: string, o: StreamOptions): string[] {
   add("--dense", o.dense); add("--compute", o.compute); add("--window", o.window);
   if (o.shift) add("--shift", `${o.shift.at},${o.shift.len}`);
   if (o.noOsCache) a.push("--no-os-cache");
+  if (o.trace) a.push("--trace", o.trace);
   return a;
 }
 

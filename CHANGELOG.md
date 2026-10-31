@@ -4,6 +4,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ## Unreleased
 
+### Added
+- **A real forward pass for `olmoe` models in the native engine**: byte-level BPE tokenizer, quantized weight readers (Q4_0, Q5_0, Q8_0, Q4_K, Q5_K, Q6_K, F16, BF16, F32), attention, router and experts. New engine commands `tokenize`, `logits`, `generate`. Checked against llama.cpp on OLMoE-1B-7B Q4_K_M: identical token ids on 10 test strings, same top-1 token on 6 prompts, 96.5-98% of visible router choices inside this engine's top-8 (see docs/NATIVE_ENGINE.md for the numbers and limits). Slow reference path (about 0.3 s per token), not memory-bounded.
+- `generate --trace FILE` records the model's real router scores; `clutor stream --trace FILE` replays them through the cache, prefetch and smart-route code, and the report says `routing: real`. On one 130-token trace the old synthetic default overstated the hit rate (77% against 47%).
+
 ### Changed
 - The interactive session opens with a large CLUTOR wordmark, the version, folder and model (colour only on a terminal, never with `NO_COLOR`; a one-line title on narrow terminals).
 - README restructured around a logo (`assets/clutor-logo.svg`), badges and a sample session; no claims changed.

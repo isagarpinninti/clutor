@@ -25,6 +25,8 @@ typedef struct {
   int compute_mode;       /* CL_COMPUTE_KERNEL: a Q4_0 x Q8_0 dot-product kernel over every loaded byte; CL_COMPUTE_CHECKSUM: a cheap hash, so the run is I/O only */
   int compute_us;         /* extra per-layer busy time, added to either mode */
   int shift_at, shift_len; /* scenario: measured tokens [shift_at, shift_at+shift_len) route uniformly at random (scan noise); every other measured token uses one fixed tight topic. shift_len 0 = off */
+  const float *trace;     /* a recorded run of the REAL router (from `generate --trace`): trace_tokens x layers x experts raw scores; replayed cyclically. NULL = synthetic routing */
+  int trace_tokens;
   int window_tokens;      /* record hits and peak RSS every N measured tokens; 0 = off (10 when a scenario is set) */
 } cl_stream_opts;
 
