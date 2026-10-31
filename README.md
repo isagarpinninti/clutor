@@ -49,7 +49,7 @@ clt> /plan deepseek-v3 --ram 16
 
 ## Get started
 
-You need Node.js 20+ and a C compiler for the engine (`xcode-select --install` on macOS, `build-essential` on Debian and Ubuntu). To chat or run the agent you also need `llama.cpp` (`brew install llama.cpp`).
+You need Node.js 20+. The native engine comes prebuilt for macOS and Linux (`clutor engine install`, once a release exists), or you can compile it with a C compiler (`xcode-select --install` on macOS, `build-essential` on Debian and Ubuntu). To chat or run the agent you also need `llama.cpp` (`brew install llama.cpp`); `clutor generate` needs only the engine.
 
 **From npm**
 
@@ -61,7 +61,7 @@ clutor init
 clutor                           # the interactive session
 ```
 
-`plan`, `chat`, the agent and the server need no compiler; `stream`, `bench` and `/cache` need the engine.
+`plan`, `chat`, the agent and the server need no compiler and no engine; `generate`, `quality`, `stream`, `bench` and `/cache` need the engine.
 
 **From source**
 
@@ -76,7 +76,8 @@ Then try it:
 
 ```bash
 clutor plan deepseek-v3 --ram 16            # will it fit; the fastest the disk allows
-clutor pull olmoe-1b-7b-q4_k_m              # a 3.9 GiB real MoE model, asks first
+clutor pull olmoe-1b-7b-q4_k_m              # a 3.9 GiB real MoE model: resumable, SHA-256 checked, asks first
+clutor generate models/olmoe-1b-7b-0924-instruct-q4_k_m.gguf "The capital of France is" --n 16 --cache-mb 256   # the real forward pass, experts streamed from disk
 clutor stream models/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf --tokens 300 --cache-mb 512
 clutor bench --file models/OLMoE-1B-7B-0924-Instruct-Q4_K_M.gguf     # compares cache strategies
 ```
