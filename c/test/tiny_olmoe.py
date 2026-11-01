@@ -17,14 +17,18 @@ ARCH, HEADS, KVH, HD, PRE, EPS, THETA, CTX = "olmoe", 4, 4, 64, "olmo", 1e-5, 10
 NQ = NKV = E
 QKPH = NORMTOP = False
 QKMODE, ROPEPAIRS, ATTN_SCALE, EMB_SCALE, RES_SCALE, LOGIT_SCALE = 1, False, None, 1.0, 1.0, 1.0   # QKMODE: 0 none, 1 whole vector, 2 per head
-DENSE = QKVBIAS = False   # qwen2: no experts (one plain feed-forward per layer), bias vectors on Q/K/V, output matrix tied to the embedding
+ADDBOS = ROPEFREQS = False   # llama: a BOS token is prepended; rope_freqs.weight divides each rotary frequency
+DENSE = QKVBIAS = False   # qwen2/llama: no experts (one plain feed-forward per layer), bias vectors on Q/K/V, output matrix tied to the embedding
 
 def configure(arch):
-    global ARCH, HEADS, KVH, HD, PRE, EPS, THETA, NQ, NKV, QKPH, NORMTOP, QKMODE, ROPEPAIRS, ATTN_SCALE, EMB_SCALE, RES_SCALE, LOGIT_SCALE, DENSE, QKVBIAS, FF
+    global ARCH, HEADS, KVH, HD, PRE, EPS, THETA, NQ, NKV, QKPH, NORMTOP, QKMODE, ROPEPAIRS, ATTN_SCALE, EMB_SCALE, RES_SCALE, LOGIT_SCALE, DENSE, QKVBIAS, FF, ADDBOS, ROPEFREQS
     ARCH = arch
     QKMODE, ROPEPAIRS, ATTN_SCALE, EMB_SCALE, RES_SCALE, LOGIT_SCALE = 1, False, None, 1.0, 1.0, 1.0
-    DENSE = QKVBIAS = False
-    if arch == "qwen2":   # dense Qwen2.5 style: GQA 4/2, head 64, biases on Q/K/V, tied output, a feed-forward twice the width of an expert
+    DENSE = QKVBIAS = ADDBOS = ROPEFREQS = False
+    if arch == "llama":   # dense Llama 3 style: GQA 4/2, head 64, adjacent-pair rotary embeddings with frequency factors, tied output, BOS prepended
+        HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE, DENSE, QKVBIAS, FF = 4, 2, 64, "llama-bpe", 1e-5, 500000.0, False, False, 0, True, False, 512
+        ROPEPAIRS, ADDBOS, ROPEFREQS = True, True, True
+    elif arch == "qwen2":   # dense Qwen2.5 style: GQA 4/2, head 64, biases on Q/K/V, tied output, a feed-forward twice the width of an expert
         HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE, DENSE, QKVBIAS, FF = 4, 2, 64, "qwen2", 1e-6, 1000000.0, False, False, 0, True, True, 512
     elif arch == "qwen3moe":
         HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE = 4, 2, 128, "qwen2", 1e-6, 1000000.0, True, True, 2
@@ -108,6 +112,8 @@ def write(path, seed=1):
         return struct.pack("<%df" % n, *[base + scale * rng.uniform(-1, 1) for _ in range(n)])
     add("token_embd.weight", [E, V], Q4K, rand_q4k(rng, V))
     add("output_norm.weight", [E], F32, f32(E, 0.2))
+    if ROPEFREQS:   # llama 3 style: one divisor (>= 1) per rotated pair
+        add("rope_freqs.weight", [HD // 2], F32, struct.pack("<%df" % (HD // 2), *[1.0 + 7.0 * (i / (HD // 2)) ** 2 for i in range(HD // 2)]))
     if not DENSE:   # a dense qwen2 ties the output projection to the embedding and stores no output.weight
         add("output.weight", [E, V], Q6K, rand_q6k(rng, V))
     for l in range(LAYERS):
@@ -142,11 +148,11 @@ def write(path, seed=1):
         kv(A + ".rope.freq_base", 6, THETA), kv(A + ".attention.layer_norm_rms_epsilon", 6, EPS),
     ] + ([] if DENSE else [kv(A + ".expert_used_count", 4, USED), kv(A + ".expert_count", 4, NEXP)]) + [
     ] + ([kv(A + ".attention.key_length", 4, HD), kv(A + ".attention.value_length", 4, HD)] if ARCH == "qwen3moe" else []) + (
-        [kv(A + ".rope.dimension_count", 4, HD), kv(A + ".attention.scale", 6, ATTN_SCALE), kv(A + ".embedding_scale", 6, EMB_SCALE), kv(A + ".residual_scale", 6, RES_SCALE), kv(A + ".logit_scale", 6, LOGIT_SCALE)] if ARCH == "granitemoe" else []) + [
+        [kv(A + ".rope.dimension_count", 4, HD), kv(A + ".attention.scale", 6, ATTN_SCALE), kv(A + ".embedding_scale", 6, EMB_SCALE), kv(A + ".residual_scale", 6, RES_SCALE), kv(A + ".logit_scale", 6, LOGIT_SCALE)] if ARCH == "granitemoe" else [kv(A + ".rope.dimension_count", 4, HD)] if ARCH == "llama" else []) + [
         kv("tokenizer.ggml.model", 8, "gpt2"), kv("tokenizer.ggml.pre", 8, PRE),
         kv("tokenizer.ggml.tokens", 9, (8, toks)), kv("tokenizer.ggml.token_type", 9, (5, types)), kv("tokenizer.ggml.merges", 9, (8, MERGES)),
         kv("tokenizer.ggml.bos_token_id", 4, V - 2), kv("tokenizer.ggml.eos_token_id", 4, V - 2), kv("tokenizer.ggml.padding_token_id", 4, V - 1),
-        kv("tokenizer.ggml.add_bos_token", 7, False),
+    ] + ([] if ARCH == "llama" else [kv("tokenizer.ggml.add_bos_token", 7, ADDBOS)]) + [   # a real Llama 3 file has no add_bos_token key: the engine must default to adding BOS, as llama.cpp does
     ]
     infos, off = b"", 0
     for name, dims, typ, data in tensors:
@@ -245,16 +251,16 @@ def q8k_roundtrip(v):
 def dot(a, b): return sum(x * y for x, y in zip(a, b))
 def matvec(W, x): return [dot(r, x) for r in W]
 def rms(x, w): s = 1.0 / math.sqrt(sum(v * v for v in x) / len(x) + EPS); return [v * s * wi for v, wi in zip(x, w)]
-def rope(v, pos):
+def rope(v, pos, ff=None):
     if ROPEPAIRS:   # adjacent pairs (2i, 2i+1)
         o = v[:]
         for i in range(len(v) // 2):
-            t = pos * THETA ** (-2.0 * i / len(v)); c, sn = math.cos(t), math.sin(t)
+            t = pos * THETA ** (-2.0 * i / len(v)) / (ff[i] if ff else 1.0); c, sn = math.cos(t), math.sin(t)
             o[2 * i] = v[2 * i] * c - v[2 * i + 1] * sn; o[2 * i + 1] = v[2 * i] * sn + v[2 * i + 1] * c
         return o
     h = len(v) // 2; o = v[:]
     for i in range(h):
-        t = pos * THETA ** (-2.0 * i / len(v)); c, sn = math.cos(t), math.sin(t)
+        t = pos * THETA ** (-2.0 * i / len(v)) / (ff[i] if ff else 1.0); c, sn = math.cos(t), math.sin(t)
         o[i] = v[i] * c - v[i + h] * sn; o[i + h] = v[i] * sn + v[i + h] * c
     return o
 
@@ -265,6 +271,7 @@ class Ref:
     def __init__(self, path, qa=False):
         self.qa = qa
         g = read_gguf(path); self.g = g
+        self.ff = tensor_rows(g, "rope_freqs.weight")[0] if ROPEFREQS else None
         self.emb = tensor_rows(g, "token_embd.weight"); self.out = self.emb if DENSE else tensor_rows(g, "output.weight"); self.on = tensor_rows(g, "output_norm.weight")[0]
         self.L = []
         for l in range(LAYERS):
@@ -272,7 +279,7 @@ class Ref:
             exps = lambda n: r(n)
             if DENSE:
                 self.L.append(dict(an=r("attn_norm.weight")[0], q=r("attn_q.weight"), k=r("attn_k.weight"), v=r("attn_v.weight"), o=r("attn_output.weight"), fn=r("ffn_norm.weight")[0],
-                                   bq=r("attn_q.bias")[0], bk=r("attn_k.bias")[0], bv=r("attn_v.bias")[0], qn=None, kn=None, router=None,
+                                   bq=r("attn_q.bias")[0] if QKVBIAS else None, bk=r("attn_k.bias")[0] if QKVBIAS else None, bv=r("attn_v.bias")[0] if QKVBIAS else None, qn=None, kn=None, router=None,
                                    dgate=r("ffn_gate.weight"), dup=r("ffn_up.weight"), ddown=r("ffn_down.weight")))
                 continue
             gate, up, down = exps("ffn_gate_exps.weight"), exps("ffn_up_exps.weight"), exps("ffn_down_exps.weight")
@@ -291,7 +298,7 @@ class Ref:
                 q = sum((rms(q[h * HD:(h + 1) * HD], L["qn"]) for h in range(HEADS)), []); k = sum((rms(k[h * HD:(h + 1) * HD], L["kn"]) for h in range(KVH)), [])
             elif QKMODE == 1:
                 q = rms(q, L["qn"]); k = rms(k, L["kn"])
-            q = sum((rope(q[h * HD:(h + 1) * HD], pos) for h in range(HEADS)), []); k = sum((rope(k[h * HD:(h + 1) * HD], pos) for h in range(KVH)), [])
+            q = sum((rope(q[h * HD:(h + 1) * HD], pos, self.ff) for h in range(HEADS)), []); k = sum((rope(k[h * HD:(h + 1) * HD], pos, self.ff) for h in range(KVH)), [])
             self.K[l].append(k); self.V[l].append(v)
             att = []
             for h in range(HEADS):
@@ -336,6 +343,7 @@ def check(engine, path):
     bad = 0
     for text in prompts:
         ids = [int(t) for t in run_engine(engine, ["tokenize", path, text], False).split()]
+        if ADDBOS: ids = [len(toks) - 2] + ids   # the engine prepends BOS (the generator makes <|endoftext|> the BOS token)
         for float_math, max_tol, mean_tol, label in ((True, 1e-3, 1e-3, "float math  "), (False, 0.05, 0.01, "integer dots")):
             ref.qa = not float_math; ref.reset()
             for t in ids: lp = ref.step(t)

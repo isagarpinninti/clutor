@@ -103,7 +103,7 @@ static size_t ws_run_end(const uint8_t *s, size_t i, size_t end) {   /* end of t
   return k;
 }
 /* Qwen2's pre-tokenizer: (?i:'s|'t|'re|'ve|'m|'ll|'d) | [^\r\n\p{L}\p{N}]?\p{L}+ | \p{N} | ?[^\s\p{L}\p{N}]+[\r\n]* | \s*[\r\n]+ | \s+(?!\S) | \s+ */
-static size_t m_qwen2(const uint8_t *s, size_t i, size_t end) {
+static size_t m_qwen2_n(const uint8_t *s, size_t i, size_t end, int max_digits) {
   static const char *contr[] = {"'s", "'t", "'m", "'d", "'re", "'ve", "'ll"};
   for (size_t c = 0; c < sizeof contr / sizeof *contr; c++) {
     size_t n = strlen(contr[c]);
@@ -118,7 +118,11 @@ static size_t m_qwen2(const uint8_t *s, size_t i, size_t end) {
     size_t m = run(s, i + (size_t)n0, end, is_letter, 0);
     if (m) return (size_t)n0 + m;
   }
-  if (is_digit(cp)) return (size_t)n0;                                     /* digits are one token each */
+  if (is_digit(cp)) {                                                      /* digits: one per token (qwen2) or up to three (llama 3) */
+    size_t len = 0; int count = 0;
+    while (i + len < end && count < max_digits) { int c2, n = cp_at(s, i + len, end, &c2); if (!is_digit(c2)) break; len += (size_t)n; count++; }
+    return len;
+  }
   size_t j = i;
   if (s[j] == ' ') j++;
   if (j < end) {
@@ -145,6 +149,9 @@ static size_t m_one_digit(const uint8_t *s, size_t i, size_t end) {   /* \p{N}: 
   int cp, n = cp_at(s, i, end, &cp);
   return is_digit(cp) ? (size_t)n : 0;
 }
+
+static size_t m_qwen2(const uint8_t *s, size_t i, size_t end) { return m_qwen2_n(s, i, end, 1); }
+static size_t m_llama3(const uint8_t *s, size_t i, size_t end) { return m_qwen2_n(s, i, end, 3); }
 
 typedef size_t (*matcher)(const uint8_t *, size_t, size_t);
 typedef struct { size_t a, b; } seg;
@@ -177,8 +184,9 @@ cl_tok *cl_tok_load(const cl_meta *m, char *err, size_t errlen) {
     if (pre.len == 4 && !memcmp(pre.p, "olmo", 4)) pre_kind = 0;
     else if (pre.len == 5 && !memcmp(pre.p, "qwen2", 5)) pre_kind = 1;
     else if (pre.len == 6 && !memcmp(pre.p, "refact", 6)) pre_kind = 2;
+    else if (pre.len == 9 && !memcmp(pre.p, "llama-bpe", 9)) pre_kind = 3;
   }
-  if (pre_kind < 0) { snprintf(err, errlen, "only the \"olmo\", \"qwen2\" and \"refact\" pre-tokenizers are implemented"); return NULL; }
+  if (pre_kind < 0) { snprintf(err, errlen, "only the \"olmo\", \"qwen2\", \"refact\" and \"llama-bpe\" pre-tokenizers are implemented"); return NULL; }
   cl_tok *t = calloc(1, sizeof *t);
   if (!t) { snprintf(err, errlen, "out of memory"); return NULL; }
   t->pre = pre_kind;
@@ -194,7 +202,8 @@ cl_tok *cl_tok_load(const cl_meta *m, char *err, size_t errlen) {
   uint64_t v;
   t->bos = cl_meta_u64(m, "tokenizer.ggml.bos_token_id", &v) ? (int)v : -1;
   t->eos = cl_meta_u64(m, "tokenizer.ggml.eos_token_id", &v) ? (int)v : -1;
-  t->add_bos = cl_meta_u64(m, "tokenizer.ggml.add_bos_token", &v) ? (int)v : 0;
+  /* the key wins when the file has it; otherwise llama.cpp's defaults: a Llama 3 vocabulary (llama-bpe) adds BOS, the others do not */
+  t->add_bos = cl_meta_u64(m, "tokenizer.ggml.add_bos_token", &v) ? (int)v : (pre_kind == 3 && t->bos >= 0 ? 1 : 0);
   int n = 0;
   for (int i = 0; i < 512; i++) t->cp_byte[i] = -1;
   for (int b = 0; b < 256; b++) {
@@ -238,6 +247,15 @@ static int bpe(const cl_tok *t, const uint8_t *s, size_t len, int32_t *out, int 
   size_t pos = 0, ns = 0;
   for (size_t i = 0; i < len; i++) { st[ns++] = pos; pos += (size_t)put_utf8(buf + pos, t->byte_cp[s[i]]); }
   st[ns] = pos;
+  if (t->pre == 3) {   /* llama 3 sets ignore_merges: a pre-token that is a single vocabulary entry is used whole */
+    int32_t whole = smap_get(&t->vocab, buf, pos);
+    if (whole >= 0) {
+      if (*n >= cap) { free(buf); free(st); return -1; }
+      out[(*n)++] = whole;
+      free(buf); free(st);
+      return 1;
+    }
+  }
   for (;;) {   /* merge the adjacent pair with the lowest rank until none is in the merge table */
     int32_t best = -1; size_t bi = 0;
     for (size_t i = 0; i + 1 < ns; i++) {
@@ -265,7 +283,7 @@ static int bpe(const cl_tok *t, const uint8_t *s, size_t len, int32_t *out, int 
 static int encode_plain(const cl_tok *t, const uint8_t *s, size_t len, int32_t *out, int cap, int *n) {
   segs a = {0}, b = {0}, c = {0}, d = {0};
   int rc = 1;
-  if (!segs_add(&a, 0, len) || !(t->pre == 2 ? (split(s, &a, &b, m_one_digit) && split(s, &b, &d, m_gpt2)) : split(s, &a, &d, t->pre == 1 ? m_qwen2 : m_gpt2))) rc = 0;
+  if (!segs_add(&a, 0, len) || !(t->pre == 2 ? (split(s, &a, &b, m_one_digit) && split(s, &b, &d, m_gpt2)) : split(s, &a, &d, t->pre == 3 ? m_llama3 : t->pre == 1 ? m_qwen2 : m_gpt2))) rc = 0;
   for (size_t i = 0; rc == 1 && i < d.n; i++) rc = bpe(t, s + d.v[i].a, d.v[i].b - d.v[i].a, out, cap, n);
   free(a.v); free(b.v); free(c.v); free(d.v);
   return rc;

@@ -37,6 +37,7 @@ typedef struct {
   int dense;               /* qwen2: no experts, every layer has one plain SwiGLU feed-forward of width n_ff_exp */
   int qkv_bias;            /* the query, key and value projections have bias vectors */
   int rope_pairs;          /* 1: rotate adjacent pairs (2i, 2i+1) (llama.cpp's NORM rope, granitemoe); 0: rotate the two halves (NEOX: olmoe, qwen3moe) */
+  float *rope_factors;     /* llama 3: rope_freqs.weight, one divisor per rotated pair (head_dim / 2 values), or NULL */
   float embed_scale, attn_scale, resid_scale, logit_scale; /* granite's multipliers; 1, 1/sqrt(head_dim), 1, 1 for the others */
   int norm_topk;           /* qwen3moe and granitemoe renormalise the chosen experts' weights to sum to 1; olmoe uses the raw softmax probabilities */
   float rms_eps, rope_base;

@@ -86,6 +86,11 @@ export const CATALOG: ArchitectureSpec[] = [
     attention: { kind: "gqa", heads: 12, kvHeads: 2, headDim: 128 }, experts: 0, expertsUsed: 0, sharedExperts: 0, expertFfn: 0, maxContext: 32768, tiedEmbeddings: true,
     publishedParamsB: 1.54, source: "Qwen2.5 model card; shapes read from the GGUF header of qwen2.5-1.5b-instruct",
   },
+  {
+    id: "llama-3.2-1b", name: "Llama 3.2 1B Instruct (dense)", family: "llama", layers: 16, denseLayers: 16, hidden: 2048, vocab: 128256, denseFfn: 8192,
+    attention: { kind: "gqa", heads: 32, kvHeads: 8, headDim: 64 }, experts: 0, expertsUsed: 0, sharedExperts: 0, expertFfn: 0, maxContext: 131072, tiedEmbeddings: true,
+    publishedParamsB: 1.24, source: "Llama 3.2 model card; shapes read from the GGUF header of Llama-3.2-1B-Instruct",
+  },
 ];
 
 /** Parameters in one layer: [attention, dense feed-forward, routed experts (all), each routed expert, shared experts, router]. */

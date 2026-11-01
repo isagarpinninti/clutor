@@ -34,7 +34,7 @@ def main():
             print("llama-server did not start"); return 2
         failed = 0
         for p in PROMPTS:
-            ids = subprocess.run(["llama-tokenize", "-m", model, "-p", p, "--ids", "--no-bos"], capture_output=True, text=True).stdout.strip().splitlines()[-1]
+            ids = subprocess.run(["llama-tokenize", "-m", model, "-p", p, "--ids"], capture_output=True, text=True).stdout.strip().splitlines()[-1]
             mine = json.loads(subprocess.run([engine, "logits", model, p, "--top", "20", *extra], capture_output=True, text=True, check=True).stdout)
             req = urllib.request.Request(f"http://127.0.0.1:{port}/completion", data=json.dumps({"prompt": p, "n_predict": 1, "n_probs": 20, "temperature": 0, "samplers": []}).encode(), headers={"Content-Type": "application/json"})
             ref = json.load(urllib.request.urlopen(req))["completion_probabilities"][0]["top_logprobs"]

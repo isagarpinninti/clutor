@@ -4,6 +4,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ## Unreleased
 
+### Added
+- **A fifth architecture, dense `llama`** (Llama 3.2 1B Instruct): adjacent-pair rotary embeddings with Llama 3's `rope_freqs` factors, a BOS token added by default when the file has no `add_bos_token` key (llama.cpp's default for Llama 3 vocabularies), the `llama-bpe` pre-tokenizer (digits in groups of three, and a pre-token that is one vocabulary entry is used whole). Tokenization identical to llama.cpp on 24 strings, all 6 logit comparisons inside tolerance, greedy continuations identical for 24 tokens on 1 of 3 prompts (the others are near-ties; analysis in docs/TEST_REPORT.md). The golden test now covers five architectures (90 checks), and its Llama variant omits `add_bos_token` as the real file does. Listed in `clutor pull` and the planner catalog.
+
 ## 0.3.1
 
 ### Fixed

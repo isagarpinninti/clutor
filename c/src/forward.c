@@ -42,6 +42,7 @@ static const arch_spec ARCHS[] = {
   {"qwen3moe",   2,       1,      0,         1,                          0,                   0,     0},
   {"granitemoe", 0,       1,      1,         0,                          1,                   0,     0},
   {"qwen2",      0,       0,      0,         0,                          0,                   1,     1},
+  {"llama",      0,       0,      1,         0,                          0,                   1,     0},
 };
 
 #define AKEY(buf, suffix) snprintf(buf, sizeof buf, "%s.%s", f->arch, suffix)
@@ -52,7 +53,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   if (cl_model_open(&f->model, path, err, errlen)) return 1;
   const arch_spec *spec = NULL;
   for (size_t i = 0; i < sizeof ARCHS / sizeof *ARCHS; i++) if (!strcmp(f->model.arch, ARCHS[i].name)) spec = &ARCHS[i];
-  if (!spec) { snprintf(err, errlen, "the forward pass supports the \"olmoe\", \"qwen3moe\", \"granitemoe\" and \"qwen2\" (dense) architectures, not \"%s\"", f->model.arch); goto fail; }
+  if (!spec) { snprintf(err, errlen, "the forward pass supports the \"olmoe\", \"qwen3moe\", \"granitemoe\", \"qwen2\" (dense) and \"llama\" (dense) architectures, not \"%s\"", f->model.arch); goto fail; }
   snprintf(f->arch, sizeof f->arch, "%s", spec->name);
   f->qk_mode = spec->qk_mode; f->qk_per_head = spec->qk_mode == 2; f->norm_topk = spec->norm_topk; f->rope_pairs = spec->rope_pairs; f->dense = spec->dense; f->qkv_bias = spec->qkv_bias;
   const int NU = spec->dense ? 1 : 0;   /* a dense model has no experts, but its single feed-forward needs the same scratch as one expert */
@@ -109,6 +110,14 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   if (bind(f, &on, "output_norm.weight", -1, 1, err, errlen)) goto fail;
   if (on.cols != f->n_embd || f->output.cols != f->n_embd || f->output.rows != f->n_vocab) { snprintf(err, errlen, "output tensors do not match the embedding width and vocabulary"); goto fail; }
   f->out_norm_f = to_float(&on, (size_t)f->n_embd);
+  if (find(&f->model, "rope_freqs.weight")) {   /* llama 3: per-pair divisors of the rotary frequencies */
+    cl_w rf;
+    if (bind(f, &rf, "rope_freqs.weight", -1, 1, err, errlen)) goto fail;
+    if (rf.type != CL_T_F32 || rf.cols != f->head_dim / 2) { snprintf(err, errlen, "rope_freqs.weight must be %d float32 values", f->head_dim / 2); goto fail; }
+    f->rope_factors = to_float(&rf, (size_t)rf.cols);
+    if (!f->rope_factors) { snprintf(err, errlen, "out of memory"); goto fail; }
+    for (int i = 0; i < rf.cols; i++) if (!(f->rope_factors[i] > 0.0f)) { snprintf(err, errlen, "rope_freqs.weight holds a non-positive factor"); goto fail; }
+  }
   f->L = calloc((size_t)f->n_layer, sizeof *f->L);
   if (!f->L || !f->out_norm_f) { snprintf(err, errlen, "out of memory"); goto fail; }
   for (int l = 0; l < f->n_layer; l++) {
@@ -193,7 +202,7 @@ fail:
 
 void cl_fwd_close(cl_fwd *f) {
   if (f->L) for (int l = 0; l < f->n_layer; l++) { free(f->L[l].attn_norm_f); free(f->L[l].ffn_norm_f); free(f->L[l].bq_f); free(f->L[l].bk_f); free(f->L[l].bv_f); free(f->L[l].qn_f); free(f->L[l].kn_f); free(f->L[l].router_f); }
-  free(f->L); free(f->out_norm_f);
+  free(f->L); free(f->out_norm_f); free(f->rope_factors);
   free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
   cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_q); cl_xq_free(&f->xq_ff);
   if (f->xq_ffk) for (int k = 0; k < f->n_used; k++) cl_xq_free(&f->xq_ffk[k]);
@@ -215,18 +224,18 @@ static void rmsnorm(float *out, const float *x, const float *w, int n, float eps
 }
 
 /* llama.cpp's NORM rope: rotate adjacent pairs (v[2i], v[2i+1]) */
-static void rope_pairs(float *v, int hd, int pos, float base) {
+static void rope_pairs(float *v, int hd, int pos, float base, const float *ff) {
   for (int i = 0; i < hd / 2; i++) {
-    float theta = (float)pos * powf(base, -2.0f * (float)i / (float)hd), c = cosf(theta), s = sinf(theta);
+    float theta = (float)pos * powf(base, -2.0f * (float)i / (float)hd) / (ff ? ff[i] : 1.0f), c = cosf(theta), s = sinf(theta);
     float a = v[2 * i], b = v[2 * i + 1];
     v[2 * i] = a * c - b * s; v[2 * i + 1] = a * s + b * c;
   }
 }
 
-static void rope_neox(float *v, int hd, int pos, float base) {
+static void rope_neox(float *v, int hd, int pos, float base, const float *ff) {
   int half = hd / 2;
   for (int i = 0; i < half; i++) {
-    float theta = (float)pos * powf(base, -2.0f * (float)i / (float)hd), c = cosf(theta), s = sinf(theta);
+    float theta = (float)pos * powf(base, -2.0f * (float)i / (float)hd) / (ff ? ff[i] : 1.0f), c = cosf(theta), s = sinf(theta);
     float a = v[i], b = v[i + half];
     v[i] = a * c - b * s; v[i + half] = a * s + b * c;
   }
@@ -266,8 +275,8 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
       rmsnorm(f->q, f->q, y->qn_f, f->n_q, f->rms_eps);
       rmsnorm(f->k, f->k, y->kn_f, f->n_kvw, f->rms_eps);
     }
-    for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->q + h * hd, hd, pos, f->rope_base);
-    for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->k + h * hd, hd, pos, f->rope_base);
+    for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->q + h * hd, hd, pos, f->rope_base, f->rope_factors);
+    for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->k + h * hd, hd, pos, f->rope_base, f->rope_factors);
     float *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
     memcpy(kc, f->k, (size_t)KW * 4); memcpy(vc, f->v, (size_t)KW * 4);
     const float scale = f->attn_scale;

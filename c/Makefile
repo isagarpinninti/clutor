@@ -46,32 +46,38 @@ GOLDEN_GGUF = build/tiny_olmoe.gguf
 GOLDEN_Q3 = build/tiny_qwen3moe.gguf
 GOLDEN_GR = build/tiny_granitemoe.gguf
 GOLDEN_Q2 = build/tiny_qwen2.gguf
+GOLDEN_LL = build/tiny_llama.gguf
 golden-files: build
 	python3 test/tiny_olmoe.py write $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py write $(GOLDEN_Q3) --arch qwen3moe
 	python3 test/tiny_olmoe.py write $(GOLDEN_GR) --arch granitemoe
 	python3 test/tiny_olmoe.py write $(GOLDEN_Q2) --arch qwen2
+	python3 test/tiny_olmoe.py write $(GOLDEN_LL) --arch llama
 golden: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q3) --arch qwen3moe
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GR) --arch granitemoe
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q2) --arch qwen2
+	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_LL) --arch llama
 golden-paths: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q3) --arch qwen3moe
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GR) --arch granitemoe
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q2) --arch qwen2
+	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_LL) --arch llama
 	$(CC) $(PATH_FLAGS) -DCL_FORCE_SCALAR $(SRC) src/main.c -o build/engine-scalar $(LDLIBS)
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_Q3) --arch qwen3moe
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_GR) --arch granitemoe
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_Q2) --arch qwen2
+	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_LL) --arch llama
 ifeq ($(shell uname -m),arm64)
 	$(CC) $(PATH_FLAGS) -mcpu=native -DCL_NO_DOTPROD $(SRC) src/main.c -o build/engine-neon $(LDLIBS)
 	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_Q3) --arch qwen3moe
 	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_GR) --arch granitemoe
 	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_Q2) --arch qwen2
+	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_LL) --arch llama
 endif
 
 # Mutation fuzzing of the file readers under ASan + UBSan: corrupt a valid model many ways, expect clean errors and never a crash or hang.
