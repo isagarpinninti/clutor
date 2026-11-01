@@ -2,7 +2,7 @@
 
 ## The engine does not generate text yet
 
-`c/` is a native streaming engine: it parses GGUF, reads experts from disk with `pread`, manages the expert cache, prefetches the next layer and applies cache-aware routing. For `olmoe` models it also has a real forward pass (a tokenizer, attention, K-quant integer kernels, the model's own router) and can generate text with `clutor generate`; no other architecture has one yet, so `chat`, `decide` and the agent still use llama.cpp (`llama-server`) or any OpenAI-compatible server. When a model is larger than memory, the operating system pages it in through llama.cpp's memory mapping; Clutor cannot control that cache.
+`c/` is a native streaming engine: it parses GGUF, reads experts from disk with `pread`, manages the expert cache, prefetches the next layer and applies cache-aware routing. For three architectures (`olmoe`, `qwen3moe`, `granitemoe`) it also has a real forward pass (a tokenizer, attention, K-quant integer kernels, the model's own router) and can generate text with `clutor generate`; no other architecture has one yet, so `chat`, `decide` and the agent still use llama.cpp (`llama-server`) or any OpenAI-compatible server. When a model is larger than memory, the operating system pages it in through llama.cpp's memory mapping; Clutor cannot control that cache.
 
 What the engine reports is real where it says **measured** (bytes, time, waits, cache behaviour on the machine it ran on) and synthetic where it says so (`stream` without `--trace` uses a made-up router). On one OLMoE trace the synthetic default overstated the hit rate (77% against 47%), so do not read synthetic hit rates as a prediction for a real model; `generate`, `quality` and `stream --trace` use the model's real routing.
 

@@ -8,7 +8,7 @@ Run on 2026-10-31 on one MacBook Air (Apple M2, 16 GiB, macOS), repository state
 |---|---|---|---|
 | C unit tests, three kernel builds | 41,811 checks, 0 failed, on NEON+dotprod, NEON, and portable C | cache policies and invariants, router and SMART-ROUTE bounds, GGUF and metadata readers, dequantizers, integer dot products against dequantize-and-multiply, the expert store | `make -C c test test-paths` |
 | Sanitizer build of the unit tests | 41,811 checks, 0 failed under AddressSanitizer + UBSan | memory safety of the same code | `make -C c sanitize` |
-| Golden test | 36 checks OK, 0 FAIL, in 6 blocks (olmoe and qwen3moe, each on 3 builds) | the engine against an independent pure-Python forward pass on a tiny generated model with random Q4_K/Q6_K weights: exact float math agrees to 6e-5 in logprob; the 8-bit integer path stays inside a stated tolerance (mean 0.1, max 0.4; measured mean 0.03-0.05, max 0.2) | `make -C c golden-paths` |
+| Golden test | 54 checks OK, 0 FAIL, in 9 blocks (olmoe, qwen3moe and granitemoe, each on 3 builds) | the engine against an independent pure-Python forward pass on a tiny generated model with random Q4_K/Q6_K weights: exact float math agrees to 6e-5 in logprob; the 8-bit integer path stays inside a stated tolerance (mean 0.1, max 0.4; measured mean 0.03-0.05, max 0.2) | `make -C c golden-paths` |
 | Fuzzing | 600 corrupted model files this run (3,600 earlier), 0 crashes or hangs under ASan + UBSan | the GGUF, metadata and tokenizer readers, and the forward pass on bad shapes | `make -C c fuzz` |
 | TypeScript | typecheck clean, lint clean, 168 core tests and 98 CLI tests pass | planner, agent, receipts, server, CLI, installer (checksum match, tamper, missing line, insecure URL), resumable verified downloads, `generate` and `quality` | `npm run typecheck && npm run lint && npm test` |
 | CI on GitHub | all 6 jobs green on the last pushed commit (Linux and macOS, Node 20 and 22, sanitizers + fuzz, dependency audit) | includes the AVX2 kernels on a real x86 Linux runner: `kernel path: avx2`, 41,811 checks, 0 failed | `gh run list` |
@@ -36,6 +36,22 @@ The file was downloaded and verified byte-exact: 18,556,685,824 bytes, SHA-256 `
 | Next-token logprobs, 6 prompts | token ids identical 6/6, top token 6/6, top-5 overlap 5/5 on all; but mean abs logprob difference 0.16-2.23 (worst single 6.0). 3 of 6 exceed the tolerances set on OLMoE and are marked FAIL by the script |
 
 How to read the last row. The script's tolerances were tuned on OLMoE and Qwen3 is far more sensitive: it is 48 layers deep with 8-of-128 routing, so tiny numerical differences (8-bit activation rounding, accumulation order, llama.cpp's f16 KV cache against this engine's f32) are amplified. Evidence that it is noise and not a bug: the routing and the greedy text match, the tiny Qwen3-style model agrees with its independent reference to 6e-5, and for one prompt the engine's exact-float logits differ from its own integer-path logits by up to 1.3, larger than the gap to llama.cpp. The worst prompt (mean 2.23) is OLMoE's chat-tag text, which Qwen was never trained on, so its distribution is flat and fragile. This is judged noise on the evidence, not proven; a comparison on longer continuations or a perplexity run against llama.cpp would tighten it.
+
+## 3b. Agreement with llama.cpp, Granite 3.0 3B-A800M Q4_K_M (the third architecture; run 2026-11-01)
+
+The file (2,059,356,000 bytes, 1.92 GiB) was downloaded across several dropped connections and verified byte-exact against the publisher's SHA-256 before use. It fits in RAM, so it ran mapped and streamed.
+
+| Check | Result |
+|---|---|
+| Tokenizer (`refact` pre-tokenizer), 24 strings, on the real file | identical, 0 mismatches |
+| Next-token logprobs, 6 prompts | token ids identical 6/6; same top token 6/6; top-5 overlap 5/5 on all; mean abs logprob difference 0.11-0.40, worst single 1.03; 2 prompts (0.395 and 0.402) just exceed the 0.35 tolerance tuned on OLMoE and are marked FAIL by the script |
+| Router choices, 3 prompts, all 32 layers | 99.0%, 98.4%, 98.5% of visible experts inside this engine's top-8 |
+| Greedy continuation, 3 prompts, 24 tokens | identical in all three |
+| Streamed from disk equals mapped, 8 settings (including SMART-ROUTE J=8) | byte-identical text in all 8 |
+| AddressSanitizer + UBSan, real model, streamed with SMART-ROUTE | no reports |
+| Regression: OLMoE logits, tokenizer and unit tests after the architecture refactor | unchanged |
+
+Judged the same way as Qwen3: the routing and the generated text match, the exact-float path agrees with an independent reference to 5e-5 on a tiny Granite-style model, and the remaining logprob gaps look like numerical noise, which is not proven. Qwen3 and Granite both show larger gaps than OLMoE; both are deeper or sharper models than OLMoE's 16 layers.
 
 ## 4. Speed and memory (earlier; one run per setting, about 30% run-to-run spread)
 

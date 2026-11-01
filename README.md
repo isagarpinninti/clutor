@@ -20,7 +20,7 @@
 
 Clutor has three parts, and the line between them is the point of this README:
 
-1. **A native engine** (`c/`, plain C, no dependencies) that reads a GGUF file directly and streams its routed experts from disk through an adaptive cache with next-layer prefetch and probability-bounded cache-aware routing. It **measures** disk reads, waits, hit rates and prefetch behaviour. For `olmoe` models (OLMoE-1B-7B) it also runs a **real forward pass**, so it generates text and uses the model's own routing (`clutor generate`, `clutor quality`); other architectures can still be streamed on synthetic routing but not generated with.
+1. **A native engine** (`c/`, plain C, no dependencies) that reads a GGUF file directly and streams its routed experts from disk through an adaptive cache with next-layer prefetch and probability-bounded cache-aware routing. It **measures** disk reads, waits, hit rates and prefetch behaviour. For three architectures (`olmoe`, `qwen3moe` and `granitemoe`: OLMoE-1B-7B, Qwen3-30B-A3B, Granite 3.0 3B-A800M) it also runs a **real forward pass**, so it generates text and uses the model's own routing (`clutor generate`, `clutor quality`); other architectures can still be streamed on synthetic routing but not generated with.
 2. **An honest planner and CLI** (`packages/core`, `packages/cli`, TypeScript): will this model fit, where does every byte go, how fast could the disk possibly let it go. It drives `llama.cpp` to actually generate text, and serves OpenAI- and Ollama-compatible APIs.
 3. **A sandboxed coding agent**: it works in a held-aside copy, asks before running project code, shows an exact diff, and signs a receipt of what it did.
 
@@ -104,7 +104,7 @@ Clutor exists to answer, with measurements, the question every "run a huge model
 | --- | --- |
 | `plan <model>` | Memory plan from a catalog id or a real `.gguf` header: fits or not, where the memory goes, disk-bound speed ceiling at several hit rates |
 | `simulate <model>` | Replays a synthetic routing trace through LRU and Clutor's cache (simulated, labelled) |
-| `generate <file.gguf> "<prompt>"` | **Native engine, real forward pass** (`olmoe` models). Generates text; `--cache-mb N` streams the experts from disk through a cache of that size, `--smart J,M,TAU` lets resident experts stand in for cold ones, `--trace FILE` records the router's scores for replay |
+| `generate <file.gguf> "<prompt>"` | **Native engine, real forward pass** (`olmoe`, `qwen3moe`, `granitemoe`). Generates text; `--cache-mb N` streams the experts from disk through a cache of that size, `--smart J,M,TAU` lets resident experts stand in for cold ones, `--trace FILE` records the router's scores for replay |
 | `quality <file.gguf> <text>` | Perplexity, KL divergence and top-token agreement of a streamed or smart-route run against exact routing on a text file (needs `--cache-mb`) |
 | `stream <file.gguf>` | **Native engine.** Streams the file's experts from disk for N tokens of synthetic routing; reports measured I/O, waits, cache, prefetch and peak RSS. `--shift AT,LEN` makes those tokens uniform scan noise; `--window N` prints hit rate and peak RSS per N tokens |
 | `bench --file <f>` | Measures random expert reads, then compares LRU, adaptive cache + prefetch, and + smart-route on that file. `--receipt` signs the result into the receipt log |
