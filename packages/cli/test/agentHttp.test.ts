@@ -192,7 +192,9 @@ describe("MCP", () => {
     s = await start();
     const dir = fixProject();
     await s.post("/api/roots", { dir });
-    expect((await s.post("/api/mcp", rpc(1, "initialize"))).body.result.serverInfo.name).toBe("clutor");
+    const init = (await s.post("/api/mcp", rpc(1, "initialize"))).body.result.serverInfo;
+    expect(init.name).toBe("clutor");
+    expect(init.version).toBe((await s.get("/api/health")).body.version);   // the MCP server reports the package version, not a string typed in by hand
     const list = (await s.post("/api/mcp", rpc(2, "tools/list"))).body.result.tools.map((t: { name: string }) => t.name);
     expect(list).toEqual(expect.arrayContaining(["read_file", "list_files", "search", "repo_map", "plan_memory"]));
     expect(list).not.toContain("write_file");

@@ -279,7 +279,7 @@ export function createClutorServer(o: ServerOptions): ClutorServer {
     }
 
     if (method === "POST" && path === "/api/mcp") {
-      const r = await handleMcp((await readBody(req)) as never, { isRoot: (d) => rootFor(d).catch(() => null) });
+      const r = await handleMcp((await readBody(req)) as never, { isRoot: (d) => rootFor(d).catch(() => null), version: o.version });
       return r.status === 202 ? (res.writeHead(202, cors), void res.end()) : reply(r.status, r.body);
     }
 

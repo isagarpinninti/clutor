@@ -26,13 +26,13 @@ function tools(): unknown[] {
   ];
 }
 
-export async function handleMcp(req: Rpc, ctx: { isRoot(dir: string): Promise<string | null> }): Promise<{ status: number; body: unknown }> {
+export async function handleMcp(req: Rpc, ctx: { isRoot(dir: string): Promise<string | null>; version?: string }): Promise<{ status: number; body: unknown }> {
   const id = req.id ?? null;
   const ok = (result: unknown): { status: number; body: unknown } => ({ status: 200, body: { jsonrpc: "2.0", id, result } });
   const err = (code: number, message: string): { status: number; body: unknown } => ({ status: 200, body: { jsonrpc: "2.0", id, error: { code, message } } });
   if (req.jsonrpc !== "2.0" || typeof req.method !== "string") return err(-32600, "not a JSON-RPC 2.0 request");
   switch (req.method) {
-    case "initialize": return ok({ protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "clutor", version: "0.1.0" } });
+    case "initialize": return ok({ protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "clutor", version: ctx.version ?? "unknown" } });
     case "notifications/initialized": return { status: 202, body: "" };
     case "ping": return ok({});
     case "tools/list": return ok({ tools: tools() });
