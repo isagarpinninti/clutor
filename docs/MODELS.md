@@ -5,7 +5,7 @@ What the native engine can do with which model. "Real forward pass" means `cluto
 | Model family | Real forward pass | Stream only | Checked against llama.cpp | Notes |
 |---|---|---|---|---|
 | OLMoE-1B-7B (`olmoe`) Q4_K_M | yes | yes | yes: identical token ids on 10 strings; same top token on 6 prompts; 97-99.8% of visible router choices | The only one. Tested file: OLMoE-1B-7B-0924-Instruct Q4_K_M. Needs Q4_K / Q6_K tensors; other quantizations dequantize in float (slower) |
-| Qwen3-MoE (Qwen3-30B-A3B) | planned (roadmap milestone 2) | yes (layout) | no | Needs grouped-query attention, per-head QK-norm and top-k weight renormalization |
+| Qwen3-MoE (Qwen3-30B-A3B) Q4_K_M | yes | yes | yes: identical tokenization on 24 strings; 96.7-98.0% router agreement on 3 prompts; identical 24-token greedy continuations on 3 prompts. Token logprobs differ more than on OLMoE (mean 0.16-2.23), judged numerical noise amplified by 48 layers, not proven | The 17.3 GiB file is larger than 16 GiB of RAM: needs `--cache-mb` (the engine refuses to map it). 2.0-3.0 tokens/s at 2-8 GiB caches (docs/TEST_REPORT.md) |
 | Qwen2-MoE style | no | yes | no | Used for generated test files |
 | DeepSeek, GLM, Kimi, Mixtral | no | catalog / planner only | no | The memory planner knows their published shapes; the engine has never opened one |
 | Dense models (Llama, Qwen dense, ...) | no | no | no | No experts to cache: each token reads the whole model |
