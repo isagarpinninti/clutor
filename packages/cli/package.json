@@ -1,6 +1,6 @@
 {
   "name": "@clutor/cli",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "The clutor command and local server: plan whether a model fits your machine, inspect GGUF files, simulate expert streaming, run a sandboxed coding agent, and serve an OpenAI- and Ollama-compatible API on localhost in front of llama.cpp.",
   "license": "MIT",
   "type": "module",
@@ -13,6 +13,6 @@
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
   "files": ["dist", "c/src", "c/Makefile", "README.md", "LICENSE"],
   "engines": { "node": ">=20" },
-  "dependencies": { "@clutor/core": "^0.1.1", "zod": "^4.0.0" },
+  "dependencies": { "@clutor/core": "^0.2.0", "zod": "^4.0.0" },
   "scripts": { "prepack": "node ../../scripts/pack-engine.mjs", "postpack": "node ../../scripts/pack-engine.mjs clean", "build": "tsup", "typecheck": "tsc --noEmit", "test": "vitest run" }
 }

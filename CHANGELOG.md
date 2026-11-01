@@ -4,6 +4,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ## Unreleased
 
+## 0.2.0
+
 ### Added
 - **A real forward pass for `olmoe` models in the native engine**: byte-level BPE tokenizer, quantized weight readers (Q4_0, Q5_0, Q8_0, Q4_K, Q5_K, Q6_K, F16, BF16, F32), attention, router and experts. New engine commands `tokenize`, `logits`, `generate`. Checked against llama.cpp on OLMoE-1B-7B Q4_K_M: identical token ids on 10 test strings, same top-1 token on 6 prompts, 96.5-98% of visible router choices inside this engine's top-8 (see docs/NATIVE_ENGINE.md for the numbers and limits). Maps the whole file unless `--cache-mb` is given.
 - **Experts streamed inside the real forward pass**: `generate --cache-mb N` reads each layer's experts from disk through the cache so resident memory is bounded by the cache. On OLMoE-1B-7B Q4_K_M: output byte-identical to the mapped run, peak RSS 544 MiB to 1.4 GiB against 3.7 GiB, but 2.3x to 5x slower than mapped because the run is disk-bound (about 1.4 GB/s on this SSD). Previous-token prefetch is optional and off by default: it raised hit rates but lost on time in every measurement. One run per setting, about 30% run-to-run spread; see docs/NATIVE_ENGINE.md.
