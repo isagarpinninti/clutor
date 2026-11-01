@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VERSION "0.2.0"
+#define VERSION "0.3.0"
 
 static void usage(void) {
   puts("clutor-engine " VERSION "\n"

@@ -1,6 +1,6 @@
 {
   "name": "@clutor/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Clutor engine: a dependency-free GGUF v3 reader, a physical-memory planner for out-of-core mixture-of-experts models, a W-TinyLFU expert cache with cross-layer prefetch and router-drift-bounded substitution, prompt-lookup drafting, and a sandboxed coding agent with shadow workspaces, diffs, checkpoints and tamper-evident receipts.",
   "license": "MIT",
   "type": "module",
