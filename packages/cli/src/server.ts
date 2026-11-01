@@ -203,6 +203,7 @@ export function createClutorServer(o: ServerOptions): ClutorServer {
       let result;
       try { result = await runDecide({ baseUrl: u.url, model, ...(authorization ? { apiKey: authorization.replace(/^Bearer /, "") } : {}) }, b.prompt, b.choices, f); }
       catch (e) { if (e instanceof DecideError) throw new HttpError(e.status, e.message); throw e; }
+      await Promise.all(ready);   // the project roots are filled in asynchronously at startup; a decision made before that would go unsigned
       const root = roots.values().next().value as string | undefined;
       const receipt = root ? await sealDecision(root, model, b.prompt, b.choices, result, startedAt) : null;
       return reply(200, { choice: result.choice, probabilities: result.probabilities, probabilityMassOnChoices: result.probabilityMassOnChoices, latencyMs: result.latencyMs, receipt });
