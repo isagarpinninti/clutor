@@ -25,7 +25,7 @@ struct cl_tok {
   smap vocab, merges;
   char *merge_buf;
   int bos, eos, add_bos;
-  int pre;                           /* 0: olmo (GPT-2 style), 1: qwen2 */
+  int pre;                           /* 0: olmo (GPT-2 style), 1: qwen2, 2: refact (every digit alone, then GPT-2 style) */
   int *special; int n_special;       /* ids of control / user-defined tokens, longest text first */
   int byte_cp[256];                  /* GPT-2 byte -> code point */
   int cp_byte[512];                  /* code point (< 512) -> byte, or -1 */
@@ -141,6 +141,11 @@ static size_t m_qwen2(const uint8_t *s, size_t i, size_t end) {
   return we - i;                                                           /* \s+ : a single space before text */
 }
 
+static size_t m_one_digit(const uint8_t *s, size_t i, size_t end) {   /* \p{N}: a single digit */
+  int cp, n = cp_at(s, i, end, &cp);
+  return is_digit(cp) ? (size_t)n : 0;
+}
+
 typedef size_t (*matcher)(const uint8_t *, size_t, size_t);
 typedef struct { size_t a, b; } seg;
 typedef struct { seg *v; size_t n, cap; } segs;
@@ -168,8 +173,12 @@ cl_tok *cl_tok_load(const cl_meta *m, char *err, size_t errlen) {
   cl_str mdl, pre;
   if (!cl_meta_str(m, "tokenizer.ggml.model", &mdl) || mdl.len != 4 || memcmp(mdl.p, "gpt2", 4)) { snprintf(err, errlen, "only the gpt2 (byte-level BPE) tokenizer is supported"); return NULL; }
   int pre_kind = -1;
-  if (cl_meta_str(m, "tokenizer.ggml.pre", &pre)) { if (pre.len == 4 && !memcmp(pre.p, "olmo", 4)) pre_kind = 0; else if (pre.len == 5 && !memcmp(pre.p, "qwen2", 5)) pre_kind = 1; }
-  if (pre_kind < 0) { snprintf(err, errlen, "only the \"olmo\" and \"qwen2\" pre-tokenizers are implemented"); return NULL; }
+  if (cl_meta_str(m, "tokenizer.ggml.pre", &pre)) {
+    if (pre.len == 4 && !memcmp(pre.p, "olmo", 4)) pre_kind = 0;
+    else if (pre.len == 5 && !memcmp(pre.p, "qwen2", 5)) pre_kind = 1;
+    else if (pre.len == 6 && !memcmp(pre.p, "refact", 6)) pre_kind = 2;
+  }
+  if (pre_kind < 0) { snprintf(err, errlen, "only the \"olmo\", \"qwen2\" and \"refact\" pre-tokenizers are implemented"); return NULL; }
   cl_tok *t = calloc(1, sizeof *t);
   if (!t) { snprintf(err, errlen, "out of memory"); return NULL; }
   t->pre = pre_kind;
@@ -246,7 +255,7 @@ static int bpe(const cl_tok *t, const uint8_t *s, size_t len, int32_t *out, int 
 static int encode_plain(const cl_tok *t, const uint8_t *s, size_t len, int32_t *out, int cap, int *n) {
   segs a = {0}, b = {0}, c = {0}, d = {0};
   int rc = 1;
-  if (!segs_add(&a, 0, len) || !split(s, &a, &d, t->pre == 1 ? m_qwen2 : m_gpt2)) rc = 0;
+  if (!segs_add(&a, 0, len) || !(t->pre == 2 ? (split(s, &a, &b, m_one_digit) && split(s, &b, &d, m_gpt2)) : split(s, &a, &d, t->pre == 1 ? m_qwen2 : m_gpt2))) rc = 0;
   for (size_t i = 0; rc == 1 && i < d.n; i++) rc = bpe(t, s + d.v[i].a, d.v[i].b - d.v[i].a, out, cap, n);
   free(a.v); free(b.v); free(c.v); free(d.v);
   return rc;

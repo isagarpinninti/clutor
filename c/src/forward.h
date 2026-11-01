@@ -1,5 +1,5 @@
 /*
- * A real forward pass for two mixture-of-experts architectures (llama.cpp's "olmoe" and "qwen3moe"): token embedding, RMSNorm, attention with QK-norm and
+ * A real forward pass for two mixture-of-experts architectures (llama.cpp's "olmoe", "qwen3moe" and "granitemoe"): token embedding, RMSNorm, attention with QK-norm and
  * NeoX rotary embeddings (grouped-query for qwen3moe), a softmax router over every expert, the top-k experts' SwiGLU feed-forwards, and the output projection.
  * Weights are read straight from the memory-mapped GGUF and dequantized block by block; the arithmetic is float32.
  *
@@ -27,11 +27,14 @@ typedef struct {
   cl_model model;
   cl_meta meta;
   uint8_t *map; size_t map_size;
-  char arch[16];           /* "olmoe" or "qwen3moe" */
+  char arch[16];           /* "olmoe", "qwen3moe" or "granitemoe" */
   int n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff_exp, n_expert, n_used, n_vocab, n_ctx_max;
   int n_q, n_kvw;          /* width of the query projection (n_head * head_dim) and of the key / value projections (n_head_kv * head_dim) */
-  int qk_per_head;         /* qwen3moe: RMSNorm over each head_dim vector with one shared weight; olmoe: over the whole projected vector */
-  int norm_topk;           /* qwen3moe renormalises the chosen experts' weights to sum to 1; olmoe uses the raw softmax probabilities */
+  int qk_mode;             /* 0: no QK-norm (granitemoe); 1: RMSNorm over the whole projected vector (olmoe); 2: over each head_dim vector with one shared weight (qwen3moe) */
+  int qk_per_head;         /* qk_mode == 2 */
+  int rope_pairs;          /* 1: rotate adjacent pairs (2i, 2i+1) (llama.cpp's NORM rope, granitemoe); 0: rotate the two halves (NEOX: olmoe, qwen3moe) */
+  float embed_scale, attn_scale, resid_scale, logit_scale; /* granite's multipliers; 1, 1/sqrt(head_dim), 1, 1 for the others */
+  int norm_topk;           /* qwen3moe and granitemoe renormalise the chosen experts' weights to sum to 1; olmoe uses the raw softmax probabilities */
   float rms_eps, rope_base;
   cl_w tok_embd, output;
   float *out_norm_f;

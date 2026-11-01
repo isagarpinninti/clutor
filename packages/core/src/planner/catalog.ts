@@ -70,6 +70,11 @@ export const CATALOG: ArchitectureSpec[] = [
     publishedParamsB: 6.9, source: "OLMoE paper (Muennighoff et al., 2024)",
   },
   {
+    id: "granite-3.0-3b-a800m", name: "Granite 3.0 3B-A800M (IBM)", family: "granite-moe", layers: 32, denseLayers: 0, hidden: 1536, vocab: 49155, denseFfn: 0,
+    attention: { kind: "gqa", heads: 24, kvHeads: 8, headDim: 64 }, experts: 40, expertsUsed: 8, sharedExperts: 0, expertFfn: 512, maxContext: 4096,
+    publishedParamsB: 3.4, source: "IBM Granite 3.0 model card; shapes read from the GGUF header of granite-3.0-3b-a800m-instruct",
+  },
+  {
     id: "qwen2.5-coder-7b", name: "Qwen2.5-Coder-7B (dense)", family: "qwen2", layers: 28, denseLayers: 28, hidden: 3584, vocab: 152064, denseFfn: 18944,
     attention: { kind: "gqa", heads: 28, kvHeads: 4, headDim: 128 }, experts: 0, expertsUsed: 0, sharedExperts: 0, expertFfn: 0, maxContext: 131072,
     publishedParamsB: 7.6, source: "Qwen2.5-Coder model card",
