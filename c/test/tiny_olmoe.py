@@ -17,12 +17,16 @@ ARCH, HEADS, KVH, HD, PRE, EPS, THETA, CTX = "olmoe", 4, 4, 64, "olmo", 1e-5, 10
 NQ = NKV = E
 QKPH = NORMTOP = False
 QKMODE, ROPEPAIRS, ATTN_SCALE, EMB_SCALE, RES_SCALE, LOGIT_SCALE = 1, False, None, 1.0, 1.0, 1.0   # QKMODE: 0 none, 1 whole vector, 2 per head
+DENSE = QKVBIAS = False   # qwen2: no experts (one plain feed-forward per layer), bias vectors on Q/K/V, output matrix tied to the embedding
 
 def configure(arch):
-    global ARCH, HEADS, KVH, HD, PRE, EPS, THETA, NQ, NKV, QKPH, NORMTOP, QKMODE, ROPEPAIRS, ATTN_SCALE, EMB_SCALE, RES_SCALE, LOGIT_SCALE
+    global ARCH, HEADS, KVH, HD, PRE, EPS, THETA, NQ, NKV, QKPH, NORMTOP, QKMODE, ROPEPAIRS, ATTN_SCALE, EMB_SCALE, RES_SCALE, LOGIT_SCALE, DENSE, QKVBIAS, FF
     ARCH = arch
     QKMODE, ROPEPAIRS, ATTN_SCALE, EMB_SCALE, RES_SCALE, LOGIT_SCALE = 1, False, None, 1.0, 1.0, 1.0
-    if arch == "qwen3moe":
+    DENSE = QKVBIAS = False
+    if arch == "qwen2":   # dense Qwen2.5 style: GQA 4/2, head 64, biases on Q/K/V, tied output, a feed-forward twice the width of an expert
+        HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE, DENSE, QKVBIAS, FF = 4, 2, 64, "qwen2", 1e-6, 1000000.0, False, False, 0, True, True, 512
+    elif arch == "qwen3moe":
         HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE = 4, 2, 128, "qwen2", 1e-6, 1000000.0, True, True, 2
     elif arch == "granitemoe":   # no QK-norm, adjacent-pair rotary embeddings, granite's four multipliers, renormalised expert weights, the "refact" pre-tokenizer
         HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE = 4, 2, 64, "refact", 1e-6, 10000.0, False, True, 0
@@ -104,7 +108,8 @@ def write(path, seed=1):
         return struct.pack("<%df" % n, *[base + scale * rng.uniform(-1, 1) for _ in range(n)])
     add("token_embd.weight", [E, V], Q4K, rand_q4k(rng, V))
     add("output_norm.weight", [E], F32, f32(E, 0.2))
-    add("output.weight", [E, V], Q6K, rand_q6k(rng, V))
+    if not DENSE:   # a dense qwen2 ties the output projection to the embedding and stores no output.weight
+        add("output.weight", [E, V], Q6K, rand_q6k(rng, V))
     for l in range(LAYERS):
         p = "blk.%d." % l
         add(p + "attn_norm.weight", [E], F32, f32(E, 0.2))
@@ -116,17 +121,26 @@ def write(path, seed=1):
             add(p + "attn_q_norm.weight", [HD if QKPH else NQ], F32, f32(HD if QKPH else NQ, 0.2))
             add(p + "attn_k_norm.weight", [HD if QKPH else NKV], F32, f32(HD if QKPH else NKV, 0.2))
         add(p + "ffn_norm.weight", [E], F32, f32(E, 0.2))
-        add(p + "ffn_gate_inp.weight", [E, NEXP], F32, f32(E * NEXP, 0.5, 0.0))
-        add(p + "ffn_gate_exps.weight", [E, FF, NEXP], Q4K, rand_q4k(rng, FF * NEXP))
-        add(p + "ffn_up_exps.weight", [E, FF, NEXP], Q4K, rand_q4k(rng, FF * NEXP))
-        add(p + "ffn_down_exps.weight", [FF, E, NEXP], Q6K, rand_q6k(rng, E * NEXP))
+        if QKVBIAS:
+            add(p + "attn_q.bias", [NQ], F32, f32(NQ, 0.5, 0.0))
+            add(p + "attn_k.bias", [NKV], F32, f32(NKV, 0.5, 0.0))
+            add(p + "attn_v.bias", [NKV], F32, f32(NKV, 0.5, 0.0))
+        if DENSE:
+            add(p + "ffn_gate.weight", [E, FF], Q4K, rand_q4k(rng, FF))
+            add(p + "ffn_up.weight", [E, FF], Q4K, rand_q4k(rng, FF))
+            add(p + "ffn_down.weight", [FF, E], Q6K, rand_q6k(rng, E * (FF // 256)))
+        else:
+            add(p + "ffn_gate_inp.weight", [E, NEXP], F32, f32(E * NEXP, 0.5, 0.0))
+            add(p + "ffn_gate_exps.weight", [E, FF, NEXP], Q4K, rand_q4k(rng, FF * NEXP))
+            add(p + "ffn_up_exps.weight", [E, FF, NEXP], Q4K, rand_q4k(rng, FF * NEXP))
+            add(p + "ffn_down_exps.weight", [FF, E, NEXP], Q6K, rand_q6k(rng, E * NEXP))
     A = ARCH
     meta = [
         kv("general.architecture", 8, A), kv("general.name", 8, "tiny-%s-test" % A),
         kv(A + ".block_count", 4, LAYERS), kv(A + ".context_length", 4, CTX), kv(A + ".embedding_length", 4, E),
         kv(A + (".expert_feed_forward_length" if ARCH == "qwen3moe" else ".feed_forward_length"), 4, FF), kv(A + ".attention.head_count", 4, HEADS), kv(A + ".attention.head_count_kv", 4, KVH),
-        kv(A + ".rope.freq_base", 6, THETA), kv(A + ".expert_used_count", 4, USED), kv(A + ".attention.layer_norm_rms_epsilon", 6, EPS),
-        kv(A + ".expert_count", 4, NEXP),
+        kv(A + ".rope.freq_base", 6, THETA), kv(A + ".attention.layer_norm_rms_epsilon", 6, EPS),
+    ] + ([] if DENSE else [kv(A + ".expert_used_count", 4, USED), kv(A + ".expert_count", 4, NEXP)]) + [
     ] + ([kv(A + ".attention.key_length", 4, HD), kv(A + ".attention.value_length", 4, HD)] if ARCH == "qwen3moe" else []) + (
         [kv(A + ".rope.dimension_count", 4, HD), kv(A + ".attention.scale", 6, ATTN_SCALE), kv(A + ".embedding_scale", 6, EMB_SCALE), kv(A + ".residual_scale", 6, RES_SCALE), kv(A + ".logit_scale", 6, LOGIT_SCALE)] if ARCH == "granitemoe" else []) + [
         kv("tokenizer.ggml.model", 8, "gpt2"), kv("tokenizer.ggml.pre", 8, PRE),
@@ -217,6 +231,17 @@ def tensor_rows(g, name):
             out.append(row)
     return out
 
+def rnd(v):   # C's roundf: half away from zero
+    return int(math.floor(abs(v) + 0.5)) * (1 if v >= 0 else -1)
+
+def q8k_roundtrip(v):
+    """What the engine's 8-bit activation quantization does to a vector before every K-quant matrix product: blocks of 256, scale = max|x| / 127."""
+    out = []
+    for b in range(0, len(v), 256):
+        blk = v[b:b + 256]; amax = max(abs(a) for a in blk); d = amax / 127.0; inv = 1.0 / d if d else 0.0
+        out += [rnd(a * inv) * d for a in blk]
+    return out
+
 def dot(a, b): return sum(x * y for x, y in zip(a, b))
 def matvec(W, x): return [dot(r, x) for r in W]
 def rms(x, w): s = 1.0 / math.sqrt(sum(v * v for v in x) / len(x) + EPS); return [v * s * wi for v, wi in zip(x, w)]
@@ -234,13 +259,22 @@ def rope(v, pos):
     return o
 
 class Ref:
-    def __init__(self, path):
+    def mv(self, W, x):   # a product with K-quant weights: with qa=True the input goes through the engine's 8-bit rounding first
+        return matvec(W, q8k_roundtrip(x) if self.qa else x)
+    def reset(self): self.K = [[] for _ in range(LAYERS)]; self.V = [[] for _ in range(LAYERS)]
+    def __init__(self, path, qa=False):
+        self.qa = qa
         g = read_gguf(path); self.g = g
-        self.emb = tensor_rows(g, "token_embd.weight"); self.out = tensor_rows(g, "output.weight"); self.on = tensor_rows(g, "output_norm.weight")[0]
+        self.emb = tensor_rows(g, "token_embd.weight"); self.out = self.emb if DENSE else tensor_rows(g, "output.weight"); self.on = tensor_rows(g, "output_norm.weight")[0]
         self.L = []
         for l in range(LAYERS):
             p = "blk.%d." % l; r = lambda n: tensor_rows(g, p + n)
             exps = lambda n: r(n)
+            if DENSE:
+                self.L.append(dict(an=r("attn_norm.weight")[0], q=r("attn_q.weight"), k=r("attn_k.weight"), v=r("attn_v.weight"), o=r("attn_output.weight"), fn=r("ffn_norm.weight")[0],
+                                   bq=r("attn_q.bias")[0], bk=r("attn_k.bias")[0], bv=r("attn_v.bias")[0], qn=None, kn=None, router=None,
+                                   dgate=r("ffn_gate.weight"), dup=r("ffn_up.weight"), ddown=r("ffn_down.weight")))
+                continue
             gate, up, down = exps("ffn_gate_exps.weight"), exps("ffn_up_exps.weight"), exps("ffn_down_exps.weight")
             self.L.append(dict(an=r("attn_norm.weight")[0], q=r("attn_q.weight"), k=r("attn_k.weight"), v=r("attn_v.weight"), o=r("attn_output.weight"),
                                qn=r("attn_q_norm.weight")[0] if QKMODE else None, kn=r("attn_k_norm.weight")[0] if QKMODE else None, fn=r("ffn_norm.weight")[0], router=r("ffn_gate_inp.weight"),
@@ -250,7 +284,9 @@ class Ref:
     def step(self, tok):
         x = [EMB_SCALE * a for a in self.emb[tok]]; pos = len(self.K[0]); grp = HEADS // KVH
         for l, L in enumerate(self.L):
-            xn = rms(x, L["an"]); q = matvec(L["q"], xn); k = matvec(L["k"], xn); v = matvec(L["v"], xn)
+            xn = rms(x, L["an"]); q = self.mv(L["q"], xn); k = self.mv(L["k"], xn); v = self.mv(L["v"], xn)
+            if QKVBIAS:
+                q = [a + b for a, b in zip(q, L["bq"])]; k = [a + b for a, b in zip(k, L["bk"])]; v = [a + b for a, b in zip(v, L["bv"])]
             if QKMODE == 2:   # one weight of head_dim, applied to every head separately
                 q = sum((rms(q[h * HD:(h + 1) * HD], L["qn"]) for h in range(HEADS)), []); k = sum((rms(k[h * HD:(h + 1) * HD], L["kn"]) for h in range(KVH)), [])
             elif QKMODE == 1:
@@ -263,7 +299,12 @@ class Ref:
                 sc = [dot(qs, kk[ks]) * (ATTN_SCALE if ATTN_SCALE else 1.0 / math.sqrt(HD)) for kk in self.K[l]]
                 m = max(sc); w = [math.exp(a - m) for a in sc]; z = sum(w)
                 att += [sum(w[t] / z * self.V[l][t][ks][i] for t in range(len(w))) for i in range(HD)]
-            x = [a + RES_SCALE * b for a, b in zip(x, matvec(L["o"], att))]
+            x = [a + RES_SCALE * b for a, b in zip(x, self.mv(L["o"], att))]
+            if DENSE:
+                xn = rms(x, L["fn"]); gg, uu = self.mv(L["dgate"], xn), self.mv(L["dup"], xn)
+                hh = [a / (1 + math.exp(-a)) * b for a, b in zip(gg, uu)]
+                x = [a + RES_SCALE * b for a, b in zip(x, self.mv(L["ddown"], hh))]
+                continue
             xn = rms(x, L["fn"]); lg = matvec(L["router"], xn); m = max(lg); p = [math.exp(a - m) for a in lg]; z = sum(p); p = [a / z for a in p]
             top = sorted(range(NEXP), key=lambda e: (-p[e], e))[:USED]
             wts = {e: p[e] for e in top}
@@ -271,12 +312,12 @@ class Ref:
                 zz = sum(wts.values()); wts = {e: w / zz for e, w in wts.items()}
             moe = [0.0] * E
             for e in top:
-                gg, uu = matvec(L["gate"][e], xn), matvec(L["up"][e], xn)
+                gg, uu = self.mv(L["gate"][e], xn), self.mv(L["up"][e], xn)
                 hh = [a / (1 + math.exp(-a)) * b for a, b in zip(gg, uu)]
-                y = matvec(L["down"][e], hh)
+                y = self.mv(L["down"][e], hh)
                 moe = [a + wts[e] * b for a, b in zip(moe, y)]
             x = [a + RES_SCALE * b for a, b in zip(x, moe)]
-        lo = [a / LOGIT_SCALE for a in matvec(self.out, rms(x, self.on))]; m = max(lo); lse = m + math.log(sum(math.exp(a - m) for a in lo))
+        lo = [a / LOGIT_SCALE for a in self.mv(self.out, rms(x, self.on))]; m = max(lo); lse = m + math.log(sum(math.exp(a - m) for a in lo))
         return [a - lse for a in lo]
 
 def run_engine(engine, args, float_math):
@@ -285,17 +326,20 @@ def run_engine(engine, args, float_math):
     return subprocess.run([engine] + args, capture_output=True, text=True, check=True, env=env).stdout
 
 def check(engine, path):
-    """Two modes. Float math (CLUTOR_FLOAT_MATH=1) must match this reference to float32 rounding: a bug in attention, rope, the router or the experts shows here.
-    The default integer kernels quantize activations to 8 bits, so they only have to stay within a stated tolerance: a broken vector path shows there."""
+    """Two modes, each against a reference built for it.
+    Float math (CLUTOR_FLOAT_MATH=1) must match the reference to float32 rounding: a bug in attention, rope, the router, biases, the dense or expert feed-forwards shows here.
+    The default integer kernels (K-quant weights times 8-bit activations) are checked against the same reference with the engine's 8-bit activation rounding applied to every
+    K-quant product, so a broken vector path shows as a real difference and not as noise; the agreement is limited only by rounding ties and float accumulation order."""
     toks, _ = vocab()
     prompts = ["the cat is in the room", "a rat on the mat", "we are in the car and on the road"]
+    ref = Ref(path)
     bad = 0
     for text in prompts:
         ids = [int(t) for t in run_engine(engine, ["tokenize", path, text], False).split()]
-        r = Ref(path)
-        for t in ids: lp = r.step(t)
-        gap = sorted(lp, reverse=True)
-        for float_math, max_tol, mean_tol, label in ((True, 1e-3, 1e-3, "float math  "), (False, 0.4, 0.1, "integer dots")):
+        for float_math, max_tol, mean_tol, label in ((True, 1e-3, 1e-3, "float math  "), (False, 0.05, 0.01, "integer dots")):
+            ref.qa = not float_math; ref.reset()
+            for t in ids: lp = ref.step(t)
+            gap = sorted(lp, reverse=True)
             res = json.loads(run_engine(engine, ["logits", path, text, "--top", str(len(toks))], float_math))
             assert res["tokens"] == ids, (res["tokens"], ids)
             eng = {t["id"]: t["logprob"] for t in res["top"]}

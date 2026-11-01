@@ -26,6 +26,8 @@ export interface ArchitectureSpec {
   sharedExperts: number;
   expertFfn: number;
   maxContext: number;
+  /** The output projection is the embedding matrix itself (small Qwen2.5 models), so the vocabulary matrix is counted once. */
+  tiedEmbeddings?: boolean;
   /** The headline parameter count the vendor publishes, to check the computation against. */
   publishedParamsB: number;
   source: string;
@@ -79,6 +81,11 @@ export const CATALOG: ArchitectureSpec[] = [
     attention: { kind: "gqa", heads: 28, kvHeads: 4, headDim: 128 }, experts: 0, expertsUsed: 0, sharedExperts: 0, expertFfn: 0, maxContext: 131072,
     publishedParamsB: 7.6, source: "Qwen2.5-Coder model card",
   },
+  {
+    id: "qwen2.5-1.5b", name: "Qwen2.5-1.5B-Instruct (dense)", family: "qwen2", layers: 28, denseLayers: 28, hidden: 1536, vocab: 151936, denseFfn: 8960,
+    attention: { kind: "gqa", heads: 12, kvHeads: 2, headDim: 128 }, experts: 0, expertsUsed: 0, sharedExperts: 0, expertFfn: 0, maxContext: 32768, tiedEmbeddings: true,
+    publishedParamsB: 1.54, source: "Qwen2.5 model card; shapes read from the GGUF header of qwen2.5-1.5b-instruct",
+  },
 ];
 
 /** Parameters in one layer: [attention, dense feed-forward, routed experts (all), each routed expert, shared experts, router]. */
@@ -100,7 +107,7 @@ export function layerParams(s: ArchitectureSpec, moe: boolean): { attention: num
 }
 
 export function totalParams(s: ArchitectureSpec): number {
-  let n = 2 * s.vocab * s.hidden;
+  let n = (s.tiedEmbeddings ? 1 : 2) * s.vocab * s.hidden;
   for (let l = 0; l < s.layers; l++) {
     const p = layerParams(s, s.experts > 0 && l >= s.denseLayers);
     n += p.attention + p.denseFfn + p.routed + p.shared + p.router;
@@ -117,7 +124,7 @@ export function approximateLayout(s: ArchitectureSpec, bitsPerWeight: number): M
   let offset = 0;
   const layers: LayerLayout[] = [];
   let total = 0;
-  const resident = bytes(2 * s.vocab * s.hidden);
+  const resident = bytes((s.tiedEmbeddings ? 1 : 2) * s.vocab * s.hidden);
   for (let l = 0; l < s.layers; l++) {
     const moe = s.experts > 0 && l >= s.denseLayers;
     const p = layerParams(s, moe);

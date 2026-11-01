@@ -8,7 +8,7 @@ Run on 2026-10-31 on one MacBook Air (Apple M2, 16 GiB, macOS), repository state
 |---|---|---|---|
 | C unit tests, three kernel builds | 41,811 checks, 0 failed, on NEON+dotprod, NEON, and portable C | cache policies and invariants, router and SMART-ROUTE bounds, GGUF and metadata readers, dequantizers, integer dot products against dequantize-and-multiply, the expert store | `make -C c test test-paths` |
 | Sanitizer build of the unit tests | 41,811 checks, 0 failed under AddressSanitizer + UBSan | memory safety of the same code | `make -C c sanitize` |
-| Golden test | 54 checks OK, 0 FAIL, in 9 blocks (olmoe, qwen3moe and granitemoe, each on 3 builds) | the engine against an independent pure-Python forward pass on a tiny generated model with random Q4_K/Q6_K weights: exact float math agrees to 6e-5 in logprob; the 8-bit integer path stays inside a stated tolerance (mean 0.1, max 0.4; measured mean 0.03-0.05, max 0.2) | `make -C c golden-paths` |
+| Golden test | 72 checks OK, 0 FAIL, in 12 blocks (olmoe, qwen3moe, granitemoe and dense qwen2, each on 3 builds) | the engine against an independent pure-Python forward pass on a tiny generated model with random Q4_K/Q6_K weights: exact float math agrees to 8e-5 in logprob, and the 8-bit integer path agrees to 5e-5 against a reference that applies the same 8-bit activation rounding to every K-quant product (it used to be checked only against a loose tolerance) | `make -C c golden-paths` |
 | Fuzzing | 600 corrupted model files this run (3,600 earlier), 0 crashes or hangs under ASan + UBSan | the GGUF, metadata and tokenizer readers, and the forward pass on bad shapes | `make -C c fuzz` |
 | TypeScript | typecheck clean, lint clean, 168 core tests and 98 CLI tests pass | planner, agent, receipts, server, CLI, installer (checksum match, tamper, missing line, insecure URL), resumable verified downloads, `generate` and `quality` | `npm run typecheck && npm run lint && npm test` |
 | CI on GitHub | all 6 jobs green on the last pushed commit (Linux and macOS, Node 20 and 22, sanitizers + fuzz, dependency audit) | includes the AVX2 kernels on a real x86 Linux runner: `kernel path: avx2`, 41,811 checks, 0 failed | `gh run list` |
@@ -52,6 +52,21 @@ The file (2,059,356,000 bytes, 1.92 GiB) was downloaded across several dropped c
 | Regression: OLMoE logits, tokenizer and unit tests after the architecture refactor | unchanged |
 
 Judged the same way as Qwen3: the routing and the generated text match, the exact-float path agrees with an independent reference to 5e-5 on a tiny Granite-style model, and the remaining logprob gaps look like numerical noise, which is not proven. Qwen3 and Granite both show larger gaps than OLMoE; both are deeper or sharper models than OLMoE's 16 layers.
+
+## 3c. Agreement with llama.cpp, Qwen2.5-1.5B-Instruct Q4_K_M (the fourth architecture, dense; run 2026-11-01)
+
+The file (1,117,320,736 bytes, 1.04 GiB) was verified byte-exact against the publisher's SHA-256 before use.
+
+| Check | Result |
+|---|---|
+| Tokenizer, 24 strings, on the real file | identical, 0 mismatches |
+| Next-token logprobs, 6 prompts | token ids identical 6/6; same top token 6/6; top-5 overlap 4-5 of 5; mean abs logprob difference 0.09-0.22 (worst single 1.03); all 6 inside the tolerances |
+| Greedy continuation, 3 prompts, 24 tokens | identical on 1 of 3; the other two diverge at generated tokens 14 and 11 |
+| AddressSanitizer + UBSan on the real model; 200 fuzzed dense files | no reports; 0 failures |
+| Regression: OLMoE logits (6/6) and tokenizer, Granite (same 4 of 6 as before), unit tests | unchanged |
+| The engine refuses `--cache-mb` and `--smart` on this dense model | yes, with an explanation |
+
+The two greedy divergences, investigated. At each, the top two candidates are close in llama.cpp itself (0.36 apart). On the code prompt (token 14), exact float math ranks the candidates the way llama.cpp does (75698 first, 1887 second, 0.21 apart); the 8-bit activation rounding of the integer path lifts 1887 by 0.2 and flips the near-tie, and llama.cpp's own rounding lands differently from mine. On the story prompt (token 11), llama.cpp evaluated on the identical text prefix ranks 264 first, as this engine does, while its own incremental decode chose 566: llama.cpp disagrees with itself between batch and token-by-token evaluation at this position, and the engine agrees with its batch evaluation to within 0.02-0.05. So the evidence is near-tie flips from numerical noise, not a structural error; but this is a weaker result than the three earlier models (identical continuations on all 3 prompts for OLMoE, Qwen3 and Granite), and a long-generation comparison or a perplexity comparison with llama.cpp is the check that would settle it.
 
 ## 4. Speed and memory (earlier; one run per setting, about 30% run-to-run spread)
 

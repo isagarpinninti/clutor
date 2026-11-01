@@ -18,7 +18,9 @@
 typedef struct { const uint8_t *p; uint32_t type; int rows, cols; } cl_w;   /* rows x cols weights of `type`, row-major (cols is the input width) */
 
 typedef struct {
-  cl_w attn_norm, wq, wk, wv, wo, qn, kn, ffn_norm, router, gate, up, down; /* gate/up/down are the fused expert tensors */
+  cl_w attn_norm, wq, wk, wv, wo, qn, kn, ffn_norm, router, gate, up, down; /* gate/up/down are the fused expert tensors, or (dense models) the plain feed-forward matrices */
+  cl_w bq, bk, bv;                          /* qwen2: biases of the query, key and value projections */
+  float *bq_f, *bk_f, *bv_f;
   float *attn_norm_f, *qn_f, *kn_f, *ffn_norm_f, *router_f;
   uint64_t gate_slab, up_slab, down_slab;   /* bytes of one expert in each fused tensor */
 } cl_fwd_layer;
@@ -32,6 +34,8 @@ typedef struct {
   int n_q, n_kvw;          /* width of the query projection (n_head * head_dim) and of the key / value projections (n_head_kv * head_dim) */
   int qk_mode;             /* 0: no QK-norm (granitemoe); 1: RMSNorm over the whole projected vector (olmoe); 2: over each head_dim vector with one shared weight (qwen3moe) */
   int qk_per_head;         /* qk_mode == 2 */
+  int dense;               /* qwen2: no experts, every layer has one plain SwiGLU feed-forward of width n_ff_exp */
+  int qkv_bias;            /* the query, key and value projections have bias vectors */
   int rope_pairs;          /* 1: rotate adjacent pairs (2i, 2i+1) (llama.cpp's NORM rope, granitemoe); 0: rotate the two halves (NEOX: olmoe, qwen3moe) */
   float embed_scale, attn_scale, resid_scale, logit_scale; /* granite's multipliers; 1, 1/sqrt(head_dim), 1, 1 for the others */
   int norm_topk;           /* qwen3moe and granitemoe renormalise the chosen experts' weights to sum to 1; olmoe uses the raw softmax probabilities */

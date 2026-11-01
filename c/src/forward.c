@@ -35,12 +35,13 @@ static float *to_float(const cl_w *w, size_t n) {
 }
 
 /* A metadata key of this model's architecture, for example "olmoe.block_count". */
-typedef struct { const char *name; int qk_mode, norm_topk, rope_pairs, expert_ff_key, scaled; } arch_spec;
+typedef struct { const char *name; int qk_mode, norm_topk, rope_pairs, expert_ff_key, scaled, dense, qkv_bias; } arch_spec;
 static const arch_spec ARCHS[] = {
-  /* name        qk-norm  renorm  pair-rope  expert_feed_forward_length  granite multipliers */
-  {"olmoe",      1,       0,      0,         0,                          0},
-  {"qwen3moe",   2,       1,      0,         1,                          0},
-  {"granitemoe", 0,       1,      1,         0,                          1},
+  /* name        qk-norm  renorm  pair-rope  expert_feed_forward_length  granite multipliers  dense  qkv bias */
+  {"olmoe",      1,       0,      0,         0,                          0,                   0,     0},
+  {"qwen3moe",   2,       1,      0,         1,                          0,                   0,     0},
+  {"granitemoe", 0,       1,      1,         0,                          1,                   0,     0},
+  {"qwen2",      0,       0,      0,         0,                          0,                   1,     1},
 };
 
 #define AKEY(buf, suffix) snprintf(buf, sizeof buf, "%s.%s", f->arch, suffix)
@@ -51,9 +52,10 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   if (cl_model_open(&f->model, path, err, errlen)) return 1;
   const arch_spec *spec = NULL;
   for (size_t i = 0; i < sizeof ARCHS / sizeof *ARCHS; i++) if (!strcmp(f->model.arch, ARCHS[i].name)) spec = &ARCHS[i];
-  if (!spec) { snprintf(err, errlen, "the forward pass supports the \"olmoe\", \"qwen3moe\" and \"granitemoe\" architectures, not \"%s\"", f->model.arch); goto fail; }
+  if (!spec) { snprintf(err, errlen, "the forward pass supports the \"olmoe\", \"qwen3moe\", \"granitemoe\" and \"qwen2\" (dense) architectures, not \"%s\"", f->model.arch); goto fail; }
   snprintf(f->arch, sizeof f->arch, "%s", spec->name);
-  f->qk_mode = spec->qk_mode; f->qk_per_head = spec->qk_mode == 2; f->norm_topk = spec->norm_topk; f->rope_pairs = spec->rope_pairs;
+  f->qk_mode = spec->qk_mode; f->qk_per_head = spec->qk_mode == 2; f->norm_topk = spec->norm_topk; f->rope_pairs = spec->rope_pairs; f->dense = spec->dense; f->qkv_bias = spec->qkv_bias;
+  const int NU = spec->dense ? 1 : 0;   /* a dense model has no experts, but its single feed-forward needs the same scratch as one expert */
   f->embed_scale = f->resid_scale = f->logit_scale = 1.0f; f->attn_scale = 0;
   int fd = open(path, O_RDONLY);
   struct stat st;
@@ -74,7 +76,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   { char k[96];
     AKEY(k, "attention.layer_norm_rms_epsilon"); f->rms_eps = cl_meta_f64(&f->meta, k, &d) ? (float)d : 1e-5f;
     AKEY(k, "rope.freq_base"); f->rope_base = cl_meta_f64(&f->meta, k, &d) ? (float)d : 10000.0f; }
-  if (f->n_embd < 256 || f->n_head < 1 || f->n_head > f->n_embd || f->n_embd % f->n_head || f->n_layer < 1 || f->n_expert < 1 || f->n_used < 1 || f->n_used > f->n_expert || f->n_ff_exp < 1) {
+  if (f->n_embd < 256 || f->n_head < 1 || f->n_head > f->n_embd || f->n_embd % f->n_head || f->n_layer < 1 || (!f->dense && (f->n_expert < 1 || f->n_used < 1 || f->n_used > f->n_expert)) || f->n_ff_exp < 1) {
     snprintf(err, errlen, "implausible hyper-parameters (embedding %d, heads %d, layers %d, experts %d, used %d, expert width %d)", f->n_embd, f->n_head, f->n_layer, f->n_expert, f->n_used, f->n_ff_exp); goto fail;
   }
   f->head_dim = f->n_embd / f->n_head;
@@ -93,7 +95,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   f->n_q = f->n_head * f->head_dim; f->n_kvw = f->n_head_kv * f->head_dim;
   if (f->attn_scale <= 0) f->attn_scale = 1.0f / sqrtf((float)f->head_dim);
   if (f->n_embd % 256 || f->n_ff_exp % 256 || f->n_q % 256) { snprintf(err, errlen, "embedding width %d / expert width %d / query width %d must be multiples of 256 for the K-quant kernels", f->n_embd, f->n_ff_exp, f->n_q); goto fail; }
-  if (f->n_used > 64 || f->n_expert > 4096) { snprintf(err, errlen, "unsupported expert counts"); goto fail; }
+  if (!f->dense && (f->n_used > 64 || f->n_expert > 4096)) { snprintf(err, errlen, "unsupported expert counts"); goto fail; }
   if (n_ctx > f->n_ctx_max) n_ctx = f->n_ctx_max;
   if (n_ctx < 1) n_ctx = 512;
   f->n_ctx_max = n_ctx;
@@ -113,43 +115,52 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
     cl_fwd_layer *y = &f->L[l];
     if (bind(f, &y->attn_norm, "attn_norm.weight", l, 1, err, errlen) || bind(f, &y->wq, "attn_q.weight", l, 2, err, errlen) || bind(f, &y->wk, "attn_k.weight", l, 2, err, errlen) ||
         bind(f, &y->wv, "attn_v.weight", l, 2, err, errlen) || bind(f, &y->wo, "attn_output.weight", l, 2, err, errlen) || (f->qk_mode && bind(f, &y->qn, "attn_q_norm.weight", l, 1, err, errlen)) ||
-        (f->qk_mode && bind(f, &y->kn, "attn_k_norm.weight", l, 1, err, errlen)) || bind(f, &y->ffn_norm, "ffn_norm.weight", l, 1, err, errlen) || bind(f, &y->router, "ffn_gate_inp.weight", l, 2, err, errlen) ||
-        bind(f, &y->gate, "ffn_gate_exps.weight", l, 3, err, errlen) || bind(f, &y->up, "ffn_up_exps.weight", l, 3, err, errlen) || bind(f, &y->down, "ffn_down_exps.weight", l, 3, err, errlen)) goto fail;
+        (f->qk_mode && bind(f, &y->kn, "attn_k_norm.weight", l, 1, err, errlen)) || bind(f, &y->ffn_norm, "ffn_norm.weight", l, 1, err, errlen)) goto fail;
+    if (f->dense) {
+      if (bind(f, &y->gate, "ffn_gate.weight", l, 2, err, errlen) || bind(f, &y->up, "ffn_up.weight", l, 2, err, errlen) || bind(f, &y->down, "ffn_down.weight", l, 2, err, errlen)) goto fail;
+    } else if (bind(f, &y->router, "ffn_gate_inp.weight", l, 2, err, errlen) || bind(f, &y->gate, "ffn_gate_exps.weight", l, 3, err, errlen) || bind(f, &y->up, "ffn_up_exps.weight", l, 3, err, errlen) || bind(f, &y->down, "ffn_down_exps.weight", l, 3, err, errlen)) goto fail;
+    if (f->qkv_bias && (bind(f, &y->bq, "attn_q.bias", l, 1, err, errlen) || bind(f, &y->bk, "attn_k.bias", l, 1, err, errlen) || bind(f, &y->bv, "attn_v.bias", l, 1, err, errlen))) goto fail;
     const int N = f->n_embd;
     const int QN = f->qk_per_head ? f->head_dim : f->n_q, KN = f->qk_per_head ? f->head_dim : f->n_kvw;
     if (y->attn_norm.cols != N || y->ffn_norm.cols != N || (f->qk_mode && (y->qn.cols != QN || y->kn.cols != KN)) ||
         y->wq.rows != f->n_q || y->wq.cols != N || y->wk.rows != f->n_kvw || y->wk.cols != N || y->wv.rows != f->n_kvw || y->wv.cols != N || y->wo.rows != N || y->wo.cols != f->n_q ||
-        y->up.rows != f->n_ff_exp || y->up.cols != N || y->gate.cols != N) {
+        y->up.rows != f->n_ff_exp || y->up.cols != N || y->gate.cols != N || (f->qkv_bias && (y->bq.cols != f->n_q || y->bk.cols != f->n_kvw || y->bv.cols != f->n_kvw))) {
       snprintf(err, errlen, "layer %d: attention or norm tensor shapes do not match the embedding width %d", l, N); goto fail;
     }
-    char nm[200];
-    snprintf(nm, sizeof nm, "blk.%d.ffn_gate_exps.weight", l);
-    const cl_tensor *tg = find(&f->model, nm);
-    if (y->router.rows != f->n_expert || y->router.cols != f->n_embd || (int)tg->dims[2] != f->n_expert || y->up.cols != N || y->gate.rows != f->n_ff_exp || y->down.rows != f->n_embd || y->down.cols != f->n_ff_exp) {
-      snprintf(err, errlen, "layer %d: tensor shapes do not match the hyper-parameters", l); goto fail;
+    if (f->dense) {
+      if (y->gate.rows != f->n_ff_exp || y->down.rows != f->n_embd || y->down.cols != f->n_ff_exp) { snprintf(err, errlen, "layer %d: feed-forward shapes do not match the hyper-parameters", l); goto fail; }
+    } else {
+      char nm[200];
+      snprintf(nm, sizeof nm, "blk.%d.ffn_gate_exps.weight", l);
+      const cl_tensor *tg = find(&f->model, nm);
+      if (y->router.rows != f->n_expert || y->router.cols != f->n_embd || (int)tg->dims[2] != f->n_expert || y->up.cols != N || y->gate.rows != f->n_ff_exp || y->down.rows != f->n_embd || y->down.cols != f->n_ff_exp) {
+        snprintf(err, errlen, "layer %d: tensor shapes do not match the hyper-parameters", l); goto fail;
+      }
+      y->gate_slab = (uint64_t)y->gate.rows * cl_row_bytes(y->gate.type, (uint64_t)y->gate.cols);
+      y->up_slab = (uint64_t)y->up.rows * cl_row_bytes(y->up.type, (uint64_t)y->up.cols);
+      y->down_slab = (uint64_t)y->down.rows * cl_row_bytes(y->down.type, (uint64_t)y->down.cols);
     }
-    y->gate_slab = (uint64_t)y->gate.rows * cl_row_bytes(y->gate.type, (uint64_t)y->gate.cols);
-    y->up_slab = (uint64_t)y->up.rows * cl_row_bytes(y->up.type, (uint64_t)y->up.cols);
-    y->down_slab = (uint64_t)y->down.rows * cl_row_bytes(y->down.type, (uint64_t)y->down.cols);
     y->attn_norm_f = to_float(&y->attn_norm, (size_t)f->n_embd); y->ffn_norm_f = to_float(&y->ffn_norm, (size_t)f->n_embd);
     if (f->qk_mode) { y->qn_f = to_float(&y->qn, (size_t)QN); y->kn_f = to_float(&y->kn, (size_t)KN); }
-    y->router_f = malloc((size_t)f->n_expert * f->n_embd * sizeof(float));
-    if (!y->attn_norm_f || !y->ffn_norm_f || (f->qk_mode && (!y->qn_f || !y->kn_f)) || !y->router_f) { snprintf(err, errlen, "out of memory"); goto fail; }
+    if (f->qkv_bias) { y->bq_f = to_float(&y->bq, (size_t)f->n_q); y->bk_f = to_float(&y->bk, (size_t)f->n_kvw); y->bv_f = to_float(&y->bv, (size_t)f->n_kvw); }
+    if (!f->dense) y->router_f = malloc((size_t)f->n_expert * f->n_embd * sizeof(float));
+    if (!y->attn_norm_f || !y->ffn_norm_f || (f->qk_mode && (!y->qn_f || !y->kn_f)) || (!f->dense && !y->router_f) || (f->qkv_bias && (!y->bq_f || !y->bk_f || !y->bv_f))) { snprintf(err, errlen, "out of memory"); goto fail; }
     for (int e = 0; e < f->n_expert; e++) cl_dequant_row(y->router.type, y->router.p + (size_t)e * cl_row_bytes(y->router.type, (uint64_t)f->n_embd), y->router_f + (size_t)e * f->n_embd, f->n_embd);
   }
   size_t kvn = (size_t)f->n_layer * f->n_ctx_max * f->n_kvw;
   size_t E = (size_t)f->n_embd;
   f->kc = calloc(kvn, sizeof(float)); f->vc = calloc(kvn, sizeof(float));
   f->x = calloc(E, 4); f->xn = calloc(E, 4); f->q = calloc((size_t)f->n_q, 4); f->k = calloc((size_t)f->n_kvw, 4); f->v = calloc((size_t)f->n_kvw, 4); f->att = calloc((size_t)f->n_q, 4);
-  f->scores = calloc((size_t)f->n_ctx_max, 4); f->moe = calloc(E, 4); f->hg = calloc((size_t)f->n_ff_exp * f->n_used, 4); f->hu = calloc((size_t)f->n_ff_exp * f->n_used, 4); f->hd = calloc(E * (size_t)f->n_used, 4);
-  f->rl = calloc((size_t)f->n_expert, 4); f->rlogit = calloc((size_t)f->n_expert, 4);
-  f->xq_ffk = calloc((size_t)f->n_used, sizeof(cl_xq));
+  f->scores = calloc((size_t)f->n_ctx_max, 4); f->moe = calloc(E, 4); f->hg = calloc((size_t)f->n_ff_exp * (size_t)(f->n_used + NU), 4); f->hu = calloc((size_t)f->n_ff_exp * (size_t)(f->n_used + NU), 4); f->hd = calloc(E * (size_t)(f->n_used + NU), 4);
+  f->rl = calloc((size_t)f->n_expert + 1, 4); f->rlogit = calloc((size_t)f->n_expert + 1, 4);
+  f->xq_ffk = calloc((size_t)f->n_used + 1, sizeof(cl_xq));
   if (!f->xq_ffk || !cl_xq_init(&f->xq_e, f->n_embd) || !cl_xq_init(&f->xq_q, f->n_q) || !cl_xq_init(&f->xq_ff, f->n_ff_exp)) { snprintf(err, errlen, "out of memory"); goto fail; }
   for (int k = 0; k < f->n_used; k++) if (!cl_xq_init(&f->xq_ffk[k], f->n_ff_exp)) { snprintf(err, errlen, "out of memory"); goto fail; }
   if (!f->kc || !f->vc || !f->x || !f->xn || !f->q || !f->k || !f->v || !f->att || !f->scores || !f->moe || !f->hg || !f->hu || !f->hd || !f->rl || !f->rlogit) { snprintf(err, errlen, "out of memory"); goto fail; }
+  if (f->dense && opts && (opts->cache_bytes || opts->smart.enabled)) { snprintf(err, errlen, "this model is dense (it has no experts), so there is nothing to stream or substitute: --cache-mb and --smart apply to mixture-of-experts models only"); goto fail; }
   { long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
     if ((!opts || !opts->cache_bytes) && pages > 0 && psz > 0 && f->map_size > (size_t)pages * (size_t)psz * 8 / 10) {
-      snprintf(err, errlen, "the model file (%.1f GiB) is larger than 80%% of this machine's memory (%.1f GiB): mapping it whole would thrash; stream its experts with --cache-mb N", f->map_size / 1073741824.0, (double)pages * (double)psz / 1073741824.0); goto fail;
+      snprintf(err, errlen, "the model file (%.1f GiB) is larger than 80%% of this machine's memory (%.1f GiB): mapping it whole would thrash; %s", f->map_size / 1073741824.0, (double)pages * (double)psz / 1073741824.0, f->dense ? "a dense model has no experts to stream, so it needs enough memory for the whole file" : "stream its experts with --cache-mb N"); goto fail;
     } }
   if (opts && opts->smart.enabled && !opts->cache_bytes) { snprintf(err, errlen, "--smart needs --cache-mb: it substitutes experts that are already in the cache"); goto fail; }
   if (opts && opts->cache_bytes) {
@@ -181,7 +192,7 @@ fail:
 }
 
 void cl_fwd_close(cl_fwd *f) {
-  if (f->L) for (int l = 0; l < f->n_layer; l++) { free(f->L[l].attn_norm_f); free(f->L[l].ffn_norm_f); free(f->L[l].qn_f); free(f->L[l].kn_f); free(f->L[l].router_f); }
+  if (f->L) for (int l = 0; l < f->n_layer; l++) { free(f->L[l].attn_norm_f); free(f->L[l].ffn_norm_f); free(f->L[l].bq_f); free(f->L[l].bk_f); free(f->L[l].bv_f); free(f->L[l].qn_f); free(f->L[l].kn_f); free(f->L[l].router_f); }
   free(f->L); free(f->out_norm_f);
   free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
   cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_q); cl_xq_free(&f->xq_ff);
@@ -243,6 +254,10 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     rmsnorm(f->xn, f->x, y->attn_norm_f, E, f->rms_eps);
     cl_xq_quantize(&f->xq_e, f->xn);
     { cl_mv j[3] = {mv(&y->wq, f->xn, &f->xq_e, f->q), mv(&y->wk, f->xn, &f->xq_e, f->k), mv(&y->wv, f->xn, &f->xq_e, f->v)}; cl_matvec_batch(j, 3); }
+    if (f->qkv_bias) {   /* qwen2: the projections carry biases */
+      for (int i = 0; i < f->n_q; i++) f->q[i] += y->bq_f[i];
+      for (int i = 0; i < f->n_kvw; i++) { f->k[i] += y->bk_f[i]; f->v[i] += y->bv_f[i]; }
+    }
     if (f->qk_mode == 0) { /* granitemoe: no QK-norm */ }
     else if (f->qk_per_head) {   /* qwen3moe: each head's vector is normalised on its own, with one weight shared by all heads */
       for (int h = 0; h < H; h++) rmsnorm(f->q + h * hd, f->q + h * hd, y->qn_f, hd, f->rms_eps);
@@ -280,6 +295,18 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     cl_xq_quantize(&f->xq_q, f->att);
     { cl_mv j = mv(&y->wo, f->att, &f->xq_q, f->hd); cl_matvec_batch(&j, 1); }
     for (int i = 0; i < E; i++) f->x[i] += f->resid_scale * f->hd[i];
+
+    if (f->dense) {   /* one plain SwiGLU feed-forward instead of a router and experts */
+      const int FF = f->n_ff_exp;
+      rmsnorm(f->xn, f->x, y->ffn_norm_f, E, f->rms_eps);
+      cl_xq_quantize(&f->xq_e, f->xn);
+      { cl_mv j[2] = {mv(&y->gate, f->xn, &f->xq_e, f->hg), mv(&y->up, f->xn, &f->xq_e, f->hu)}; cl_matvec_batch(j, 2); }
+      for (int i = 0; i < FF; i++) f->hg[i] = f->hg[i] / (1.0f + expf(-f->hg[i])) * f->hu[i];
+      cl_xq_quantize(&f->xq_ff, f->hg);
+      { cl_mv j = mv(&y->down, f->hg, &f->xq_ff, f->hd); cl_matvec_batch(&j, 1); }
+      for (int i = 0; i < E; i++) f->x[i] += f->resid_scale * f->hd[i];
+      continue;
+    }
 
     /* router-ahead: apply the NEXT layer's router to this layer's hidden state (the residual stream changes slowly) and start reading what it picks,
      * so the reads overlap this layer's experts */
