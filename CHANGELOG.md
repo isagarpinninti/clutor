@@ -5,6 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 ## Unreleased
 
 ### Fixed
+- **The release workflow no longer builds macOS arm64 on the retired `macos-14` image** (GitHub brownouts it now and retires it on 2026-11-02, which would have left a release without engine binaries); it uses `macos-15`.
 - **`generate` now stops at any end-of-generation token**, not only the model's configured EOS: Qwen2.5 configures `<|im_end|>` but a base-style continuation ends with `<|endoftext|>`, and the engine used to run on past it and invent a "Human:" turn. It now stops on the same standard control tokens llama.cpp does (`<|endoftext|>`, `<|im_end|>`, `<|eot_id|>`, `<|end_of_text|>`, `<|end|>`, `<|eom_id|>`, `<end_of_turn>`, `</s>`).
 
 ### Measured
