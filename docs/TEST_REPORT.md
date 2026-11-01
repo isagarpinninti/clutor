@@ -20,6 +20,7 @@ Run on 2026-10-31 on one MacBook Air (Apple M2, 16 GiB, macOS), repository state
 | Tokenizer, 24 strings (ASCII, code, digits, newlines, accents, CJK, Cyrillic, emoji, special tokens) | identical, 0 mismatches |
 | Next-token distribution, 6 prompts | token ids identical 6/6; same top token 6/6; top-5 overlap 4-5 of 5; mean abs logprob difference 0.04-0.22 (worst single 0.49) |
 | Router choices (visible 6 of 8 experts, all 16 layers) | 455/456 = **99.8%** inside this engine's top-8 (llama.cpp with an f32 KV cache) |
+| Greedy continuation, 3 prompts, 24 tokens (first measured 2026-11-01) | identical on 2 of 3; the story prompt diverges at generated token 7, a near-tie 0.15 wide. llama.cpp evaluating the same text in one batch ranks the candidates exactly as this engine does (this engine's exact-float path: 43519 at -0.862 and 1500 at -1.015, llama.cpp's batch evaluation: -0.862 and -1.013) while llama.cpp's own incremental greedy run chose the other one: llama.cpp differs from itself between its batch and token-by-token paths here, and the engine agrees with its batch path |
 | Streamed from disk equals mapped, 8 cache/policy/prefetch/smart settings | byte-identical text in all 8 |
 | Perplexity against Colibri's engine on the same 799 tokens (earlier) | 10.943 (this engine) against 10.87 (Colibri) |
 

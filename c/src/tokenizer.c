@@ -219,6 +219,16 @@ int cl_tok_bos(const cl_tok *t) { return t->bos; }
 int cl_tok_eos(const cl_tok *t) { return t->eos; }
 int cl_tok_add_bos(const cl_tok *t) { return t->add_bos; }
 
+int cl_tok_is_eog(const cl_tok *t, int id) {
+  if (id < 0 || (uint64_t)id >= t->n) return 0;
+  if (id == t->eos) return 1;
+  if (!t->types || (t->types[id] != 3 && t->types[id] != 4)) return 0;   /* only control or user-defined tokens */
+  static const char *const eog[] = {"<|endoftext|>", "<|im_end|>", "<|eot_id|>", "<|end_of_text|>", "<|end|>", "<|eom_id|>", "<end_of_turn>", "</s>"};
+  const cl_str *tk = &t->tokens[id];
+  for (size_t i = 0; i < sizeof eog / sizeof *eog; i++) if (tk->len == strlen(eog[i]) && !memcmp(tk->p, eog[i], tk->len)) return 1;
+  return 0;
+}
+
 /* Byte-pair-encodes one pre-token and appends its ids. */
 static int bpe(const cl_tok *t, const uint8_t *s, size_t len, int32_t *out, int cap, int *n) {
   if (len == 0) return 1;

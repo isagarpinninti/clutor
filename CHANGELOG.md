@@ -4,6 +4,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ## Unreleased
 
+### Fixed
+- **`generate` now stops at any end-of-generation token**, not only the model's configured EOS: Qwen2.5 configures `<|im_end|>` but a base-style continuation ends with `<|endoftext|>`, and the engine used to run on past it and invent a "Human:" turn. It now stops on the same standard control tokens llama.cpp does (`<|endoftext|>`, `<|im_end|>`, `<|eot_id|>`, `<|end_of_text|>`, `<|end|>`, `<|eom_id|>`, `<end_of_turn>`, `</s>`).
+
+### Measured
+- OLMoE's greedy continuations were compared with llama.cpp for the first time: identical on 2 of 3 prompts; the third diverges at a near-tie where llama.cpp disagrees with its own batch evaluation (docs/TEST_REPORT.md).
+
 ## 0.3.0
 
 ### Added

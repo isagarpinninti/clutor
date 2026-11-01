@@ -374,7 +374,7 @@ static int cmd_generate(int argc, char **argv) {
     int b = 0;
     for (int i = 1; i < f.n_vocab; i++) if (logits[i] > logits[b]) b = i;
     gen++;
-    if (b == cl_tok_eos(tok) || gen > want) break;
+    if (cl_tok_is_eog(tok, b) || gen > want) break;
     char piece[256];
     int pl = cl_tok_piece(tok, b, piece, sizeof piece);
     if (!quiet) { fwrite(piece, 1, (size_t)pl, stdout); fflush(stdout); }

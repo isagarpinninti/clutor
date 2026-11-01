@@ -17,6 +17,8 @@ int cl_tok_vocab_size(const cl_tok *t);
 int cl_tok_bos(const cl_tok *t);
 int cl_tok_eos(const cl_tok *t);
 int cl_tok_add_bos(const cl_tok *t);
+/* True for a token that ends generation: the model's EOS, or a control token such as <|endoftext|>, <|im_end|> or <|eot_id|> (llama.cpp stops on all of these, and a model may emit one that is not its configured EOS). */
+int cl_tok_is_eog(const cl_tok *t, int id);
 /* Encodes text. With parse_special, control tokens such as <|endoftext|> written in the text become their single token. Returns the number of
  * tokens written, or -1 when `cap` is too small. */
 int cl_tok_encode(const cl_tok *t, const char *text, size_t len, int parse_special, int32_t *out, int cap);
