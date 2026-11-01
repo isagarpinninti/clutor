@@ -55,7 +55,7 @@ You need Node.js 20+. The native engine comes prebuilt for macOS and Linux (`clu
 
 ```bash
 npm install -g @clutor/cli       # if this needs root, set a user prefix: npm config set prefix ~/.npm-global
-clutor engine install            # downloads the prebuilt engine for macOS or Linux and checks its SHA-256 (once; needs a published release)
+clutor engine install            # downloads the prebuilt engine for macOS or Linux and checks its SHA-256 (once)
 clutor engine build              # or compiles it from source into ~/.clutor/bin/clutor-engine (needs a C compiler)
 clutor init
 clutor                           # the interactive session
