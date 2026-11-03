@@ -4,6 +4,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ## Unreleased
 
+- App and engine: the **context window can be set up to 256K tokens** (Settings > Models: 4K to 256K). The engine reports the longest context the loaded model was trained for (`nCtxTrain`) and the attention-cache memory per token (`kvBytesPerToken`), and Settings shows what a full window can take for that model. A model is never asked for more than it was trained for (Llama 3.2 1B stops at 128K, Qwen3.5 reaches 256K). The cache is allocated lazily, so a short chat in a 128K window peaked at about 0.9 GB for the 1B model. The default stays at 4K; the agent now keeps more of its conversation when the window is larger. **Usage** also shows the agent's context.
+- App: dialog headers have an icon tile, a title and a line saying what the dialog is for; buttons have a refined look (soft gradient primary, quiet outlined secondary, a distinct danger style, press feedback).
+
 - App: **first-launch welcome** asks what to call you; the name is used in the home greeting and the sidebar, and can be changed in Settings > Profile. **One window**: on macOS the title bar is part of the app (traffic lights sit in the top row beside the sidebar toggle, back and forward, and the Chat/Code icons), and the row can be dragged to move the window. Back and forward move between the chats and sessions you opened.
 
 - App: **file attachments in chat**. Add files from the + menu, by dragging them onto the message box, or by pasting. Text and code files up to 1 MB, five at a time; images, PDFs and other binary files are refused with the reason, because the model reads text. Attachments are cut to fit the model's context (and the cut is shown), appear as chips on your message, and go to the model in fenced blocks after your words.

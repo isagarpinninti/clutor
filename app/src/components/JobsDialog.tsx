@@ -1,7 +1,8 @@
+import { ClockIcon } from "./icons";
+import { DialogHeader } from "./DialogHeader";
 import { isActive, type Job } from "../jobs";
 import type { Conversation } from "../store";
 import { fmtDuration, type JobAction } from "./JobStrip";
-import { CloseIcon } from "./icons";
 
 interface Props {
   jobs: Job[];
@@ -23,7 +24,7 @@ export function JobsDialog({ jobs, conversations, position, onAction, onOpen, on
   return (
     <div className="overlay" onClick={onClose} role="presentation">
       <div className="dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Background jobs">
-        <header><h2>Background jobs</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
+        <DialogHeader icon={<ClockIcon />} title="Background jobs" subtitle="Questions the model answers while you do other things" onClose={onClose} />
         <p className="fineprint left">A job is a question the model answers while you do something else. One runs at a time; the rest wait their turn. Jobs are kept if you close the app.</p>
         <div className="list">
           {shown.length === 0 ? <p className="empty-hint">No jobs yet. Use the clock button next to Send to run a question in the background.</p> : null}

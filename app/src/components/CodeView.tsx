@@ -86,7 +86,7 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
     const release = await hold();
     try {
       const out = await runCodingTask({
-        host: bridge.host, web: bridge.web, root, session: s, modelName, task: text, mcp, maxSteps, onContext: (n) => patchTurn(sid, turn.id, (t) => ({ ...t, context: n })), signal: ac.signal, planOnly: perm === "plan",
+        host: bridge.host, web: bridge.web, root, session: s, modelName, task: text, mcp, maxSteps, contextTokens: overviewProps.contextMax, onContext: (n) => patchTurn(sid, turn.id, (t) => ({ ...t, context: n })), signal: ac.signal, planOnly: perm === "plan",
         approve: (info) => perm === "plan" ? Promise.resolve(false) : perm === "auto" && !info.network ? Promise.resolve(true) : new Promise<boolean>((resolve) => setApproval({ ...info, answer: (yes) => { setApproval(undefined); resolve(yes); } })),
         onEvent: (e) => patchTurn(sid, turn.id, (t) => ({ ...t, blocks: applyEvent(t.blocks, e) })),
       });

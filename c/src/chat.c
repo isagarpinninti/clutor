@@ -234,7 +234,7 @@ cl_chat *cl_chat_open(int argc, const char *const *argv, cl_chat_emit emit, void
   if (!c->logits || !c->hist) { snprintf(err, errlen, "out of memory"); cl_chat_close(c); return NULL; }
   cl_str tpl = {0};
   cl_meta_str(&c->meta, "tokenizer.chat_template", &tpl);
-  ob_fmt(&c->out, "{\"ev\":\"ready\",\"arch\":\"%s\",\"name\":\"%s\",\"nCtx\":%d,\"nVocab\":%d,\"nLayer\":%d,\"threads\":%d,\"streaming\":%s,\"locked\":%s,\"addBos\":%s,\"template\":", c->f.arch, c->f.model.name, ctx, c->f.n_vocab, c->f.n_layer, cl_get_threads(), c->f.xs ? "true" : "false", c->f.locked ? "true" : "false", cl_tok_add_bos(c->tok) ? "true" : "false");
+  ob_fmt(&c->out, "{\"ev\":\"ready\",\"arch\":\"%s\",\"name\":\"%s\",\"nCtx\":%d,\"nVocab\":%d,\"nLayer\":%d,\"threads\":%d,\"streaming\":%s,\"locked\":%s,\"addBos\":%s,\"nCtxTrain\":%d,\"kvBytesPerToken\":%zu,\"template\":", c->f.arch, c->f.model.name, ctx, c->f.n_vocab, c->f.n_layer, cl_get_threads(), c->f.xs ? "true" : "false", c->f.locked ? "true" : "false", cl_tok_add_bos(c->tok) ? "true" : "false", c->f.n_ctx_train, (size_t)8 * (size_t)c->f.n_kv_layers * (size_t)c->f.n_kvw);
   ob_json(&c->out, tpl.p ? tpl.p : "", tpl.p ? (int)(tpl.len < 12000 ? tpl.len : 12000) : 0);
   ob_put(&c->out, "}", 1);
   flush_event(c);

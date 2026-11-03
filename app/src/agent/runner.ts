@@ -21,6 +21,8 @@ export interface CodingTask {
   planOnly?: boolean;
   verifyCommand?: string;
   maxSteps?: number;
+  /** The model's context window in tokens; the agent keeps about this much of the conversation (a token is about three characters). */
+  contextTokens?: number;
   /** Reports how many tokens the model's context held after each step. */
   onContext?: (tokens: number) => void;
   signal?: AbortSignal;
@@ -33,7 +35,7 @@ export async function runCodingTask(t: CodingTask): Promise<{ result: AgentResul
   const external = t.mcp?.external();
   const result = await runAgent({
     task: t.task, ws, llm: engineLlm(t.session, t.modelName, t.onContext ? { onContext: t.onContext } : {}),
-    maxSteps: t.maxSteps ?? 20, contextChars: 12_000,
+    maxSteps: t.maxSteps ?? 20, contextChars: Math.max(12_000, Math.min(600_000, Math.round((t.contextTokens ?? 4096) * 2.5))),
     approve: t.approve,
     runCommand: async (plan, command) => {
       const r = await t.host.run(t.root, (await ws.overlayEntries()).map(([path, content]) => ({ path, content })), plan.steps.map((s) => s.argv), 120_000);

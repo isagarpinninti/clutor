@@ -1,6 +1,7 @@
+import { PlugIcon } from "./icons";
+import { DialogHeader } from "./DialogHeader";
 import { useState } from "react";
 import { serverName, splitCommandLine, type McpManager, type McpServerConfig } from "../agent/mcp";
-import { CloseIcon } from "./icons";
 
 interface Props { servers: McpServerConfig[]; manager: McpManager; onChange: (s: McpServerConfig[]) => void; onClose: () => void }
 
@@ -51,7 +52,7 @@ export function McpDialog({ servers, manager, onChange, onClose }: Props) {
   return (
     <div className="overlay" onClick={onClose} role="presentation">
       <div className="dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Tools">
-        <header><h2>Tools (MCP servers)</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
+        <DialogHeader icon={<PlugIcon />} title="Connectors" subtitle="Tool servers the agent can use" onClose={onClose} />
         <McpPanel servers={servers} manager={manager} onChange={onChange} />
       </div>
     </div>

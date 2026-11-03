@@ -145,6 +145,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   if (f->attn_scale <= 0) f->attn_scale = 1.0f / sqrtf((float)f->head_dim);
   if (f->n_embd % 256 || f->n_ff_exp % 256 || f->n_q % 256) { snprintf(err, errlen, "embedding width %d / expert width %d / query width %d must be multiples of 256 for the K-quant kernels", f->n_embd, f->n_ff_exp, f->n_q); goto fail; }
   if (!f->dense && (f->n_used > 64 || f->n_expert > 4096)) { snprintf(err, errlen, "unsupported expert counts"); goto fail; }
+  f->n_ctx_train = f->n_ctx_max;   /* what the model was trained for; the cache below is sized to what was asked, never more */
   if (n_ctx > f->n_ctx_max) n_ctx = f->n_ctx_max;
   if (n_ctx < 1) n_ctx = 512;
   f->n_ctx_max = n_ctx;

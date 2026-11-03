@@ -33,7 +33,7 @@ typedef struct {
   cl_meta meta;
   uint8_t *map; size_t map_size;
   char arch[16];           /* "olmoe", "qwen3moe" or "granitemoe" */
-  int n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff_exp, n_expert, n_used, n_vocab, n_ctx_max;
+  int n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff_exp, n_expert, n_used, n_vocab, n_ctx_max, n_ctx_train;
   int n_q, n_kvw;          /* width of the query projection (n_head * head_dim) and of the key / value projections (n_head_kv * head_dim) */
   int qk_mode;             /* 0: no QK-norm (granitemoe); 1: RMSNorm over the whole projected vector (olmoe); 2: over each head_dim vector with one shared weight (qwen3moe) */
   int qk_per_head;         /* qk_mode == 2 */

@@ -1,3 +1,4 @@
+import { DialogHeader } from "./DialogHeader";
 import { useMemo, useState, type ReactNode } from "react";
 import type { NativeReady } from "@engine/session";
 import { bridge, type SystemInfo } from "../bridge";
@@ -6,7 +7,7 @@ import type { McpManager, McpServerConfig } from "../agent/mcp";
 import { DEFAULT_SYSTEM, DEFAULT_SETTINGS, fmtBytes, type Settings } from "../store";
 import { McpPanel } from "./McpDialog";
 import { UsagePanel, type UsageData } from "./UsageDialog";
-import { BellIcon, ChatIcon, ChevronIcon, ChipIcon, CloseIcon, CodeIcon, GaugeIcon, GlobeIcon, LaptopIcon, PaletteIcon, InfoIcon, PlugIcon, SearchIcon, ShieldIcon, UserIcon } from "./icons";
+import { BellIcon, GearIcon, ChatIcon, ChevronIcon, ChipIcon, CodeIcon, GaugeIcon, GlobeIcon, LaptopIcon, PaletteIcon, InfoIcon, PlugIcon, SearchIcon, ShieldIcon, UserIcon } from "./icons";
 
 export type Section = "profile" | "usage" | "desktop" | "appearance" | "notifications" | "privacy" | "models" | "chat" | "web" | "connectors" | "code" | "desktop" | "about";
 
@@ -50,6 +51,16 @@ const GROUPS: Array<Array<{ id: Section; label: string; icon: ReactNode; words: 
   ],
 ];
 
+const CTX_OPTIONS = [4096, 8192, 16384, 32768, 65536, 131072, 262144];
+const gb = (b: number): string => (b >= 2 ** 30 ? `${(b / 2 ** 30).toFixed(1)} GB` : `${Math.round(b / 2 ** 20)} MB`);
+/** What a context length costs: the attention cache grows with the conversation, so the figure is the most it can reach, and a model cannot go past the length it was trained for. */
+function ctxHint(ctx: number, engine: NativeReady | undefined): string {
+  const base = "How much the model can keep in mind. Applies the next time a model loads.";
+  if (!engine?.kvBytesPerToken) return `${base} Longer windows use more memory as the conversation grows.`;
+  const full = engine.kvBytesPerToken * ctx;
+  const limit = engine.nCtxTrain && ctx > engine.nCtxTrain ? ` This model was trained for ${Math.round(engine.nCtxTrain / 1024)}K, so it will use that.` : "";
+  return `${base} For the loaded model a full ${Math.round(ctx / 1024)}K window can take up to ${gb(full)} for its attention cache (it fills as you chat).${limit}`;
+}
 function Details({ rows }: { rows: Array<[string, string]> }) {
   return <dl className="details">{rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>;
 }
@@ -94,7 +105,7 @@ export function SettingsDialog({ settings, onChange, system, modelName, servers,
   return (
     <div className="overlay" onClick={onClose} role="presentation">
       <div className="dialog settings" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Settings">
-        <header className="shead"><h2>Settings</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
+        <DialogHeader settings icon={<GearIcon />} title="Settings" subtitle="Preferences for this app" onClose={onClose} />
         <div className="sbody">
           <nav className="snav" aria-label="Settings sections">
             <label className="ssearch"><SearchIcon /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" aria-label="Search settings" /></label>
@@ -151,7 +162,7 @@ export function SettingsDialog({ settings, onChange, system, modelName, servers,
                 <Row title="Model" hint={settings.model ? `${settings.model.name} · ${fmtBytes(settings.model.bytes)}. Selected again each time you open the app; it loads when you first use it.` : "None chosen yet."}>
                   <button type="button" className="btn small ghost" onClick={() => { onClose(); onModels(); }}>{modelName ? "Change…" : "Choose…"}</button>
                 </Row>
-                <Row title="Conversation length" hint="How much the model can keep in mind. Applies the next time a model loads."><Select label="Conversation length" value={settings.ctx} options={[2048, 4096, 8192, 16384].map((n) => ({ id: n, label: `${n.toLocaleString()} tokens` }))} onChange={(v) => set("ctx", v)} /></Row>
+                <Row title="Context window" hint={ctxHint(settings.ctx, engine)}><Select label="Context window" value={settings.ctx} options={CTX_OPTIONS.map((n) => ({ id: n, label: `${n >= 1024 ? `${Math.round(n / 1024)}K` : n} tokens` }))} onChange={(v) => set("ctx", v)} /></Row>
                 <Row title="Keep the model in memory" hint="Much faster when other apps are open. Models over 40% of your RAM are never pinned."><Switch on={settings.lock} onChange={(v) => set("lock", v)} label="Keep the model in memory" /></Row>
               </>
             ) : null}
