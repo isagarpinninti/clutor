@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Msg } from "../store";
 import { Markdown } from "./Markdown";
-import { CheckIcon, CloseIcon, CopyIcon } from "./icons";
+import { CheckIcon, CloseIcon, CopyIcon, FileIcon } from "./icons";
 import { Logo } from "./Logo";
 import { Spark, Thinking } from "./Thinking";
 import { bridge } from "../bridge";
@@ -10,7 +10,7 @@ import { JobStrip, type JobAction } from "./JobStrip";
 
 export function MessageView({ msg, streaming, showReasoning, job, position, onJobAction }: { msg: Msg; streaming: boolean; showReasoning: boolean; job?: Job | undefined; position?: number; onJobAction?: (id: string, a: JobAction) => void }) {
   const [copied, setCopied] = useState(false);
-  if (msg.role === "user") return <div className="msg user"><div className="who">You</div><div className="prompt">{msg.content}</div></div>;
+  if (msg.role === "user") return <div className="msg user"><div className="who">You</div><div className="prompt">{msg.content}{msg.files?.length ? <div className="attach-row sent">{msg.files.map((f) => <span key={f.name} className="attach"><FileIcon /><span className="attach-name">{f.name}</span>{f.truncated ? <small>cut to fit</small> : null}</span>)}</div> : null}</div></div>;
   const s = msg.stats;
   const copy = (): void => { void navigator.clipboard?.writeText(msg.content).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); };
   return (

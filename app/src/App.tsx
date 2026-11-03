@@ -15,6 +15,7 @@ import { McpDialog } from "./components/McpDialog";
 import { loadServers, McpManager, saveServers, type McpServerConfig } from "./agent/mcp";
 import { ModelPicker } from "./components/ModelPicker";
 import { UsageDialog } from "./components/UsageDialog";
+import { fitAttachments, type Attachment } from "./attachments";
 import { gather, needsWeb, withWebContext, type Gathered } from "./web";
 import { chatUsage, contextPercent } from "./usage";
 import { ModelDialog } from "./components/ModelDialog";
@@ -131,10 +132,10 @@ export function App() {
 
   const flash = (text: string): void => { setNotice(text); setTimeout(() => setNotice((n) => (n === text ? undefined : n)), 6000); };
 
-  const sendBackground = (text: string): void => {
+  const sendBackground = (text: string, attached: Attachment[] = []): void => {
     if (!active) return;
     const convId = active.id;
-    const user: Msg = { id: uid(), role: "user", content: text };
+    const user: Msg = { id: uid(), role: "user", content: text, ...fileFields(attached) };
     const jobId = jobUid();
     const reply: Msg = { id: uid(), role: "assistant", content: "", jobId };
     const history = [...active.messages, user];
@@ -152,10 +153,18 @@ export function App() {
     return load(lastModel, settings, system?.ramBytes);
   };
 
-  const send = async (text: string): Promise<void> => {
+  /** The files as stored on a message, cut to fit the model's context. */
+  const fileFields = (attached: Attachment[]): Pick<Msg, "files"> => {
+    if (!attached.length) return {};
+    const fit = fitAttachments(attached, state.ready?.nCtx ?? settings.ctx);
+    if (fit.some((f) => f.truncated)) flash("The files are long, so they were cut to fit the model's context.");
+    return { files: fit.map(({ name, bytes, text, truncated }) => ({ name, bytes, text, truncated })) };
+  };
+
+  const send = async (text: string, attached: Attachment[] = []): Promise<void> => {
     if (!active || (!session.current && !lastModel)) return;
     const convId = active.id;
-    const user: Msg = { id: uid(), role: "user", content: text };
+    const user: Msg = { id: uid(), role: "user", content: text, ...fileFields(attached) };
     const reply: Msg = { id: uid(), role: "assistant", content: "" };
     const history = [...active.messages, user];
     update(convId, (c) => ({ ...c, title: c.messages.length ? c.title : titleFrom(text), updated: Date.now(), messages: [...history, reply] }));
@@ -204,7 +213,7 @@ export function App() {
   const homeScreen = !!active && active.messages.length === 0 && (ready || !!lastModel) && state.status !== "loading";
   const [prefill, setPrefill] = useState<{ text: string; n: number }>();
   const composer = (home: boolean) => (
-    <Composer busy={busy} disabled={!ready && !lastModel} placeholder={ready || lastModel ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t) => void send(t)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
+    <Composer busy={busy} disabled={!ready && !lastModel} placeholder={ready || lastModel ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t, f) => void send(t, f)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
   );
   const lastAssistant = active?.messages[active.messages.length - 1];
 
@@ -281,7 +290,7 @@ export function App() {
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
       {dialog === "usage" ? <UsageDialog state={state} ramBytes={system?.ramBytes} usage={usage} agent={agentUsage} jobs={{ active: activeJobs, done: jobList.filter((j) => j.status === "done").length }} onClose={() => setDialog(null)} /> : null}
       {dialog === "mcp" ? <McpDialog servers={servers} manager={mcp} onChange={setServers} onClose={() => setDialog(null)} /> : null}
-      {dialog === "settings" ? <SettingsDialog start={settingsAt} settings={settings} onChange={setSettings} system={system} modelName={state.model?.name ?? lastModel?.name} servers={servers} manager={mcp} onServers={setServers} usage={{ state, ramBytes: system?.ramBytes, usage, agent: agentUsage, jobs: { active: activeJobs, done: jobList.filter((j) => j.status === "done").length } }} onModels={() => setDialog("models")} onDeleteChats={() => { for (const j of queue.list()) queue.remove(j.id); const c = newConversation(); setConversations([c]); setActiveId(c.id); }} onDeleteSessions={() => { setCodeSessions([]); setCodeId(""); }} onClose={() => setDialog(null)} /> : null}
+      {dialog === "settings" ? <SettingsDialog start={settingsAt} settings={settings} onChange={setSettings} system={system} modelName={state.model?.name ?? lastModel?.name} servers={servers} manager={mcp} onServers={setServers} usage={{ state, ramBytes: system?.ramBytes, usage, agent: agentUsage, jobs: { active: activeJobs, done: jobList.filter((j) => j.status === "done").length } }} engine={state.ready} onModels={() => setDialog("models")} onDeleteChats={() => { for (const j of queue.list()) queue.remove(j.id); const c = newConversation(); setConversations([c]); setActiveId(c.id); }} onDeleteSessions={() => { setCodeSessions([]); setCodeId(""); }} onClose={() => setDialog(null)} /> : null}
     </div>
   );
 }

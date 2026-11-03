@@ -36,3 +36,6 @@ export const PaletteIcon = () => I(<><path d="M12 4.5c-4.4 0-8 3.2-8 7.2 0 3.3 2
 export const BellIcon = () => I(<><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.2 1.5H5.3z" /><path d="M10 20.5c.4.7 1.1 1 2 1s1.6-.3 2-1" /></>);
 export const ShieldIcon = () => I(<path d="M12 3.8 5.5 6.3v5c0 4 2.7 7 6.5 8.9 3.8-1.9 6.5-4.9 6.5-8.9v-5z" />);
 export const PlugIcon = () => I(<><path d="M9 4.5v4M15 4.5v4M7 8.5h10v3.2a5 5 0 0 1-10 0z" /><path d="M12 16.7v3" /></>);
+export const InfoIcon = () => I(<><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5M12 8h.01" strokeWidth="1.8" /></>);
+export const PaperclipIcon = () => I(<path d="m18.5 11-6.2 6.2a4 4 0 0 1-5.7-5.7l6.5-6.5a2.7 2.7 0 0 1 3.8 3.8l-6.5 6.5a1.3 1.3 0 0 1-1.9-1.9l5.9-5.9" />);
+export const FileIcon = () => I(<><path d="M7 3.5h6.5L18 8v10.5c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1v-14c0-.6.4-1 1-1Z" /><path d="M13.5 3.5V8H18" /></>);

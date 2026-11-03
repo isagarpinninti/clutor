@@ -1,5 +1,6 @@
 import type { EngineSession } from "@engine/session";
 import type { ChatMessage } from "@engine/stream";
+import { withAttachments } from "./attachments";
 import type { Msg, MsgStats, Settings } from "./store";
 
 export interface ReplyUpdate { content: string; reasoning: string; stats?: MsgStats; error?: string; interrupted?: boolean }
@@ -8,7 +9,7 @@ export interface ReplyUpdate { content: string; reasoning: string; stats?: MsgSt
 export function toChatMessages(history: Msg[], settings: Pick<Settings, "system">): ChatMessage[] {
   return [
     { role: "system", content: settings.system },
-    ...history.filter((m) => !m.error && (m.content || m.role === "user")).map((m): ChatMessage => ({ role: m.role, content: m.content })),
+    ...history.filter((m) => !m.error && (m.content || m.role === "user")).map((m): ChatMessage => ({ role: m.role, content: m.role === "user" ? withAttachments(m.content, m.files) : m.content })),
   ];
 }
 

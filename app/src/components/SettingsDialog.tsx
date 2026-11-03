@@ -1,12 +1,14 @@
 import { useMemo, useState, type ReactNode } from "react";
+import type { NativeReady } from "@engine/session";
 import { bridge, type SystemInfo } from "../bridge";
+import { Logo } from "./Logo";
 import type { McpManager, McpServerConfig } from "../agent/mcp";
 import { DEFAULT_SYSTEM, DEFAULT_SETTINGS, fmtBytes, type Settings } from "../store";
 import { McpPanel } from "./McpDialog";
 import { UsagePanel, type UsageData } from "./UsageDialog";
-import { BellIcon, ChatIcon, ChevronIcon, ChipIcon, CloseIcon, CodeIcon, GaugeIcon, GlobeIcon, LaptopIcon, PaletteIcon, PlugIcon, SearchIcon, ShieldIcon } from "./icons";
+import { BellIcon, ChatIcon, ChevronIcon, ChipIcon, CloseIcon, CodeIcon, GaugeIcon, GlobeIcon, LaptopIcon, PaletteIcon, InfoIcon, PlugIcon, SearchIcon, ShieldIcon } from "./icons";
 
-export type Section = "usage" | "appearance" | "notifications" | "privacy" | "models" | "chat" | "web" | "connectors" | "code" | "about";
+export type Section = "usage" | "desktop" | "appearance" | "notifications" | "privacy" | "models" | "chat" | "web" | "connectors" | "code" | "desktop" | "about";
 
 interface Props {
   settings: Settings;
@@ -17,6 +19,7 @@ interface Props {
   manager: McpManager;
   onServers: (s: McpServerConfig[]) => void;
   usage: UsageData;
+  engine: NativeReady | undefined;
   onModels: () => void;
   onDeleteChats: () => void;
   onDeleteSessions: () => void;
@@ -38,9 +41,15 @@ const GROUPS: Array<Array<{ id: Section; label: string; icon: ReactNode; words: 
     { id: "connectors", label: "Connectors", icon: <PlugIcon />, words: "mcp tools servers" },
     { id: "code", label: "Code", icon: <CodeIcon />, words: "agent permissions steps transcript verbose" },
   ],
-  [{ id: "about", label: "Desktop app", icon: <LaptopIcon />, words: "about version licence reset" }],
+  [
+    { id: "desktop", label: "Desktop app", icon: <LaptopIcon />, words: "reset defaults restore" },
+    { id: "about", label: "About", icon: <InfoIcon />, words: "version updated engine licence github" },
+  ],
 ];
 
+function Details({ rows }: { rows: Array<[string, string]> }) {
+  return <dl className="details">{rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>;
+}
 function Row({ title, hint, children, tag }: { title: string; hint?: ReactNode; children?: ReactNode; tag?: string }) {
   return (
     <div className="srow">
@@ -69,7 +78,7 @@ function Confirm({ label, onConfirm }: { label: string; onConfirm: () => void })
     : <button type="button" className="btn small danger" onClick={() => setSure(true)}>{label}</button>;
 }
 
-export function SettingsDialog({ settings, onChange, system, modelName, servers, manager, onServers, usage, onModels, onDeleteChats, onDeleteSessions, onClose, start = "usage" }: Props) {
+export function SettingsDialog({ settings, onChange, system, modelName, servers, manager, onServers, usage, engine, onModels, onDeleteChats, onDeleteSessions, onClose, start = "usage" }: Props) {
   const [sec, setSec] = useState<Section>(start);
   const [q, setQ] = useState("");
   const set = <K extends keyof Settings>(k: K, v: Settings[K]): void => onChange({ ...settings, [k]: v });
@@ -166,13 +175,29 @@ export function SettingsDialog({ settings, onChange, system, modelName, servers,
               </>
             ) : null}
 
+            {sec === "desktop" ? (
+              <>
+                <Row title="Restore default settings" hint="Your conversations, sessions and the model folder are kept."><button type="button" className="btn small ghost" onClick={() => onChange({ ...DEFAULT_SETTINGS, ...(settings.model ? { model: settings.model } : {}), ...(settings.modelsDir ? { modelsDir: settings.modelsDir } : {}) })}>Restore</button></Row>
+                <Row title="Models folder" hint={system?.modelsDir ?? "Unknown"}><button type="button" className="btn small ghost" onClick={() => void bridge.revealModels()}>Open</button></Row>
+              </>
+            ) : null}
+
             {sec === "about" ? (
               <>
-                <Row title="Clutor" hint="Run large language models on your own machine, with honest numbers."><span className="badge">0.4.0</span></Row>
-                <Row title="This computer" hint={system ? `${system.os} ${system.arch} · ${fmtBytes(system.ramBytes)} memory · ${system.cores} cores` : "Unknown"}><span /></Row>
-                <Row title="Source and licence" hint="MIT licensed."><button type="button" className="btn small ghost" onClick={() => void bridge.web.openExternal("https://github.com/isagarpinninti/clutor")}>Open on GitHub</button></Row>
-                <Sub>Reset</Sub>
-                <Row title="Restore default settings" hint="Your conversations, sessions and the model folder are kept."><button type="button" className="btn small ghost" onClick={() => onChange({ ...DEFAULT_SETTINGS, ...(settings.model ? { model: settings.model } : {}), ...(settings.modelsDir ? { modelsDir: settings.modelsDir } : {}) })}>Restore</button></Row>
+                <div className="about-hero">
+                  <Logo size={64} />
+                  <div><b>Clutor</b><small>Run large language models on your own machine, with honest numbers.</small><span className="badge">Version {__APP_VERSION__}</span></div>
+                </div>
+                <Sub>App</Sub>
+                <Details rows={[["Version", __APP_VERSION__], ["Last updated", new Date(`${__APP_BUILT__}T00:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" })], ["Platform", bridge.native ? "Desktop app" : "Browser preview (no engine)"]]} />
+                <Sub>This computer</Sub>
+                <Details rows={system ? [["System", `${system.os} ${system.arch}`], ["Memory", fmtBytes(system.ramBytes)], ["Cores", String(system.cores)], ["Models folder", settings.modelsDir ?? system.modelsDir]] : [["System", "Unknown"]]} />
+                <Sub>Engine</Sub>
+                <Details rows={engine ? [["Model", engine.name], ["Architecture", engine.arch], ["Layers", String(engine.nLayer)], ["Vocabulary", engine.nVocab.toLocaleString()], ["Context", `${engine.nCtx.toLocaleString()} tokens`], ["Threads", String(engine.threads)], ["Memory", engine.locked ? "pinned" : "not pinned"], ["Experts", engine.streaming ? "streamed from disk" : "not streaming"]] : [["Model", "none loaded"]]} />
+                <Sub>Licence and links</Sub>
+                <Row title="MIT licence" hint="Free to use, change and share."><button type="button" className="btn small ghost" onClick={() => void bridge.web.openExternal("https://github.com/isagarpinninti/clutor")}>Source on GitHub</button></Row>
+                <Row title="Report a problem" hint="Include the version shown above."><button type="button" className="btn small ghost" onClick={() => void bridge.web.openExternal("https://github.com/isagarpinninti/clutor/issues")}>Open issues</button></Row>
+                <Row title="Privacy" hint="Everything runs and stays on this device. Browse and tool servers are the only things that use the network, and only when you turn them on."><span /></Row>
               </>
             ) : null}
           </div>

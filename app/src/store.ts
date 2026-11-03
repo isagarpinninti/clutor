@@ -2,7 +2,7 @@ import type { ModelInfo } from "./bridge";
 
 export interface MsgStats { tokens: number; tps?: number; promptTokens?: number; ms: number; cache?: { hitRate: number; gbRead: number } }
 export interface Source { title: string; url: string }
-export interface Msg { id: string; role: "user" | "assistant"; content: string; sources?: Source[]; web?: { query: string; state: "searching" | "done" | "failed"; error?: string }; jobId?: string; reasoning?: string; stats?: MsgStats; error?: string; interrupted?: boolean }
+export interface Msg { id: string; role: "user" | "assistant"; content: string; sources?: Source[]; files?: Array<{ name: string; bytes: number; text: string; truncated: boolean }>; web?: { query: string; state: "searching" | "done" | "failed"; error?: string }; jobId?: string; reasoning?: string; stats?: MsgStats; error?: string; interrupted?: boolean }
 export interface Conversation { id: string; title: string; updated: number; messages: Msg[] }
 
 export interface Settings {
