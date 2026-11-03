@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CheckIcon, PlusIcon } from "./icons";
 
 export interface PlusItem { id: string; label: string; hint?: string; checked?: boolean; disabled?: boolean; onSelect: () => void }
 
 /** The "+" button in the message box: switches and one-off actions that would otherwise crowd the row. */
-export function PlusMenu({ items, label = "Add" }: { items: PlusItem[]; label?: string }) {
+export function PlusMenu({ items, label = "Add", icon, className = "plus-btn", align = "left" }: { items: PlusItem[]; label?: string; icon?: ReactNode; className?: string; align?: "left" | "right" }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -16,9 +16,9 @@ export function PlusMenu({ items, label = "Add" }: { items: PlusItem[]; label?: 
   }, [open]);
   return (
     <div className="picker" ref={box}>
-      <button type="button" className="plus-btn" onClick={() => setOpen((o) => !o)} aria-haspopup="menu" aria-expanded={open} aria-label={label} title={label}><PlusIcon /></button>
+      <button type="button" className={`${className} tip`} data-tip={label} onClick={() => setOpen((o) => !o)} aria-haspopup="menu" aria-expanded={open} aria-label={label}>{icon ?? <PlusIcon />}</button>
       {open ? (
-        <div className="pmenu" role="menu" aria-label={label}>
+        <div className={`pmenu${align === "right" ? " right" : ""}`} role="menu" aria-label={label}>
           {items.map((it) => (
             <button type="button" role="menuitemcheckbox" aria-checked={it.checked ?? false} key={it.id} className="menu-item two" disabled={it.disabled} onClick={() => { setOpen(false); it.onSelect(); }}>
               <span className="mi-text"><b>{it.label}</b>{it.hint ? <small>{it.hint}</small> : null}</span>

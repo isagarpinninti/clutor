@@ -3,6 +3,7 @@ import type { AgentHost } from "../bridge";
 import type { Turn } from "../agent/sessions";
 import { reviewable } from "../agent/sessions";
 import { Patch } from "./Patch";
+import { OverviewPane } from "./OverviewPane";
 import { BrowserPane } from "./BrowserPane";
 import { TerminalPane } from "./TerminalPane";
 import { CloseIcon, SearchIcon } from "./icons";
@@ -20,14 +21,16 @@ interface Props {
   busy: boolean;
   error: string | undefined;
   hidden: boolean;
+  overview: Omit<React.ComponentProps<typeof OverviewPane>, "onOpenFile">;
   tab: PanelTab;
   onTab: (t: PanelTab) => void;
 }
 
-export type PanelTab = "changes" | "files" | "terminal" | "browser";
+export type PanelTab = "overview" | "changes" | "files" | "terminal" | "browser";
+const TITLES: Record<PanelTab, string> = { overview: "Session", changes: "Changes", files: "Files", terminal: "Terminal", browser: "Browser" };
 
 /** The panel beside the conversation: the changes waiting for review, and the project's files. */
-export function SidePanel({ host, root, turn, focusFile, onApply, onDiscard, onUndo, onClose, busy, error, tab, onTab, hidden }: Props) {
+export function SidePanel({ host, root, turn, focusFile, onApply, onDiscard, onUndo, onClose, busy, error, tab, onTab, hidden, overview }: Props) {
   const [files, setFiles] = useState<string[]>([]);
   const [q, setQ] = useState("");
   const [viewing, setViewing] = useState<{ path: string; text: string | null; error?: string }>();
@@ -45,16 +48,12 @@ export function SidePanel({ host, root, turn, focusFile, onApply, onDiscard, onU
   return (
     <aside className="side-panel" aria-label="Changes, files, terminal and browser" hidden={hidden}>
       <header>
-        <div className="seg" role="tablist">
-          <button type="button" role="tab" aria-selected={tab === "changes"} className={tab === "changes" ? "on" : ""} onClick={() => onTab("changes")}>Changes{diffs.length ? ` · ${diffs.length}` : ""}</button>
-          <button type="button" role="tab" aria-selected={tab === "files"} className={tab === "files" ? "on" : ""} onClick={() => onTab("files")}>Files</button>
-          <button type="button" role="tab" aria-selected={tab === "terminal"} className={tab === "terminal" ? "on" : ""} onClick={() => onTab("terminal")}>Terminal</button>
-          <button type="button" role="tab" aria-selected={tab === "browser"} className={tab === "browser" ? "on" : ""} onClick={() => onTab("browser")}>Browser</button>
-        </div>
+        <h3 className="panel-title">{TITLES[tab]}{tab === "changes" && diffs.length ? ` · ${diffs.length}` : ""}</h3>
         <button type="button" className="icon-btn" onClick={onClose} aria-label="Close panel"><CloseIcon /></button>
       </header>
-      <div className="panel-body" hidden={tab === "terminal" || tab === "browser"}>
-        {tab === "changes" ? (
+      <div className="panel-body flush" hidden={tab !== "overview"}><OverviewPane {...overview} onOpenFile={open} /></div>
+      <div className="panel-body" hidden={tab !== "changes" && tab !== "files"}>
+        {tab !== "files" ? (
           diffs.length === 0 ? <p className="empty-hint">{turn?.lost ? "The changes from this task were too large to keep after a restart. Run it again." : "No changes yet. When the agent edits files they appear here for review."}</p> : (
             <>
               {diffs.map((d) => (

@@ -31,6 +31,8 @@ export interface Turn {
   /** Changes existed but were too large to keep across a restart. */
   lost?: boolean;
   usage?: { steps: number; tokens: number };
+  /** Tokens the model's context held at the last step. */
+  context?: number;
   error?: string;
 }
 

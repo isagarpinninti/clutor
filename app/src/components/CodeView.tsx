@@ -9,6 +9,7 @@ import { titleFrom, uid } from "../store";
 import { Markdown } from "./Markdown";
 import { ModePicker, type ModeOption } from "./ModePicker";
 import { PlusMenu } from "./PlusMenu";
+import type { OverviewPane } from "./OverviewPane";
 import { SidePanel, type PanelTab } from "./SidePanel";
 import { Spark } from "./Thinking";
 import { ToolBlock } from "./ToolBlock";
@@ -40,6 +41,7 @@ interface Props {
   onUsage: (u: { steps: number; tokens: number }) => void;
   panel: boolean;
   onPanel: (open: boolean) => void;
+  overviewProps: Omit<React.ComponentProps<typeof OverviewPane>, "session" | "onOpenFile">;
   tab: PanelTab;
   onTab: (t: PanelTab) => void;
   perm: Permission;
@@ -49,7 +51,7 @@ interface Props {
 
 const count = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-export function CodeView({ active, onChange, onCreate, ready, modelName, engine, mcp, hold, picker, onChooseModel, onMcp, onUsage, panel, onPanel, tab, onTab, perm, onPerm, maxSteps }: Props) {
+export function CodeView({ active, onChange, onCreate, ready, modelName, engine, mcp, hold, picker, onChooseModel, onMcp, onUsage, panel, onPanel, overviewProps, tab, onTab, perm, onPerm, maxSteps }: Props) {
   const [task, setTask] = useState("");
   const [error, setError] = useState<string>();
   const [approval, setApproval] = useState<{ command: string; network: boolean; answer: (yes: boolean) => void }>();
@@ -82,7 +84,7 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
     const release = await hold();
     try {
       const out = await runCodingTask({
-        host: bridge.host, web: bridge.web, root, session: s, modelName, task: text, mcp, maxSteps, signal: ac.signal, planOnly: perm === "plan",
+        host: bridge.host, web: bridge.web, root, session: s, modelName, task: text, mcp, maxSteps, onContext: (n) => patchTurn(sid, turn.id, (t) => ({ ...t, context: n })), signal: ac.signal, planOnly: perm === "plan",
         approve: (info) => perm === "plan" ? Promise.resolve(false) : perm === "auto" && !info.network ? Promise.resolve(true) : new Promise<boolean>((resolve) => setApproval({ ...info, answer: (yes) => { setApproval(undefined); resolve(yes); } })),
         onEvent: (e) => patchTurn(sid, turn.id, (t) => ({ ...t, blocks: applyEvent(t.blocks, e) })),
       });
@@ -193,7 +195,7 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
           <p className="fineprint">{perm === "plan" ? "Plan only: nothing will be changed." : "Every change is shown to you before it is written."}</p>
         </div>
       </div>
-      <SidePanel host={bridge.host} root={active.root} turn={withChanges} focusFile={focusFile} onApply={() => void apply()} onDiscard={discard} onUndo={() => void undo()} onClose={() => onPanel(false)} busy={applying || running} error={error} tab={tab} onTab={onTab} hidden={!panel} />
+      <SidePanel host={bridge.host} root={active.root} turn={withChanges} focusFile={focusFile} onApply={() => void apply()} onDiscard={discard} onUndo={() => void undo()} onClose={() => onPanel(false)} busy={applying || running} error={error} tab={tab} onTab={onTab} hidden={!panel} overview={{ ...overviewProps, session: active }} />
     </div>
   );
 }

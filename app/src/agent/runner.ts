@@ -21,6 +21,8 @@ export interface CodingTask {
   planOnly?: boolean;
   verifyCommand?: string;
   maxSteps?: number;
+  /** Reports how many tokens the model's context held after each step. */
+  onContext?: (tokens: number) => void;
   signal?: AbortSignal;
   onEvent: (e: AgentEvent) => void;
 }
@@ -30,7 +32,7 @@ export async function runCodingTask(t: CodingTask): Promise<{ result: AgentResul
   const ws = new ShadowWorkspace(hostProject(t.host, t.root));
   const external = t.mcp?.external();
   const result = await runAgent({
-    task: t.task, ws, llm: engineLlm(t.session, t.modelName),
+    task: t.task, ws, llm: engineLlm(t.session, t.modelName, t.onContext ? { onContext: t.onContext } : {}),
     maxSteps: t.maxSteps ?? 20, contextChars: 12_000,
     approve: t.approve,
     runCommand: async (plan, command) => {

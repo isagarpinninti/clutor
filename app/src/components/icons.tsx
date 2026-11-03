@@ -28,3 +28,7 @@ export const TerminalIcon = () => I(<><rect x="3.5" y="4.5" width="17" height="1
 export const GlobeIcon = () => I(<><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.2 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.2-3.6-8.5S9.6 5.9 12 3.5Z" /></>);
 export const DiffIcon = () => I(<><path d="M8 4.5v11M8 15.5a2.2 2.2 0 1 0 0 .01M8 8a2.2 2.2 0 1 0 0-.01" /><path d="M16 8.5v7M13.5 11 16 8.5 18.5 11" /></>);
 export const FilesIcon = () => I(<><path d="M7 3.5h6.5L18 8v10.5c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1v-14c0-.6.4-1 1-1Z" /><path d="M13.5 3.5V8H18" /></>);
+export const ChatIcon = () => I(<path d="M5 6.5c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2v7c0 1.1-.9 2-2 2h-5.5L8 19v-3.5H7c-1.1 0-2-.9-2-2z" />);
+export const CodeIcon = () => I(<path d="m9 8-4 4 4 4M15 8l4 4-4 4M13.2 6.5l-2.4 11" />);
+export const MoreIcon = () => I(<path d="M6.5 12h.01M12 12h.01M17.5 12h.01" strokeWidth="2.6" />);
+export const LaptopIcon = () => I(<><rect x="5" y="6" width="14" height="9.5" rx="1.8" /><path d="M3.5 18.5h17" /></>);

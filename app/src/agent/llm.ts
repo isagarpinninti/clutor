@@ -9,7 +9,7 @@ export interface AgentSession { stream(messages: ChatMessage[], o?: SampleOption
  * The loaded model as the agent's language model. The native engine has no tool-calling API, so the agent talks in its JSON protocol (one JSON object per reply) and
  * every reply is validated before anything runs.
  */
-export function engineLlm(session: AgentSession, name: string, o: { maxTokens?: number; temperature?: number } = {}): LlmClient {
+export function engineLlm(session: AgentSession, name: string, o: { maxTokens?: number; temperature?: number; onContext?: (tokens: number) => void } = {}): LlmClient {
   return {
     model: name,
     toolMode: "json",
@@ -20,6 +20,7 @@ export function engineLlm(session: AgentSession, name: string, o: { maxTokens?: 
         if (ev.type === "content") content += ev.text;
         else if (ev.type === "done") { prompt = ev.promptTokens ?? 0; completion = ev.completionTokens ?? 0; }
       }
+      o.onContext?.(prompt + completion);
       return { content, toolCalls: [], usage: { promptTokens: prompt, completionTokens: completion } };
     },
   };

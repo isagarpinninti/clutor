@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ModelInfo, type SystemInfo } from "./bridge";
 import { streamReply, toChatMessages } from "./chat";
-import { DiffIcon, FilesIcon, GearIcon, GlobeIcon, SidebarIcon, TerminalIcon } from "./components/icons";
+import { ChevronIcon, DiffIcon, FilesIcon, GlobeIcon, LaptopIcon, MoreIcon, SidebarIcon, TerminalIcon } from "./components/icons";
 import { Logo } from "./components/Logo";
 import { Thinking } from "./components/Thinking";
 import { Composer } from "./components/Composer";
 import { JobsDialog } from "./components/JobsDialog";
 import type { JobAction } from "./components/JobStrip";
 import { MessageView } from "./components/MessageView";
+import { PlusMenu } from "./components/PlusMenu";
 import { CodeView } from "./components/CodeView";
 import type { PanelTab } from "./components/SidePanel";
 import { McpDialog } from "./components/McpDialog";
@@ -18,7 +19,7 @@ import { gather, needsWeb, withWebContext, type Gathered } from "./web";
 import { chatUsage, contextPercent } from "./usage";
 import { ModelDialog } from "./components/ModelDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
-import { folderName, loadSessions, newSession, saveSessions, type CodeSession } from "./agent/sessions";
+import { loadSessions, newSession, saveSessions, type CodeSession } from "./agent/sessions";
 import { Sidebar } from "./components/Sidebar";
 import type { EngineSession } from "@engine/session";
 import { useEngine } from "./engine";
@@ -35,7 +36,6 @@ const SUGGESTIONS = [
 ];
 const greeting = (): string => { const h = new Date().getHours(); return h < 5 ? "Burning the midnight oil?" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; };
 
-const FolderMini = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3.5 7.5c0-1.1.9-2 2-2h3.2c.5 0 1 .2 1.4.6l1 1.1c.3.3.8.5 1.3.5h5.1c1.1 0 2 .9 2 2v7.8c0 1.1-.9 2-2 2h-12c-1.1 0-2-.9-2-2z" /></svg>;
 
 export function App() {
   const [settings, setSettings] = useState<Settings>(loadSettings);
@@ -54,7 +54,9 @@ export function App() {
   const [codeSessions, setCodeSessions] = useState<CodeSession[]>(loadSessions);
   const [codeId, setCodeId] = useState<string>(() => { try { return localStorage.getItem("clutor.codeSession") ?? ""; } catch { return ""; } });
   const [panel, setPanel] = useState(false);
-  const [panelTab, setPanelTab] = useState<PanelTab>("changes");
+  const [panelTab, setPanelTab] = useState<PanelTab>("overview");
+  const [renaming, setRenaming] = useState(false);
+  const [settingsAt, setSettingsAt] = useState<"general" | "tools">("general");
   const togglePanel = (t: PanelTab): void => { if (panel && panelTab === t) setPanel(false); else { setPanelTab(t); setPanel(true); } };
   useEffect(() => { saveSessions(codeSessions); }, [codeSessions]);
   useEffect(() => { try { localStorage.setItem("clutor.codeSession", codeId); } catch { /* storage unavailable */ } }, [codeId]);
@@ -204,32 +206,44 @@ export function App() {
 
   return (
     <div className={`app${collapsed ? " nav-collapsed" : ""}`}>
-      <Sidebar conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setDialog("settings"); setSidebar(false); }} mode={mode} codeSessions={codeSessions} codeId={codeId} onSelectCode={(id) => { setCodeId(id); setSidebar(false); }} onNewCode={() => void newCodeSession()} onDeleteCode={deleteSession} onJobs={() => { setDialog("jobs"); setSidebar(false); }} onUsage={() => { setDialog("usage"); setSidebar(false); }} onCollapse={() => setCollapsed(true)} collapsed={collapsed} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
+      <Sidebar ramLabel={system ? `Local · ${Math.round(system.ramBytes / 2 ** 30)} GB` : "Local"} onMode={setMode} conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setSettingsAt("general"); setDialog("settings"); setSidebar(false); }} mode={mode} codeSessions={codeSessions} codeId={codeId} onSelectCode={(id) => { setCodeId(id); setSidebar(false); }} onNewCode={() => void newCodeSession()} onDeleteCode={deleteSession} onJobs={() => { setDialog("jobs"); setSidebar(false); }} onUsage={() => { setDialog("usage"); setSidebar(false); }} onCollapse={() => setCollapsed(true)} collapsed={collapsed} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
       <main className="main">
         <header className="topbar">
-          <button type="button" className={`icon-btn side-open${collapsed ? " always" : ""}`} onClick={() => { setSidebar(true); setCollapsed(false); }} aria-label="Show sidebar" title="Show sidebar"><SidebarIcon /></button>
-          <div className="seg" role="tablist" aria-label="Mode">
-            <button type="button" role="tab" aria-selected={mode === "chat"} className={mode === "chat" ? "on" : ""} onClick={() => setMode("chat")}>Chat</button>
-            <button type="button" role="tab" aria-selected={mode === "code"} className={mode === "code" ? "on" : ""} onClick={() => setMode("code")}>Code</button>
-          </div>
-          <h1 className="title">{mode === "chat" ? active?.title : codeActive?.title ?? "Code"}</h1>
-          {mode === "code" && codeActive ? <span className="project-chip" title={codeActive.root}><FolderMini />{folderName(codeActive.root)}</span> : null}
+          <button type="button" className={`icon-btn side-open tip${collapsed ? " always" : ""}`} data-tip="Show sidebar" onClick={() => { setSidebar(true); setCollapsed(false); }} aria-label="Show sidebar"><SidebarIcon /></button>
+          {renaming && (mode === "chat" ? active : codeActive) ? (
+            <input className="title-input" autoFocus defaultValue={mode === "chat" ? active?.title : codeActive?.title} aria-label="Session name"
+              onBlur={(e) => { const t = e.target.value.trim(); if (t) { if (mode === "chat" && active) update(active.id, (c) => ({ ...c, title: t })); else if (codeActive) changeSession(codeActive.id, (s) => ({ ...s, title: t })); } setRenaming(false); }}
+              onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setRenaming(false); }} />
+          ) : (
+            <div className="title-wrap">
+              <h1 className="title">{mode === "chat" ? active?.title : codeActive?.title ?? "Code"}</h1>
+              {(mode === "chat" ? active : codeActive) ? <PlusMenu label="Session" className="icon-btn caret-btn" icon={<ChevronIcon />} items={[
+                { id: "rename", label: "Rename", onSelect: () => setRenaming(true) },
+                { id: "delete", label: "Delete", onSelect: () => (mode === "chat" ? (active && onDelete(active.id)) : (codeActive && deleteSession(codeActive.id))) },
+              ]} /> : null}
+            </div>
+          )}
+          <span className="spacer" />
           {mode === "chat" && ready ? (
-            <button type="button" className="ring-btn" onClick={() => setDialog("usage")} title={`Context ${pct}% full`} aria-label={`Context ${pct}% full. Open usage`}>
+            <button type="button" className="ring-btn tip" data-tip={`Context ${pct}% full`} onClick={() => setDialog("usage")} aria-label={`Context ${pct}% full. Open usage`}>
               <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5" className="ring-bg" /><circle cx="10" cy="10" r="7.5" className="ring-fg" strokeDasharray={`${(pct / 100) * 47.1} 47.1`} transform="rotate(-90 10 10)" /></svg>
               <span>{pct}%</span>
             </button>
           ) : null}
           {mode === "code" && codeActive ? (
             <div className="tool-tabs" role="toolbar" aria-label="Panels">
-              {([["terminal", "Terminal", <TerminalIcon key="t" />], ["browser", "Browser", <GlobeIcon key="b" />], ["changes", "Changes", <DiffIcon key="c" />], ["files", "Files", <FilesIcon key="f" />]] as Array<[PanelTab, string, JSX.Element]>).map(([id, label, icon]) => (
-                <button type="button" key={id} className={`tool-tab${panel && panelTab === id ? " on" : ""}`} onClick={() => togglePanel(id)} aria-pressed={panel && panelTab === id} title={label}>{icon}<span>{label}</span></button>
+              {([["overview", "Session", <LaptopIcon key="o" />], ["terminal", "Terminal", <TerminalIcon key="t" />], ["changes", "Changes", <DiffIcon key="c" />], ["browser", "Browser", <GlobeIcon key="b" />], ["files", "Files", <FilesIcon key="f" />]] as Array<[PanelTab, string, JSX.Element]>).map(([id, label, icon]) => (
+                <button type="button" key={id} className={`tool-tab tip${panel && panelTab === id ? " on" : ""}`} data-tip={label} onClick={() => togglePanel(id)} aria-pressed={panel && panelTab === id} aria-label={label}>{icon}</button>
               ))}
             </div>
           ) : null}
-          <button type="button" className="icon-btn" onClick={() => setDialog("settings")} aria-label="Settings" title="Settings"><GearIcon /></button>
+          <PlusMenu label="More" className="icon-btn" align="right" icon={<MoreIcon />} items={[
+            { id: "settings", label: "Settings", onSelect: () => { setSettingsAt("general"); setDialog("settings"); } },
+            { id: "usage", label: "Usage", onSelect: () => setDialog("usage") },
+            { id: "tools", label: "Connectors", hint: "Tool servers for the agent", onSelect: () => { setSettingsAt("tools"); setDialog("settings"); } },
+          ]} />
         </header>
-        {mode === "code" ? <CodeView active={codeActive} onChange={changeSession} onCreate={createSession} ready={ready || !!lastModel} modelName={state.model?.name ?? lastModel?.name ?? "model"} engine={ensureModel} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => setDialog("mcp")} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} panel={panel} onPanel={setPanel} tab={panelTab} onTab={setPanelTab} perm={settings.permission} onPerm={(p) => setSettings((s) => ({ ...s, permission: p }))} maxSteps={settings.maxSteps} /> : <>
+        {mode === "code" ? <CodeView active={codeActive} onChange={changeSession} onCreate={createSession} ready={ready || !!lastModel} modelName={state.model?.name ?? lastModel?.name ?? "model"} engine={ensureModel} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => { setSettingsAt("tools"); setDialog("settings"); }} overviewProps={{ system, modelName: state.model?.name ?? lastModel?.name ?? "No model", pinned: note, contextMax: state.ready?.nCtx ?? settings.ctx, permission: ({ ask: "Ask first", auto: "Auto-run checks", plan: "Plan only" } as const)[settings.permission], mcp, onManageTools: () => { setSettingsAt("tools"); setDialog("settings"); } }} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} panel={panel} onPanel={setPanel} tab={panelTab} onTab={setPanelTab} perm={settings.permission} onPerm={(p) => setSettings((s) => ({ ...s, permission: p }))} maxSteps={settings.maxSteps} /> : <>
         <div className="scroll" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           {active && active.messages.length > 0 ? (
             <div className="thread">
@@ -263,7 +277,7 @@ export function App() {
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
       {dialog === "usage" ? <UsageDialog state={state} ramBytes={system?.ramBytes} usage={usage} agent={agentUsage} jobs={{ active: activeJobs, done: jobList.filter((j) => j.status === "done").length }} onClose={() => setDialog(null)} /> : null}
       {dialog === "mcp" ? <McpDialog servers={servers} manager={mcp} onChange={setServers} onClose={() => setDialog(null)} /> : null}
-      {dialog === "settings" ? <SettingsDialog settings={settings} onChange={setSettings} system={system} modelName={state.model?.name ?? lastModel?.name} servers={servers} manager={mcp} onServers={setServers} onModels={() => setDialog("models")} onClose={() => setDialog(null)} /> : null}
+      {dialog === "settings" ? <SettingsDialog start={settingsAt} settings={settings} onChange={setSettings} system={system} modelName={state.model?.name ?? lastModel?.name} servers={servers} manager={mcp} onServers={setServers} onModels={() => setDialog("models")} onClose={() => setDialog(null)} /> : null}
     </div>
   );
 }
