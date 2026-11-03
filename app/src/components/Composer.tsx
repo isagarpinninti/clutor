@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { SendIcon, StopIcon } from "./icons";
+import { ClockIcon, SendIcon, StopIcon } from "./icons";
 
 interface Props {
   busy: boolean;
@@ -8,10 +8,13 @@ interface Props {
   thinking: boolean;
   onThinking: (v: boolean) => void;
   onSend: (text: string) => void;
+  /** Runs the question as a background job: the reply keeps generating while you do other things. */
+  onBackground: (text: string) => void;
+  notice?: string | undefined;
   onStop: () => void;
 }
 
-export function Composer({ busy, disabled, placeholder, thinking, onThinking, onSend, onStop }: Props) {
+export function Composer({ busy, disabled, placeholder, thinking, onThinking, onSend, onBackground, notice, onStop }: Props) {
   const [text, setText] = useState("");
   const area = useRef<HTMLTextAreaElement>(null);
   const touch = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
@@ -29,17 +32,26 @@ export function Composer({ busy, disabled, placeholder, thinking, onThinking, on
     onSend(t);
     setText("");
   };
+  const background = (): void => {
+    const t = text.trim();
+    if (!t || disabled) return;
+    onBackground(t);
+    setText("");
+  };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) { e.preventDefault(); background(); return; }
     if (e.key === "Enter" && !e.shiftKey && !touch && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
   };
 
   return (
     <div className="composer-wrap">
+      {notice ? <div className="notice" role="status">{notice}</div> : null}
       <div className={`composer${disabled ? " is-disabled" : ""}`}>
         <textarea ref={area} rows={1} value={text} placeholder={placeholder} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} disabled={disabled} enterKeyHint="send" aria-label="Message" />
         <div className="composer-row">
           <button type="button" className={`chip${thinking ? " on" : ""}`} onClick={() => onThinking(!thinking)} title="Let thinking models reason first (slower, often better)" aria-pressed={thinking}>Think</button>
           <span className="spacer" />
+          <button type="button" className="icon-btn bg-btn" onClick={background} disabled={!text.trim() || disabled} title="Run in the background (Ctrl+Enter): the answer keeps generating while you do other things" aria-label="Run in the background"><ClockIcon /></button>
           {busy
             ? <button type="button" className="round stop" onClick={onStop} aria-label="Stop"><StopIcon /></button>
             : <button type="button" className="round send" onClick={send} disabled={!text.trim() || disabled} aria-label="Send"><SendIcon /></button>}

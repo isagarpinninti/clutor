@@ -1,22 +1,15 @@
-/* Clutor's look: clean white, soft greys with hairline borders, one confident blue. Dark mode is the same system inverted. */
+/* Clutor is dark only: true black, hairline borders, neutral greys, a white primary button. */
 :root {
-  --bg: #ffffff; --panel: #f7f7f8; --panel-2: #efeff2; --card: #ffffff; --text: #0d0d0f; --muted: #6e6e76; --line: #e5e5ea;
-  --accent: #2563eb; --accent-2: #3b82f6; --accent-ink: #ffffff; --accent-soft: rgba(37,99,235,.08); --danger: #dc2626; --ok: #16a34a;
-  --code-bg: #f6f6f8; --code-head: #eeeef1; --shadow: 0 1px 2px rgba(13,13,15,.04), 0 8px 24px rgba(13,13,15,.07);
-  --hl-kw: #7c3aed; --hl-str: #15803d; --hl-num: #b45309; --hl-com: #8b8b94; --hl-fn: #1d4ed8; --hl-ty: #0e7490;
-  --glow: none;
-  --r: 6px; --r-lg: 10px;
-  --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-}
-/* Dark mode: true black, hairline borders, neutral greys, a white primary button. */
-:root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #000000; --panel: #000000; --panel-2: #141414; --card: #0b0b0b; --text: #f2f2f2; --muted: #9a9a9a; --line: #222222;
   --accent: #ffffff; --accent-2: #ffffff; --accent-ink: #000000; --accent-soft: rgba(255,255,255,.1); --danger: #ff8a80; --ok: #7ee2a8;
   --code-bg: #0a0a0a; --code-head: #121212; --shadow: 0 0 0 transparent;
   --hl-kw: #c4a8ff; --hl-str: #8fe0ad; --hl-num: #f3b887; --hl-com: #7a7a7a; --hl-fn: #8ab8ff; --hl-ty: #7fd8e0;
-  --link: #7ab7ff;
+  --glow: none; --link: #7ab7ff;
+  --r: 6px; --r-lg: 10px;
+  --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 }
 :root[data-theme="dark"] .md a { color: var(--link); }
 :root[data-theme="dark"] .sidebar { background: #000; border-right: 1px solid var(--line); }
@@ -188,3 +181,40 @@ button.row:hover { border-color: var(--accent); } .row.active { border-color: va
   .thread { padding: 16px 12px 8px; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
+/* background jobs */
+.jobstrip { margin: 0 0 10px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); font-size: 13px; }
+.jobline { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
+.jdetail { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.jdot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.running > .jobline .jdot, .jobstrip.running .jdot, .job.running .jdot { background: var(--accent); animation: pulse 1.1s infinite ease-in-out; }
+.jobstrip.paused .jdot, .job.paused .jdot { background: #d4a017; }
+.jobstrip.failed .jdot, .job.failed .jdot { background: var(--danger); }
+.job.done .jdot { background: var(--ok); }
+.link-btn { background: none; border: 0; color: var(--accent); padding: 2px 4px; font-size: 13px; font-weight: 500; }
+.link-btn:hover { text-decoration: underline; }
+.jobstrip .bar { margin-top: 8px; }
+.job-actions { display: flex; flex-wrap: wrap; gap: 2px 8px; justify-content: flex-end; }
+.fineprint.left { text-align: left; margin: -4px 0 12px; }
+.notice { margin: 0 0 8px; padding: 8px 12px; border-radius: var(--r); background: var(--panel); border: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.bg-btn:disabled { opacity: .35; cursor: default; }
+.count { margin-left: auto; min-width: 20px; padding: 0 6px; text-align: center; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 600; }
+:root[data-theme="dark"] .jobstrip { background: var(--card); }
+:root[data-theme="dark"] .link-btn { color: #fff; text-decoration: underline; text-underline-offset: 3px; }
+:root[data-theme="dark"] .link-btn:hover { text-decoration-thickness: 2px; }
+:root[data-theme="dark"] .jobstrip.running .jdot, :root[data-theme="dark"] .job.running .jdot { background: #fff; }
+
+/* the wait indicator */
+.thinking { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 15px; }
+.loading-wait { display: flex; justify-content: center; margin: 4px 0 10px; }
+.loading-wait .thinking { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.spark { flex: none; color: var(--text); animation: spark-spin 7s linear infinite; }
+.spark line { stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; transform-origin: 12px 12px; animation: spark-pulse 1.6s ease-in-out infinite; }
+.spark line:nth-child(2) { animation-delay: .4s; } .spark line:nth-child(3) { animation-delay: .8s; } .spark line:nth-child(4) { animation-delay: 1.2s; }
+@keyframes spark-pulse { 0%, 100% { opacity: .3; transform: scale(.72); } 50% { opacity: 1; transform: scale(1); } }
+@keyframes spark-spin { to { transform: rotate(360deg); } }
+.shimmer { background: linear-gradient(90deg, #6f6f6f 0%, #6f6f6f 38%, #ffffff 50%, #6f6f6f 62%, #6f6f6f 100%); background-size: 260% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 2.4s linear infinite, fade-in .35s ease-out; }
+@keyframes shimmer { from { background-position: 160% 0; } to { background-position: -60% 0; } }
+@keyframes fade-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+.elapsed { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.model-pill .spark { color: var(--text); }

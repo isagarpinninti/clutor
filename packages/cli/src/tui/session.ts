@@ -11,7 +11,10 @@ export interface NativeReady { arch: string; name: string; nCtx: number; nVocab:
 
 export interface Ev { ev: string; [k: string]: unknown }
 
-export interface SampleOptions { thinking?: boolean; temp?: number; topP?: number; topK?: number; repeat?: number; seed?: number; max?: number; signal?: AbortSignal }
+export interface SampleOptions {
+  /** Text the reply has already begun with (a paused background job resumes from it): the engine continues after it instead of starting the reply again. */
+  prefill?: string;
+  thinking?: boolean; temp?: number; topP?: number; topK?: number; repeat?: number; seed?: number; max?: number; signal?: AbortSignal }
 
 export class NativeError extends Error { constructor(message: string, readonly code?: string) { super(message); this.name = "NativeError"; } }
 
@@ -78,7 +81,7 @@ export class EngineSession {
     o.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       if (o.signal?.aborted) onAbort();
-      const full = renderChat(this.template, messages, { thinking: o.thinking ?? false });
+      const full = renderChat(this.template, messages, { thinking: o.thinking ?? false }) + (o.prefill ?? "");
       let toSend: string, restarted = false;
       if (this.fed !== null && full.length > this.fed.length && full.startsWith(this.fed)) toSend = full.slice(this.fed.length);
       else {

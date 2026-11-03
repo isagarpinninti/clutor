@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
 import type { Bridge, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
@@ -30,6 +31,13 @@ export const tauriBridge: Bridge = {
   listModels: () => invoke<ModelInfo[]>("list_models"),
   catalog: () => invoke<CatalogItem[]>("model_catalog"),
   revealModels: () => invoke("reveal_models"),
+  async notify(title, body) {
+    try {
+      let ok = await isPermissionGranted();
+      if (!ok) ok = (await requestPermission()) === "granted";
+      if (ok) sendNotification({ title, body });
+    } catch { /* no notifications on this system */ }
+  },
   async download(id, onProgress) {
     const un = await listen<DownloadProgress>("download-progress", (e) => { if (e.payload.id === id) onProgress(e.payload); });
     try { await invoke("download_model", { id }); } finally { un(); }

@@ -34,9 +34,9 @@ class MockTransport implements Transport {
           return;
         }
         emit({ ev: "t", s: pieces[i++] });
-        setTimeout(tick, 28);
+        setTimeout(tick, Number(localStorage.getItem("clutor.mock.delay") ?? 28));
       };
-      setTimeout(tick, 120);
+      setTimeout(tick, Number(localStorage.getItem("clutor.mock.first") ?? 120));
     }
   }
   kill(): void { this.queue.push(null); }
@@ -61,6 +61,9 @@ export const mockBridge: Bridge = {
   async listModels() { return MODELS; },
   async catalog() { return CATALOG; },
   async revealModels() { /* nothing to open in a browser */ },
+  async notify(title, body) {
+    try { if (typeof Notification !== "undefined" && Notification.permission !== "denied") { if (Notification.permission !== "granted") await Notification.requestPermission(); if (Notification.permission === "granted") new Notification(title, { body }); } } catch { /* blocked */ }
+  },
   async download(id, onProgress: (p: DownloadProgress) => void) {
     const item = CATALOG.find((c) => c.id === id);
     if (!item) throw new Error("unknown download");
@@ -68,7 +71,7 @@ export const mockBridge: Bridge = {
     onProgress({ id, done: item.bytes, total: item.bytes, state: "done" });
   },
   async openEngine(path): Promise<OpenEngine> {
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, Number(localStorage.getItem("clutor.mock.load") ?? 400)));
     if (path.includes("fail")) throw new NativeError("preview: this model cannot be opened");
     const ready: NativeReady = { arch: "llama", name: path.split("/").pop() ?? path, nCtx: 4096, nVocab: 128256, nLayer: 16, threads: 8, streaming: false, locked: true, addBos: true, template: "<|im_start|>" };
     return { transport: new MockTransport(), ready };

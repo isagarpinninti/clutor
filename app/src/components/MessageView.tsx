@@ -3,8 +3,11 @@ import type { Msg } from "../store";
 import { Markdown } from "./Markdown";
 import { CopyIcon } from "./icons";
 import { Logo } from "./Logo";
+import { Thinking } from "./Thinking";
+import type { Job } from "../jobs";
+import { JobStrip, type JobAction } from "./JobStrip";
 
-export function MessageView({ msg, streaming, showReasoning }: { msg: Msg; streaming: boolean; showReasoning: boolean }) {
+export function MessageView({ msg, streaming, showReasoning, job, position, onJobAction }: { msg: Msg; streaming: boolean; showReasoning: boolean; job?: Job | undefined; position?: number; onJobAction?: (id: string, a: JobAction) => void }) {
   const [copied, setCopied] = useState(false);
   if (msg.role === "user") return <div className="msg user"><div className="who">You</div><div className="prompt">{msg.content}</div></div>;
   const s = msg.stats;
@@ -19,7 +22,8 @@ export function MessageView({ msg, streaming, showReasoning }: { msg: Msg; strea
             <div className="reasoning-text">{msg.reasoning}</div>
           </details>
         ) : null}
-        {msg.content ? <Markdown text={msg.content} /> : streaming && !msg.reasoning ? <div className="typing" aria-label="Thinking"><i /><i /><i /></div> : null}
+        {job && onJobAction ? <JobStrip job={job} position={position ?? 0} onAction={onJobAction} /> : null}
+        {msg.content ? <Markdown text={msg.content} /> : (streaming || job?.status === "running") && !msg.reasoning ? <Thinking /> : null}
         {msg.error ? <div className="error">{msg.error}</div> : null}
         {!streaming && (s || msg.interrupted) ? (
           <div className="meta">

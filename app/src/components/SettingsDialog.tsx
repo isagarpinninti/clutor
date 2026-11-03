@@ -9,11 +9,6 @@ export function SettingsDialog({ settings, onChange, onClose }: Props) {
       <div className="dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Settings">
         <header><h2>Settings</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button></header>
         <div className="form">
-          <label>Appearance
-            <select value={settings.theme} onChange={(e) => set("theme", e.target.value as Settings["theme"])}>
-              <option value="system">Match the system</option><option value="light">Light</option><option value="dark">Dark</option>
-            </select>
-          </label>
           <label>Creativity <output>{settings.temperature.toFixed(1)}</output>
             <input type="range" min={0} max={1.5} step={0.1} value={settings.temperature} onChange={(e) => set("temperature", Number(e.target.value))} />
           </label>
@@ -24,6 +19,11 @@ export function SettingsDialog({ settings, onChange, onClose }: Props) {
           <label>Conversation length (applies when a model is loaded)
             <select value={settings.ctx} onChange={(e) => set("ctx", Number(e.target.value))}>
               {[2048, 4096, 8192, 16384].map((n) => <option key={n} value={n}>{n.toLocaleString()} tokens</option>)}
+            </select>
+          </label>
+          <label>Longest background answer
+            <select value={settings.jobTokens} onChange={(e) => set("jobTokens", Number(e.target.value))}>
+              {[512, 1024, 2048, 4096].map((n) => <option key={n} value={n}>{n.toLocaleString()} tokens</option>)}
             </select>
           </label>
           <label className="check"><input type="checkbox" checked={settings.lock} onChange={(e) => set("lock", e.target.checked)} />

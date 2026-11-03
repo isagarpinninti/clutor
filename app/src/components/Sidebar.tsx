@@ -1,5 +1,5 @@
 import type { Conversation } from "../store";
-import { GearIcon, PlusIcon, TrashIcon } from "./icons";
+import { ClockIcon, GearIcon, PlusIcon, TrashIcon } from "./icons";
 import { Logo } from "./Logo";
 
 interface Props {
@@ -10,6 +10,8 @@ interface Props {
   onNew: () => void;
   onDelete: (id: string) => void;
   onSettings: () => void;
+  onJobs: () => void;
+  activeJobs: number;
   onClose: () => void;
 }
 
@@ -24,7 +26,7 @@ function group(conversations: Conversation[]): Array<[string, Conversation[]]> {
   return buckets.filter(([, list]) => list.length > 0);
 }
 
-export function Sidebar({ conversations, activeId, open, onSelect, onNew, onDelete, onSettings, onClose }: Props) {
+export function Sidebar({ conversations, activeId, open, onSelect, onNew, onDelete, onSettings, onJobs, activeJobs, onClose }: Props) {
   return (
     <>
       <div className={`scrim${open ? " show" : ""}`} onClick={onClose} aria-hidden="true" />
@@ -45,7 +47,7 @@ export function Sidebar({ conversations, activeId, open, onSelect, onNew, onDele
             </section>
           ))}
         </nav>
-        <div className="side-foot"><button type="button" className="side-btn" onClick={onSettings}><GearIcon /> Settings</button></div>
+        <div className="side-foot"><button type="button" className="side-btn" onClick={onJobs}><ClockIcon /> Background jobs{activeJobs > 0 ? <span className="count">{activeJobs}</span> : null}</button><button type="button" className="side-btn" onClick={onSettings}><GearIcon /> Settings</button></div>
       </aside>
     </>
   );

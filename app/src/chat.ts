@@ -4,12 +4,17 @@ import type { Msg, MsgStats, Settings } from "./store";
 
 export interface ReplyUpdate { content: string; reasoning: string; stats?: MsgStats; error?: string; interrupted?: boolean }
 
-/** Streams the model's reply to a conversation, reporting the text so far (at most once per frame) and the measured numbers at the end. */
-export async function streamReply(session: EngineSession, history: Msg[], settings: Settings, signal: AbortSignal, onUpdate: (u: ReplyUpdate) => void): Promise<void> {
-  const messages: ChatMessage[] = [
+/** What goes to the model: the instructions, then the conversation (without replies that failed or are still empty). */
+export function toChatMessages(history: Msg[], settings: Pick<Settings, "system">): ChatMessage[] {
+  return [
     { role: "system", content: settings.system },
     ...history.filter((m) => !m.error && (m.content || m.role === "user")).map((m): ChatMessage => ({ role: m.role, content: m.content })),
   ];
+}
+
+/** Streams the model's reply to a conversation, reporting the text so far (at most once per frame) and the measured numbers at the end. */
+export async function streamReply(session: EngineSession, history: Msg[], settings: Settings, signal: AbortSignal, onUpdate: (u: ReplyUpdate) => void): Promise<void> {
+  const messages = toChatMessages(history, settings);
   let content = "", reasoning = "", stats: MsgStats | undefined, interrupted = false, error: string | undefined;
   let pending = false;
   const t0 = performance.now();

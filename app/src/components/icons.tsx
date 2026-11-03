@@ -14,3 +14,4 @@ export const MenuIcon = () => I(<><path d="M4 7h16" /><path d="M4 12h16" /><path
 export const DownloadIcon = () => I(<><path d="M12 4v11" /><path d="m7 11 5 5 5-5" /><path d="M5 20h14" /></>);
 export const FolderIcon = () => I(<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />);
 export const SparkIcon = () => <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5 13.9 9l6.6 1.9-6.6 1.9L12 19.5l-1.9-6.7L3.5 10.9 10.1 9z" /></svg>;
+export const ClockIcon = () => I(<><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>);
