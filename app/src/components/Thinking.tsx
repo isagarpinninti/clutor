@@ -2,14 +2,9 @@ import { useEffect, useState } from "react";
 
 const VERBS = ["Thinking", "Reasoning", "Working it out", "Putting it together", "Almost there"];
 
-/** A small asterisk whose eight rays pulse in turn while it slowly turns. */
+/** A small orb that breathes, with a ripple that fades outward. Calm on purpose: it says "working", not "loading". */
 export function Spark({ size = 22 }: { size?: number }) {
-  return (
-    <svg className="spark" width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
-      <line x1="12" y1="3" x2="12" y2="21" /><line x1="3" y1="12" x2="21" y2="12" />
-      <line x1="5.6" y1="5.6" x2="18.4" y2="18.4" /><line x1="18.4" y1="5.6" x2="5.6" y2="18.4" />
-    </svg>
-  );
+  return <span className="orb" style={{ width: size, height: size }} aria-hidden="true"><i /><i /></span>;
 }
 
 /** The wait indicator: the asterisk, a shimmering word (cycling through a few, or the label you give it), and how long it has been. */

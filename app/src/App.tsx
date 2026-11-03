@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ModelInfo, type SystemInfo } from "./bridge";
 import { streamReply, toChatMessages } from "./chat";
-import { ChipIcon, MenuIcon, PlusIcon } from "./components/icons";
+import { MenuIcon, PlusIcon } from "./components/icons";
 import { Logo } from "./components/Logo";
-import { Spark, Thinking } from "./components/Thinking";
+import { Thinking } from "./components/Thinking";
 import { Composer } from "./components/Composer";
 import { JobsDialog } from "./components/JobsDialog";
 import type { JobAction } from "./components/JobStrip";
@@ -11,6 +11,7 @@ import { MessageView } from "./components/MessageView";
 import { CodeView } from "./components/CodeView";
 import { McpDialog } from "./components/McpDialog";
 import { loadServers, McpManager, saveServers, type McpServerConfig } from "./agent/mcp";
+import { ModelPicker } from "./components/ModelPicker";
 import { ModelDialog } from "./components/ModelDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
@@ -140,7 +141,8 @@ export function App() {
   useEffect(() => { if (!conversations.some((c) => c.id === activeId) && conversations[0]) setActiveId(conversations[0].id); }, [conversations, activeId]);
 
   const ready = state.status === "ready";
-  const badge = state.status === "loading" ? "Loading model…" : ready ? `${state.model?.name} · ${state.ready?.locked ? "pinned in memory" : state.unpinned ? "not pinned: large model" : "Clutor engine"}` : state.status === "error" ? "Model failed to load" : "Choose a model";
+  const note = state.ready?.locked ? "pinned" : state.unpinned ? "not pinned" : undefined;
+  const picker = <ModelPicker current={state.model} status={state.status} note={note} onPick={pickModel} onMore={() => setDialog("models")} />;
   const lastAssistant = active?.messages[active.messages.length - 1];
 
   return (
@@ -154,10 +156,9 @@ export function App() {
             <button type="button" role="tab" aria-selected={mode === "code"} className={mode === "code" ? "on" : ""} onClick={() => setMode("code")}>Code</button>
           </div>
           <h1 className="title">{mode === "chat" ? active?.title : ""}</h1>
-          <button type="button" className={`model-pill ${state.status}`} onClick={() => setDialog("models")}>{state.status === "loading" ? <Spark size={16} /> : <ChipIcon />}<span>{badge}</span></button>
           <button type="button" className="icon-btn" onClick={onNew} aria-label="New chat"><PlusIcon /></button>
         </header>
-        {mode === "code" ? <CodeView ready={ready} modelName={state.model?.name ?? "model"} session={() => session.current} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} onMcp={() => setDialog("mcp")} /> : <>
+        {mode === "code" ? <CodeView ready={ready} modelName={state.model?.name ?? "model"} session={() => session.current} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => setDialog("mcp")} /> : <>
         <div className="scroll" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           {active && active.messages.length > 0 ? (
             <div className="thread">
@@ -173,7 +174,7 @@ export function App() {
             </div>
           )}
         </div>
-        <Composer busy={busy} disabled={!ready} placeholder={ready ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} onSend={(t) => void send(t)} onBackground={sendBackground} notice={notice} onStop={stop} />
+        <Composer busy={busy} disabled={!ready} placeholder={ready ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} onSend={(t) => void send(t)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} />
         </>}
       </main>
       {dialog === "models" ? <ModelDialog system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}

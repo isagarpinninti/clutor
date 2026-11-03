@@ -208,9 +208,9 @@ button.row:hover { border-color: var(--accent); } .row.active { border-color: va
 .thinking { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 15px; }
 .loading-wait { display: flex; justify-content: center; margin: 4px 0 10px; }
 .loading-wait .thinking { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
-.spark { flex: none; color: var(--text); animation: spark-spin 7s linear infinite; }
-.spark line { stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; transform-origin: 12px 12px; animation: spark-pulse 1.6s ease-in-out infinite; }
-.spark line:nth-child(2) { animation-delay: .4s; } .spark line:nth-child(3) { animation-delay: .8s; } .spark line:nth-child(4) { animation-delay: 1.2s; }
+
+
+
 @keyframes spark-pulse { 0%, 100% { opacity: .3; transform: scale(.72); } 50% { opacity: 1; transform: scale(1); } }
 @keyframes spark-spin { to { transform: rotate(360deg); } }
 .shimmer { background: linear-gradient(90deg, #6f6f6f 0%, #6f6f6f 38%, #ffffff 50%, #6f6f6f 62%, #6f6f6f 100%); background-size: 260% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 2.4s linear infinite, fade-in .35s ease-out; }
@@ -247,3 +247,56 @@ button.row:hover { border-color: var(--accent); } .row.active { border-color: va
 .notice.err { color: var(--danger); border-color: var(--danger); }
 .composer-row .hint { color: var(--muted); font-size: 12px; } .composer-row .spacer { flex: 1; }
 :root[data-theme="dark"] .btn.ghost { background: none; color: var(--text); border: 1px solid var(--line); } :root[data-theme="dark"] .btn.ghost:hover { background: var(--panel-2); }
+
+/* ---- Lighter, calmer finish ---- */
+:root { --line: #1b1b1b; --muted: #8b8b8b; --r: 8px; --r-lg: 18px; --panel-2: #111111; --card: #0a0a0a; }
+body, .app { -webkit-font-smoothing: antialiased; }
+.topbar, :root[data-theme="dark"] .topbar { border-bottom: 0; min-height: 48px; padding: 8px 14px; }
+:root[data-theme="dark"] .sidebar { border-right-color: #141414; }
+.title { font-weight: 500; font-size: 14px; color: var(--muted); }
+.thread { max-width: 740px; gap: 30px; }
+.md, .msg .prompt { font-size: 15.5px; line-height: 1.7; font-weight: 400; letter-spacing: -.003em; }
+:root[data-theme="dark"] .msg.user .prompt { border: 0; background: #151515; border-radius: 18px; padding: 10px 16px; }
+.seg { border: 0; background: #101010; border-radius: 999px; padding: 2px; }
+.seg button { border-radius: 999px; padding: 4px 14px; transition: background .15s, color .15s; } .seg button.on { background: #1d1d1d; }
+.icon-btn { border-radius: 999px; }
+
+/* the message box floats, with the model picker and controls underneath the text */
+.composer-wrap { padding-bottom: calc(14px + var(--safe-b)); }
+.composer { border: 1px solid #1f1f1f; background: #0d0d0d; border-radius: 22px; padding: 12px 14px 10px; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+.composer:focus-within { border-color: #343434; box-shadow: 0 8px 30px rgba(0,0,0,.5), 0 0 0 4px rgba(255,255,255,.04); }
+.composer textarea { font-size: 15.5px; padding: 2px 4px 8px; }
+.composer-row { gap: 6px; }
+.fineprint { text-align: center; color: #5d5d5d; font-size: 11.5px; margin: 8px 0 0; }
+.chip { border-radius: 999px; border: 1px solid #222; background: none; color: var(--muted); padding: 4px 12px; font-size: 12.5px; transition: background .15s, color .15s; } .chip:hover { background: #151515; color: var(--text); } .chip.on { background: #fff; color: #000; border-color: #fff; }
+.round { border-radius: 999px; width: 32px; height: 32px; }
+
+/* model picker */
+.picker { position: relative; }
+.picker-btn { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; color: var(--muted); padding: 5px 10px; border-radius: 999px; font-size: 12.5px; max-width: 280px; transition: background .15s, color .15s; }
+.picker-btn:hover, .picker-btn[aria-expanded="true"] { background: #151515; color: var(--text); }
+.picker-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.picker-btn small { color: #666; font-size: 11.5px; } .picker-btn.error { color: var(--danger); }
+.pmenu { position: absolute; bottom: calc(100% + 8px); left: 0; min-width: 270px; max-width: min(360px, 86vw); background: #0f0f0f; border: 1px solid #222; border-radius: 14px; padding: 6px; box-shadow: 0 16px 48px rgba(0,0,0,.7); z-index: 20; animation: fade-in .12s ease-out; }
+.menu-item { display: flex; justify-content: space-between; align-items: center; gap: 14px; width: 100%; text-align: left; background: none; border: 0; color: var(--text); padding: 8px 10px; border-radius: 9px; font-size: 13.5px; }
+.menu-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .menu-item small { color: var(--muted); flex: none; }
+.menu-item:hover { background: #181818; } .menu-item.on { background: #181818; } .menu-item.on span::after { content: " ✓"; color: var(--muted); }
+.menu-item.more { color: var(--muted); border-top: 1px solid #1b1b1b; border-radius: 0 0 9px 9px; margin-top: 4px; padding-top: 10px; }
+.menu-empty { margin: 8px 10px; color: var(--muted); font-size: 13px; }
+
+/* waiting: a calm breathing orb with a soft ripple, instead of a spinner */
+.orb { position: relative; display: inline-block; flex: none; }
+.orb i { position: absolute; inset: 0; border-radius: 50%; }
+.orb i:first-child { background: #fff; transform: scale(.55); animation: orb-breathe 2.2s ease-in-out infinite; }
+.orb i:last-child { border: 1.5px solid rgba(255,255,255,.6); animation: orb-ripple 2.2s ease-out infinite; }
+@keyframes orb-breathe { 0%, 100% { transform: scale(.5); opacity: .55; } 50% { transform: scale(.72); opacity: 1; } }
+@keyframes orb-ripple { 0% { transform: scale(.55); opacity: .7; } 100% { transform: scale(1.5); opacity: 0; } }
+.thinking { gap: 12px; } .thinking .elapsed { color: #5d5d5d; font-size: 12.5px; }
+.working { gap: 10px; }
+@media (prefers-reduced-motion: reduce) { .orb i { animation: none !important; } .orb i:last-child { display: none; } }
+
+/* agent steps: lighter, no hard bars */
+.step { border-left: 1px solid #222; } .step.call { border-left-color: #555; }
+.approval { border-color: #3a3a3a; border-radius: 16px; background: #0b0b0b; }
+.filediff, .summary { border-color: #1f1f1f; border-radius: 14px; }
+.btn { border-radius: 999px; }

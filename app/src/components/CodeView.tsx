@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { AgentEvent, AgentResult } from "@core/agent/loop";
 import type { ShadowWorkspace } from "@core/agent/workspace";
 import { bridge } from "../bridge";
@@ -17,6 +17,7 @@ interface Props {
   /** Takes the engine from background jobs for the length of a run; the returned function gives it back. */
   hold: () => Promise<() => void>;
   onChooseModel: () => void;
+  picker: ReactNode;
   onMcp: () => void;
 }
 
@@ -43,7 +44,7 @@ function Patch({ patch }: { patch: string }) {
   );
 }
 
-export function CodeView({ ready, modelName, session, mcp, hold, onChooseModel, onMcp }: Props) {
+export function CodeView({ ready, modelName, session, mcp, hold, onChooseModel, picker, onMcp }: Props) {
   const [root, setRoot] = useState<string>(() => { try { return localStorage.getItem(ROOT_KEY) ?? ""; } catch { return ""; } });
   const [task, setTask] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
@@ -177,7 +178,8 @@ export function CodeView({ ready, modelName, session, mcp, hold, onChooseModel, 
           <textarea rows={2} value={task} placeholder={!ready ? "Load a model to start" : !root ? "Choose a project folder first" : "What should change in this project?"} disabled={!ready || !root || running} aria-label="Task"
             onChange={(e) => setTask(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void start(); } }} />
           <div className="composer-row">
-            {!ready ? <button type="button" className="btn small ghost" onClick={onChooseModel}>Choose a model</button> : <span className="hint">Small models make mistakes; every change is shown to you first.</span>}
+            {picker}
+            {ready ? <span className="hint">Every change is shown to you first.</span> : <button type="button" className="btn small ghost" onClick={onChooseModel}>Choose a model</button>}
             <span className="spacer" />
             {running ? <button type="button" className="send stop" onClick={() => abort.current?.abort()} aria-label="Stop"><StopIcon /></button>
               : <button type="button" className="send" onClick={() => void start()} disabled={!ready || !root || !task.trim()} aria-label="Run"><SendIcon /></button>}
