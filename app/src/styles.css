@@ -5,7 +5,7 @@
   --code-bg: #f6f6f8; --code-head: #eeeef1; --shadow: 0 1px 2px rgba(13,13,15,.04), 0 8px 24px rgba(13,13,15,.07);
   --hl-kw: #7c3aed; --hl-str: #15803d; --hl-num: #b45309; --hl-com: #8b8b94; --hl-fn: #1d4ed8; --hl-ty: #0e7490;
   --glow: none;
-  --r: 2px; --r-lg: 3px;
+  --r: 6px; --r-lg: 10px;
   --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
