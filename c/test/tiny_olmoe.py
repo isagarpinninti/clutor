@@ -455,7 +455,7 @@ class Ref:
 def run_engine(engine, args, float_math):
     import os
     env = dict(os.environ, CLUTOR_FLOAT_MATH="1" if float_math else "0")
-    return subprocess.run([engine] + args, capture_output=True, text=True, check=True, env=env).stdout
+    return subprocess.run([engine] + args, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True, env=env).stdout
 
 def check(engine, path):
     """Two modes, each against a reference built for it.

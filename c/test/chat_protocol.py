@@ -21,7 +21,7 @@ def check(ok, what, detail=""):
 
 class Chat:
     def __init__(self, ctx=256):
-        self.p = subprocess.Popen([ENGINE, "chat", MODEL, "--ctx", str(ctx)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        self.p = subprocess.Popen([ENGINE, "chat", MODEL, "--ctx", str(ctx)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1)
         self.ready = self.read()
     def send(self, **o): self.p.stdin.write(json.dumps(o) + "\n"); self.p.stdin.flush()
     def read(self):
@@ -53,7 +53,7 @@ check(d["ids"] == expect and len(expect) > 0, "chat at temperature 0 matches gen
 check(d["finish"] in ("length", "stop") and d["tokens"] >= 1 and d["pos"] == a["pos"] + d["tokens"], "reports finish, tokens and position", d)
 
 # prompts that cross the batch boundary of prompt processing (32 tokens at a time) give the same tokens as feeding them one by one
-def ntok(t): return len(subprocess.run([ENGINE, "tokenize", MODEL, t], capture_output=True, text=True).stdout.split())
+def ntok(t): return len(subprocess.run([ENGINE, "tokenize", MODEL, t], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split())
 for want in (31, 32, 33, 50):
     t = ""
     while ntok(t + "ab ") <= want: t += "ab "
@@ -116,7 +116,7 @@ check(e["ev"] == "appended", "quotes, newlines, unicode and a fake key inside th
 ascii_tricky = 'say "hi"\nline2 \\ tab\t {"op":"quit"}'
 c.send(op="reset"); c.until({"reset"})
 c.send(op="append", text=ascii_tricky); e = c.until({"appended", "error"})[-1]
-ref2 = subprocess.run([ENGINE, "tokenize", MODEL, ascii_tricky], capture_output=True, text=True).stdout.split()
+ref2 = subprocess.run([ENGINE, "tokenize", MODEL, ascii_tricky], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
 check(e["ev"] == "appended" and e["tokens"] == len(ref2) + (1 if c.ready["addBos"] else 0), "and the ASCII part was tokenized exactly like the tokenize command", (e, len(ref2)))
 
 # closing stdin ends the process
