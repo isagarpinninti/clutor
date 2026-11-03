@@ -49,6 +49,9 @@ const host: AgentHost = {
     try { await invoke("term_run", { id, root, command }); } catch (e) { un.forEach((f) => f()); throw e; }
   },
   termKill: (id) => invoke("term_kill", { id }),
+  checkRoot: (root, allowed) => invoke("remote_check_root", { root, allowed }),
+  newProject: (parent, name) => invoke("remote_new_project", { parent, name }),
+  dirs: (root) => invoke("project_dirs", { root }),
   mcpSend: (id, line) => invoke("mcp_send", { id, line }),
   mcpStop: (id) => invoke("mcp_stop", { id }),
 };

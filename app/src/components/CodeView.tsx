@@ -1,11 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { bridge } from "../bridge";
-import { applyChanges, ConflictError, undoCheckpoint } from "../agent/apply";
-import type { AgentSession } from "../agent/llm";
-import type { McpManager } from "../agent/mcp";
-import { runCodingTask } from "../agent/runner";
-import { applyEvent, folderName, lastTurn, reviewable, type CodeSession, type Turn } from "../agent/sessions";
-import { titleFrom, uid } from "../store";
+import type { AgentController, Approval, Permission } from "../agent/controller";
+import { folderName, lastTurn, reviewable, type CodeSession } from "../agent/sessions";
 import { Markdown } from "./Markdown";
 import { ModePicker, type ModeOption } from "./ModePicker";
 import { PlusMenu } from "./PlusMenu";
@@ -15,7 +11,7 @@ import { Spark } from "./Thinking";
 import { ToolBlock } from "./ToolBlock";
 import { FolderIcon, SendIcon, StopIcon } from "./icons";
 
-export type Permission = "ask" | "auto" | "plan";
+export type { Permission };
 const PERMISSIONS: ModeOption<Permission>[] = [
   { id: "ask", label: "Ask first", hint: "Asks before running anything" },
   { id: "auto", label: "Auto-run checks", hint: "Runs tests without asking; still asks for network and tools" },
@@ -25,20 +21,15 @@ const PERMISSIONS: ModeOption<Permission>[] = [
 interface Props {
   /** The open session, or none. */
   active: CodeSession | undefined;
-  onChange: (id: string, f: (s: CodeSession) => CodeSession) => void;
   /** Starts a session on a folder and opens it. */
   onCreate: (root: string) => CodeSession;
   ready: boolean;
-  modelName: string;
-  /** The engine, loading the remembered model first if needed. */
-  engine: () => Promise<AgentSession | null>;
-  mcp: McpManager;
-  /** Takes the engine from background jobs for the length of a run; the returned function gives it back. */
-  hold: () => Promise<() => void>;
+  /** Runs tasks, asks for approvals and applies changes: shared with a paired phone. */
+  ctl: AgentController;
+  approvals: Approval[];
   picker: ReactNode;
   onChooseModel: () => void;
   onMcp: () => void;
-  onUsage: (u: { steps: number; tokens: number }) => void;
   panel: boolean;
   onPanel: (open: boolean) => void;
   overviewProps: Omit<React.ComponentProps<typeof OverviewPane>, "session" | "onOpenFile">;
@@ -46,85 +37,48 @@ interface Props {
   onTab: (t: PanelTab) => void;
   perm: Permission;
   onPerm: (p: Permission) => void;
-  maxSteps: number;
   verbose: boolean;
-  notifyAgent: boolean;
 }
 
 const count = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-export function CodeView({ active, onChange, onCreate, ready, modelName, engine, mcp, hold, picker, onChooseModel, onMcp, onUsage, panel, onPanel, overviewProps, tab, onTab, perm, onPerm, maxSteps, verbose, notifyAgent }: Props) {
+export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onChooseModel, onMcp, panel, onPanel, overviewProps, tab, onTab, perm, onPerm, verbose }: Props) {
   const [task, setTask] = useState("");
   const [error, setError] = useState<string>();
-  const [approval, setApproval] = useState<{ command: string; network: boolean; answer: (yes: boolean) => void }>();
   const [focusFile, setFocusFile] = useState<string>();
   const [applying, setApplying] = useState(false);
-  const abort = useRef<AbortController>();
   const end = useRef<HTMLDivElement>(null);
   const last = active ? lastTurn(active) : undefined;
   const running = last?.status === "running";
   const withChanges = active ? [...active.turns].reverse().find((t) => t.diffs?.length) : undefined;
 
-  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [last?.blocks.length, last?.status, approval, active?.id]);
-  useEffect(() => { setError(undefined); setApproval(undefined); }, [active?.id]);
+  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [last?.blocks.length, last?.status, approvals.length, active?.id]);
+  useEffect(() => { setError(undefined); }, [active?.id]);
 
   const chooseFolder = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) onCreate(p); };
 
-  const patchTurn = (sid: string, tid: string, f: (t: Turn) => Turn): void => onChange(sid, (s) => ({ ...s, updated: Date.now(), turns: s.turns.map((t) => (t.id === tid ? f(t) : t)) }));
+  const pending = approvals.filter((a) => a.sessionId === active?.id);
+  const approval = pending[0];
 
-  const start = async (): Promise<void> => {
+  const start = (): void => {
     const text = task.trim();
     if (!active || !text || running) return;
-    const sid = active.id, root = active.root;
-    const turn: Turn = { id: uid(), task: text, created: Date.now(), status: "running", blocks: [] };
-    onChange(sid, (x) => ({ ...x, title: x.turns.length ? x.title : titleFrom(text), updated: Date.now(), turns: [...x.turns, turn] }));
     setTask(""); setError(undefined);
-    const ac = new AbortController();
-    abort.current = ac;
-    const s = await engine();
-    if (!s) { patchTurn(sid, turn.id, (t) => ({ ...t, status: "failed", error: "The model could not be loaded." })); return; }
-    const release = await hold();
-    try {
-      const out = await runCodingTask({
-        host: bridge.host, web: bridge.web, root, session: s, modelName, task: text, mcp, maxSteps, contextTokens: overviewProps.contextMax, onContext: (n) => patchTurn(sid, turn.id, (t) => ({ ...t, context: n })), signal: ac.signal, planOnly: perm === "plan",
-        approve: (info) => perm === "plan" ? Promise.resolve(false) : perm === "auto" && !info.network ? Promise.resolve(true) : new Promise<boolean>((resolve) => setApproval({ ...info, answer: (yes) => { setApproval(undefined); resolve(yes); } })),
-        onEvent: (e) => patchTurn(sid, turn.id, (t) => ({ ...t, blocks: applyEvent(t.blocks, e) })),
-      });
-      const changes = perm === "plan" ? [] : await out.ws.changeSet();
-      const diffs = perm === "plan" ? [] : out.result.diffs.filter((d) => d.patch || d.status !== "modified");
-      onUsage({ steps: out.result.steps, tokens: out.result.usage.completionTokens });
-      patchTurn(sid, turn.id, (t) => ({
-        ...t, status: out.result.status === "aborted" ? "stopped" : out.result.status === "error" ? "failed" : "done", summary: out.result.summary,
-        usage: { steps: out.result.steps, tokens: out.result.usage.completionTokens }, ...(out.result.error ? { error: out.result.error } : {}),
-        ...(diffs.length ? { changes, diffs } : {}),
-      }));
-      if (diffs.length) { onTab("changes"); onPanel(true); }
-      if (notifyAgent && !document.hasFocus()) void bridge.notify(out.result.status === "finished" ? "Task finished" : "Task stopped", out.result.summary.slice(0, 120));
-    } catch (e) {
-      patchTurn(sid, turn.id, (t) => ({ ...t, status: "failed", error: e instanceof Error ? e.message : String(e) }));
-    } finally {
-      setApproval((a) => { a?.answer(false); return undefined; });
-      release();
-    }
+    void ctl.run(active.id, text, { perm, source: "local" }).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   };
-
   const apply = async (): Promise<void> => {
-    if (!active || !withChanges?.changes) return;
+    if (!active || !withChanges) return;
     setApplying(true);
-    try {
-      const id = await applyChanges(bridge.host, active.root, withChanges.changes, withChanges.task.slice(0, 80));
-      patchTurn(active.id, withChanges.id, (t) => ({ ...t, applied: id }));
-      setError(undefined);
-    } catch (e) {
-      setError(e instanceof ConflictError ? `Nothing was written. ${e.message}. Run the task again to start from the current files.` : e instanceof Error ? e.message : String(e));
-    } finally { setApplying(false); }
+    const r = await ctl.apply(active.id, withChanges.id);
+    setError(r.ok ? undefined : r.error);
+    setApplying(false);
   };
   const undo = async (): Promise<void> => {
     if (!active || !withChanges?.applied) return;
-    try { await undoCheckpoint(bridge.host, active.root, withChanges.applied); patchTurn(active.id, withChanges.id, (t) => { const { applied: _a, ...rest } = t; void _a; return { ...rest, discarded: true }; }); setError(undefined); }
-    catch (e) { setError(e instanceof ConflictError ? `Not undone, because ${e.paths.join(", ")} changed after the apply.` : e instanceof Error ? e.message : String(e)); }
+    const r = await ctl.undo(active.id, withChanges.id);
+    setError(r.ok ? undefined : r.error);
   };
-  const discard = (): void => { if (active && withChanges) patchTurn(active.id, withChanges.id, (t) => ({ ...t, discarded: true })); };
+  const discard = (): void => { if (active && withChanges) ctl.discard(active.id, withChanges.id); };
 
   if (!active) {
     return (
@@ -167,10 +121,10 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
             ))}
             {approval ? (
               <div className="approval" role="alertdialog" aria-label="Approval needed">
-                <b>{approval.network ? "Allow this, with network access?" : "Allow this to run?"}</b>
+                <b>{approval.network ? "Allow this, with network access?" : "Allow this to run?"}{approval.source === "remote" ? <span className="tag">asked from {approval.device ?? "your phone"}</span> : null}</b>
                 <code>{approval.command}</code>
                 <small>Commands run in a scratch copy of the project, with a clean environment and a time limit. They can still read files your user can read.</small>
-                <div className="actions"><button type="button" className="btn small" onClick={() => approval.answer(true)}>Allow</button><button type="button" className="btn small ghost" onClick={() => approval.answer(false)}>Refuse</button></div>
+                <div className="actions"><button type="button" className="btn small" onClick={() => ctl.answer(approval.id, true, { source: "local" })}>Allow</button><button type="button" className="btn small ghost" onClick={() => ctl.answer(approval.id, false, { source: "local" })}>Refuse</button></div>
               </div>
             ) : null}
             {error && !panel ? <div className="notice err" role="alert">{error}</div> : null}
@@ -180,7 +134,7 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
         <div className="composer-wrap">
           <div className={`composer${!ready ? " is-disabled" : ""}`}>
             <textarea rows={2} value={task} placeholder={!ready ? "Load a model to start" : `What should change in ${folderName(active.root)}?`} disabled={!ready || running} aria-label="Task"
-              onChange={(e) => setTask(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void start(); } }} />
+              onChange={(e) => setTask(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); start(); } }} />
             <div className="composer-row">
               <PlusMenu items={[
                 { id: "folder", label: "Open another folder", hint: "Starts a new session on it", onSelect: () => void chooseFolder() },
@@ -191,8 +145,8 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
               <span className="spacer" />
               {picker}
               {!ready ? <button type="button" className="btn small ghost" onClick={onChooseModel}>Choose a model</button> : null}
-              {running ? <button type="button" className="round stop" onClick={() => abort.current?.abort()} aria-label="Stop"><StopIcon /></button>
-                : <button type="button" className="round send" onClick={() => void start()} disabled={!ready || !task.trim()} aria-label="Run"><SendIcon /></button>}
+              {running ? <button type="button" className="round stop" onClick={() => active && ctl.stop(active.id)} aria-label="Stop"><StopIcon /></button>
+                : <button type="button" className="round send" onClick={start} disabled={!ready || !task.trim()} aria-label="Run"><SendIcon /></button>}
             </div>
           </div>
           <p className="fineprint">{perm === "plan" ? "Plan only: nothing will be changed." : "Every change is shown to you before it is written."}</p>

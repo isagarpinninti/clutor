@@ -55,6 +55,12 @@ export interface AgentHost {
   /** Runs a command typed by the user in the project folder (their own shell, no sandbox); output arrives line by line. */
   termRun(id: string, root: string, command: string, onOut: (text: string) => void, onExit: (code: number | null) => void): Promise<void>;
   termKill(id: string): Promise<void>;
+  /** The folder's real path if it lies inside one of the allowed folders (symbolic links followed); an error otherwise. */
+  checkRoot(root: string, allowed: string[]): Promise<string>;
+  /** Creates a new empty project folder inside `parent` and returns its path. */
+  newProject(parent: string, name: string): Promise<string>;
+  /** The folders directly inside `root`. */
+  dirs(root: string): Promise<string[]>;
 }
 
 /** Everything the interface needs from the machine it runs on. The real app implements it with Tauri commands; a browser preview with a mock. */

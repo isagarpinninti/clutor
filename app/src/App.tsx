@@ -21,6 +21,8 @@ import { gather, needsWeb, withWebContext, type Gathered } from "./web";
 import { chatUsage, contextPercent } from "./usage";
 import { ModelDialog } from "./components/ModelDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { AgentController, type Approval } from "./agent/controller";
+import { RemoteHandler } from "./remote/handler";
 import { loadSessions, newSession, saveSessions, type CodeSession } from "./agent/sessions";
 import { Sidebar } from "./components/Sidebar";
 import type { EngineSession } from "@engine/session";
@@ -53,7 +55,10 @@ export function App() {
   const mcp = useMemo(() => new McpManager(bridge.host, () => bump((n) => n + 1)), []);
   useEffect(() => { saveServers(servers); mcp.sync(servers); }, [servers, mcp]);
   useEffect(() => { try { localStorage.setItem("clutor.mode", mode); } catch { /* storage unavailable */ } }, [mode]);
-  const [codeSessions, setCodeSessions] = useState<CodeSession[]>(loadSessions);
+  const [codeSessions, setCodeSessionsRaw] = useState<CodeSession[]>(loadSessions);
+  // The sessions are also kept in a ref that is updated at once, so code that just changed a session (a running task, a phone) reads the new value, not last render's.
+  const sessionsRef = useRef(codeSessions);
+  const setCodeSessions = useCallback((u: CodeSession[] | ((all: CodeSession[]) => CodeSession[])): void => { const next = typeof u === "function" ? u(sessionsRef.current) : u; sessionsRef.current = next; setCodeSessionsRaw(next); }, []);
   const [codeId, setCodeId] = useState<string>(() => { try { return localStorage.getItem("clutor.codeSession") ?? ""; } catch { return ""; } });
   const [panel, setPanel] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTab>("overview");
@@ -65,7 +70,9 @@ export function App() {
   const codeActive = codeSessions.find((s) => s.id === codeId);
   const lastAgentContext = [...(codeActive?.turns ?? [])].reverse().find((t) => t.context)?.context;
   const changeSession = useCallback((id: string, f: (s: CodeSession) => CodeSession) => setCodeSessions((all) => all.map((s) => (s.id === id ? f(s) : s))), []);
-  const createSession = useCallback((root: string): CodeSession => { const s = newSession(root); setCodeSessions((all) => [s, ...all]); setCodeId(s.id); setSidebar(false); return s; }, []);
+  /** Adds a session for a folder without opening it on this screen (a phone's task must not take over what you are looking at). */
+  const addSession = useCallback((root: string): CodeSession => { const s = newSession(root); setCodeSessions((all) => [s, ...all]); return s; }, [setCodeSessions]);
+  const createSession = useCallback((root: string): CodeSession => { const s = addSession(root); setCodeId(s.id); setSidebar(false); return s; }, [addSession]);
   const newCodeSession = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) createSession(p); };
   const deleteSession = (id: string): void => { setCodeSessions((all) => all.filter((s) => s.id !== id)); if (id === codeId) setCodeId(""); };
   useEffect(() => { try { (document.documentElement.style as CSSStyleDeclaration & { zoom: string }).zoom = ({ small: "0.92", medium: "1", large: "1.1" } as const)[settings.textSize]; } catch { /* unsupported */ } }, [settings.textSize]);
@@ -171,6 +178,44 @@ export function App() {
     if (session.current && state.model?.path === wanted.path) return session.current;
     return load(wanted, settings, system?.ramBytes);
   };
+
+  // Tasks, approvals and apply/undo live in one controller, used by this screen and by a paired phone. It reads current settings through a ref, so it is built once.
+  const live = useRef({ ensure: ensureModel, maxSteps: settings.maxSteps, contextTokens: settings.ctx, modelName: "model", notify: settings.notifyAgent });
+  live.current = { ensure: ensureModel, maxSteps: settings.maxSteps, contextTokens: state.ready?.nCtx ?? settings.ctx, modelName: wanted?.name ?? state.model?.name ?? "model", notify: settings.notifyAgent };
+  const [approvals, setApprovals] = useState<Approval[]>([]);
+  const ctl = useMemo(() => new AgentController({
+    host: bridge.host, web: bridge.web,
+    getSession: (id) => sessionsRef.current.find((s) => s.id === id),
+    change: (id, f) => setCodeSessions((all) => all.map((s) => (s.id === id ? f(s) : s))),
+    engine: () => live.current.ensure(), hold: () => queue.holdForChat(), mcp: () => mcp,
+    config: () => ({ maxSteps: live.current.maxSteps, contextTokens: live.current.contextTokens, modelName: live.current.modelName }),
+    onUsage: (u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens })),
+    onFinish: (s, t) => { if (live.current.notify && !document.hasFocus()) void bridge.notify(t.status === "done" ? "Task finished" : "Task stopped", (t.summary ?? s.title).slice(0, 120)); },
+    onApprovals: setApprovals,
+    log: (e) => { if (e.device) void bridge.remote.log(JSON.stringify({ at: Date.now(), device: e.device, what: e.what })); },
+    id: uid, titleFrom,
+  }), [queue, mcp, setCodeSessions]);
+
+  // Phones: what a paired phone sends is checked and carried out here, and each phone is kept up to date with what it is watching.
+  const remoteCfg = useRef({ projectsRoot: settings.remote?.projectsRoot, allowedRoots: settings.remote?.allowedRoots ?? [], model: undefined as { name: string; loaded: boolean } | undefined });
+  remoteCfg.current = { projectsRoot: settings.remote?.projectsRoot, allowedRoots: settings.remote?.allowedRoots ?? [], model: wanted ? { name: wanted.name, loaded: state.status === "ready" && state.model?.path === wanted.path } : undefined };
+  const remoteHandler = useMemo(() => new RemoteHandler({
+    ctl, host: bridge.host, sessions: () => sessionsRef.current, createSession: addSession,
+    settings: () => ({ projectsRoot: remoteCfg.current.projectsRoot, allowedRoots: remoteCfg.current.allowedRoots }), model: () => remoteCfg.current.model,
+    send: (client, text) => { void bridge.remote.send(client, text); },
+    log: (device, what) => { void bridge.remote.log(JSON.stringify({ at: Date.now(), device, what })); },
+  }), [ctl, addSession]);
+  useEffect(() => {
+    let dead = false;
+    let off: Array<() => void> = [];
+    void (async () => {
+      const subs = [await bridge.remote.onOpen((c, d) => remoteHandler.onOpen(c, d)), await bridge.remote.onMessage((c, t) => void remoteHandler.onMessage(c, t)), await bridge.remote.onClose((c) => remoteHandler.onClose(c))];
+      if (dead) subs.forEach((f) => f()); else off = subs;
+    })();
+    return () => { dead = true; off.forEach((f) => f()); };
+  }, [remoteHandler]);
+  const pushTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => { clearTimeout(pushTimer.current); pushTimer.current = setTimeout(() => remoteHandler.onChange(), 150); }, [codeSessions, approvals, remoteHandler]);
 
   /** The files as stored on a message, cut to fit the model's context. */
   const fileFields = (attached: Attachment[]): Pick<Msg, "files"> => {
@@ -310,7 +355,7 @@ export function App() {
       <div className="shell">
       <Sidebar userName={settings.userName} ramLabel={system ? `Local · ${Math.round(system.ramBytes / 2 ** 30)} GB` : "Local"} conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setSettingsAt("usage"); setDialog("settings"); setSidebar(false); }} mode={mode} codeSessions={codeSessions} codeId={codeId} onSelectCode={(id) => { setCodeId(id); setSidebar(false); }} onNewCode={() => void newCodeSession()} onDeleteCode={deleteSession} onJobs={() => { setDialog("jobs"); setSidebar(false); }} onUsage={() => { setDialog("usage"); setSidebar(false); }} collapsed={collapsed} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
       <main className="main">
-        {mode === "code" ? <CodeView active={codeActive} onChange={changeSession} onCreate={createSession} ready={ready || !!wanted} modelName={wanted?.name ?? state.model?.name ?? "model"} engine={ensureModel} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => { setSettingsAt("connectors"); setDialog("settings"); }} overviewProps={{ system, modelName: state.model?.name ?? lastModel?.name ?? "No model", pinned: note, contextMax: state.ready?.nCtx ?? settings.ctx, permission: ({ ask: "Ask first", auto: "Auto-run checks", plan: "Plan only" } as const)[settings.permission], mcp, onManageTools: () => { setSettingsAt("connectors"); setDialog("settings"); } }} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} panel={panel} onPanel={setPanel} tab={panelTab} onTab={setPanelTab} perm={settings.permission} onPerm={(p) => setSettings((s) => ({ ...s, permission: p }))} maxSteps={settings.maxSteps} verbose={settings.transcript === "verbose"} notifyAgent={settings.notifyAgent} /> : <>
+        {mode === "code" ? <CodeView active={codeActive} onCreate={createSession} ready={ready || !!wanted} ctl={ctl} approvals={approvals} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => { setSettingsAt("connectors"); setDialog("settings"); }} overviewProps={{ system, modelName: state.model?.name ?? lastModel?.name ?? "No model", pinned: note, contextMax: state.ready?.nCtx ?? settings.ctx, permission: ({ ask: "Ask first", auto: "Auto-run checks", plan: "Plan only" } as const)[settings.permission], mcp, onManageTools: () => { setSettingsAt("connectors"); setDialog("settings"); } }} panel={panel} onPanel={setPanel} tab={panelTab} onTab={setPanelTab} perm={settings.permission} onPerm={(p) => setSettings((s) => ({ ...s, permission: p }))} verbose={settings.transcript === "verbose"} /> : <>
         <div className="scroll" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           {active && active.messages.length > 0 ? (
             <div className="thread">

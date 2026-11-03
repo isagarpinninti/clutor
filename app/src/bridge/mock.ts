@@ -88,6 +88,9 @@ const mockHost: AgentHost = {
     setTimeout(() => { onOut("ok\n"); onExit(0); }, 500);
   },
   async termKill() { /* nothing runs */ },
+  async checkRoot(root, allowed) { if (allowed.some((a) => root === a || root.startsWith(`${a}/`)) && !root.includes("..")) return root; throw new Error("that folder is not inside a folder you allowed for remote control"); },
+  async newProject(parent, name) { if (!/^[\w .-]{1,64}$/.test(name) || name.startsWith(".")) throw new Error("a project name can use letters, numbers, spaces, - _ and ."); return `${parent}/${name}`; },
+  async dirs() { return ["demo-project", "notes"]; },
 };
 
 const mockWeb: WebApi = {
@@ -115,10 +118,23 @@ const remote: RemoteApi = {
   async pairStart() { mockRemote = { ...mockRemote, offerOpen: true }; return { qr: JSON.stringify({ v: 1, name: "preview", key: "preview", id: mockRemote.hostId, addrs: mockRemote.addresses, secret: "preview" }), expiresIn: 120, addresses: mockRemote.addresses }; },
   async pairCancel() { mockRemote = { ...mockRemote, offerOpen: false }; },
   async revoke(id) { mockRemote = { ...mockRemote, devices: mockRemote.devices.filter((d: RemoteDevice) => d.id !== id) }; return mockRemote; },
-  async send() { return false; }, async broadcast() { /* no phones */ }, async kick() { /* none */ },
+  async send(client, text) { phoneInbox.push({ client, text }); return true; }, async broadcast() { /* no phones */ }, async kick() { /* none */ },
   async log(line) { mockLog.push(line); }, async readLog(max) { return mockLog.slice(-max); },
-  async onOpen() { return () => undefined; }, async onMessage() { return () => undefined; }, async onClose() { return () => undefined; },
+  async onOpen(cb) { phoneHooks.open = cb; return () => { if (phoneHooks.open === cb) phoneHooks.open = undefined; }; },
+  async onMessage(cb) { phoneHooks.message = cb; return () => { if (phoneHooks.message === cb) phoneHooks.message = undefined; }; },
+  async onClose(cb) { phoneHooks.close = cb; return () => { if (phoneHooks.close === cb) phoneHooks.close = undefined; }; },
 };
+// A stand-in phone for developing and testing in the browser preview: window.__mockPhone.open(), .say({...}), .inbox.
+const phoneInbox: Array<{ client: number; text: string }> = [];
+const phoneHooks: { open?: (c: number, d: RemoteDevice) => void; message?: (c: number, t: string) => void; close?: (c: number) => void } = {};
+if (typeof window !== "undefined") {
+  (window as unknown as { __mockPhone: unknown }).__mockPhone = {
+    inbox: phoneInbox,
+    open: () => phoneHooks.open?.(1, { id: "mock", name: "Mock phone", public: "00", created: 1, lastSeen: 1 }),
+    say: (v: unknown) => phoneHooks.message?.(1, JSON.stringify(v)),
+    close: () => phoneHooks.close?.(1),
+  };
+}
 
 export const mockBridge: Bridge = {
   native: false,

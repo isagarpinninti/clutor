@@ -2,7 +2,10 @@
 
 The phone app controls Clutor on your computer: you send a task, watch the agent's steps, approve commands and review changes from your phone. Everything runs on the computer (the model, the agent, your files); the phone is a remote.
 
-**Status:** the encrypted channel and the relay server are built and tested. The computer-side host, the pairing screen and the Android app are not built yet.
+**Status:**
+* Built and tested: the encrypted channel; the computer-side host (Wi-Fi); the pairing screen (Settings > Remote); the rules a phone's requests are checked against; the agent controller shared by the desktop screen and the phone; the relay server (not used yet: for now phones connect over the same Wi-Fi).
+* Not built yet: the Android app, notifications, the Telegram relay.
+* Not yet exercised on real hardware: the host inside the running app with a real phone. The full path from a phone's message to a finished task was exercised in the browser preview with a stand-in phone, and the host and encryption over real WebSocket connections on one computer.
 
 ## How the phone reaches your computer
 
@@ -36,7 +39,7 @@ docker build -t clutor-relay . && docker run -p 8787:8787 -e RELAY_TOKEN=<your t
 
 For TLS either run it behind a proxy such as Caddy (`reverse_proxy localhost:8787` for your domain) or pass `TLS_CERT` and `TLS_KEY` paths. Each connection's first message names a computer by a 64-hex id (derived from its public key) and carries the token. A phone is told "computer not connected" if the computer is offline. At most 8 phones can attach to one computer, frames are capped at 1 MB, and five wrong tokens from one address are followed by a one-minute lockout.
 
-## Rules for remote tasks (to be enforced by the host)
+## Rules for remote tasks (enforced by the app, with tests)
 
 * Remote access is off by default, with a visible indicator and a kill switch on the computer.
 * The phone works only inside project folders you allowed. New projects are created inside the projects folder you choose on the computer.

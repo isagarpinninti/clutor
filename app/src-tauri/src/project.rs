@@ -325,6 +325,49 @@ pub async fn term_kill(state: State<'_, TermState>, id: String) -> Result<(), St
     Ok(())
 }
 
+// ---- Folders a phone may use ---------------------------------------------------------------------------------------------------------------------------------------
+// These run on the real, resolved paths (symbolic links followed), so a link inside an allowed folder that points elsewhere does not get a phone outside it.
+
+/// The folder's real path if it lies inside one of the allowed folders; otherwise an error.
+#[tauri::command]
+pub fn remote_check_root(root: String, allowed: Vec<String>) -> Result<String, String> {
+    let real = PathBuf::from(&root).canonicalize().map_err(|e| format!("cannot open that folder: {e}"))?;
+    if !real.is_dir() { return Err("that is not a folder".into()); }
+    for a in allowed {
+        if let Ok(base) = PathBuf::from(a).canonicalize() { if real.starts_with(&base) { return Ok(real.to_string_lossy().to_string()); } }
+    }
+    Err("that folder is not inside a folder you allowed for remote control".into())
+}
+
+/// Creates a new, empty project folder named `name` inside `parent`. The name must be a plain folder name: no separators, no leading dot, and not already taken.
+#[tauri::command]
+pub fn remote_new_project(parent: String, name: String) -> Result<String, String> {
+    let name = name.trim();
+    let ok_char = |c: char| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.');
+    if name.is_empty() || name.chars().count() > 64 || name.starts_with('.') || !name.chars().all(ok_char) { return Err("a project name can use letters, numbers, spaces, - _ and . (up to 64 characters, not starting with a dot)".into()); }
+    let base = PathBuf::from(&parent).canonicalize().map_err(|e| format!("the projects folder is not available: {e}"))?;
+    let path = base.join(name);
+    if path.exists() { return Err(format!("{name} already exists in the projects folder")); }
+    std::fs::create_dir(&path).map_err(|e| e.to_string())?;
+    let real = path.canonicalize().map_err(|e| e.to_string())?;
+    if !real.starts_with(&base) { let _ = std::fs::remove_dir(&path); return Err("the new folder would be outside the projects folder".into()); }
+    Ok(real.to_string_lossy().to_string())
+}
+
+/// The folders directly inside `root` (not hidden ones, not dependency folders), for choosing a project.
+#[tauri::command]
+pub fn project_dirs(root: String) -> Result<Vec<String>, String> {
+    let root = root_of(&root)?;
+    let mut out: Vec<String> = std::fs::read_dir(&root).map_err(|e| e.to_string())?.flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| !n.starts_with('.') && !SKIP_DIRS.contains(&n.as_str()))
+        .collect();
+    out.sort();
+    out.truncate(200);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +443,41 @@ mod tests {
         assert!(r.timed_out);
         let e = project_run(root.to_string_lossy().to_string(), vec![], vec![vec!["env".into()]], 5000).await.unwrap();
         assert!(!e.output.contains("s3cret"));
+    }
+    #[test]
+    fn a_folder_must_really_be_inside_an_allowed_one() {
+        let base = temp("allow-base");
+        let inside = base.join("proj");
+        std::fs::create_dir_all(&inside).unwrap();
+        let other = temp("allow-other");
+        let allowed = vec![base.to_string_lossy().to_string()];
+        assert!(remote_check_root(inside.to_string_lossy().to_string(), allowed.clone()).is_ok());
+        assert!(remote_check_root(base.to_string_lossy().to_string(), allowed.clone()).is_ok());
+        assert!(remote_check_root(other.to_string_lossy().to_string(), allowed.clone()).is_err());
+        assert!(remote_check_root(format!("{}/../{}", inside.display(), other.file_name().unwrap().to_string_lossy()), allowed.clone()).is_err());
+        assert!(remote_check_root(base.join("missing").to_string_lossy().to_string(), allowed.clone()).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&other, base.join("escape")).unwrap();
+            assert!(remote_check_root(base.join("escape").to_string_lossy().to_string(), allowed).is_err(), "a link pointing outside must not pass");
+        }
+    }
+
+    #[test]
+    fn new_projects_get_plain_names_and_never_overwrite() {
+        let base = temp("newproj");
+        let b = base.to_string_lossy().to_string();
+        let made = remote_new_project(b.clone(), "My App".into()).unwrap();
+        assert!(std::path::Path::new(&made).is_dir());
+        assert!(remote_new_project(b.clone(), "My App".into()).unwrap_err().contains("already exists"));
+        for bad in ["", "..", ".hidden", "a/b", "a\\b", "x\u{0}y", &"n".repeat(65)] { assert!(remote_new_project(b.clone(), bad.into()).is_err(), "{bad:?}"); }
+    }
+
+    #[test]
+    fn project_dirs_lists_visible_folders_only() {
+        let base = temp("dirs");
+        for d in ["beta", "alpha", ".git", "node_modules"] { std::fs::create_dir_all(base.join(d)).unwrap(); }
+        std::fs::write(base.join("file.txt"), "x").unwrap();
+        assert_eq!(project_dirs(base.to_string_lossy().to_string()).unwrap(), vec!["alpha".to_string(), "beta".to_string()]);
     }
 }
