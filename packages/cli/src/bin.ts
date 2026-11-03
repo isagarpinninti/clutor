@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface, type Interface } from "node:readline";
 import { main } from "./cli";
+import { useColor } from "./banner";
 
 // One readline interface for the whole process, so arrow-key history works across prompts and Ctrl-D ends an interactive session.
 let rl: Interface | undefined;
@@ -32,6 +33,9 @@ main(process.argv.slice(2), {
   err: (l) => console.error(l),
   cwd: process.cwd(),
   ...(process.stdin.isTTY ? { prompt } : {}),
+  ...(process.stdin.isTTY && process.stdout.isTTY && !process.env["CLUTOR_PLAIN"]
+    ? { tui: async (run, version, argv) => (await import("./tui/app")).runTui({ io: { out: (l) => console.log(l), write: (s) => void process.stdout.write(s), err: (l) => console.error(l), cwd: process.cwd() }, run, version, argv, color: useColor() }) }
+    : {}),
 }).then(
   (code) => process.exit(code),
   (e: unknown) => {

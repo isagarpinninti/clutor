@@ -85,7 +85,8 @@ clutor bench --file models/olmoe-1b-7b-0924-instruct-q4_k_m.gguf     # compares 
 To chat or use the agent, set `backend.kind` to `llama-server` and `backend.llamaServer.model` to a `.gguf` in `clutor.config.json` (see `examples/clutor.config.json`), then:
 
 ```bash
-clutor                                       # interactive session: type a task, or /help (/plan /status /verify /undo /tools /cost ...)
+clutor                                       # interactive chat in the terminal: type a message, / for commands, @file to attach, esc to stop a reply
+clutor --model path/to/model.gguf --ctx 16384  # pick the model and context size yourself (otherwise it finds .gguf files in ./models or ./Models)
 clutor chat                                  # plain chat with the model: /help /layers /cache /reset /exit
 clutor decide --prompt "PR #42 changes auth with no tests" --choices "approve,request_changes,block"
 clutor code "add a token-bucket rate limiter with tests" --dir ./myproject --verify "npm test"

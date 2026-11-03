@@ -25,6 +25,8 @@ export interface Io {
   cwd: string;
   /** Asks the user a question and returns the answer. Absent when there is no terminal. */
   prompt?(question: string): Promise<string>;
+  /** Opens the full-screen interactive chat (tui/app.ts). Present only on a real terminal; tests and pipes use the plain session. */
+  tui?(run: (argv: string[], session: SessionState) => Promise<number>, version: string, argv: string[]): Promise<number>;
 }
 
 /** State that survives from one task to the next inside an interactive session (see repl.ts). One-shot commands run without it. */
@@ -100,6 +102,7 @@ export async function main(argv: string[], io: Io, session?: SessionState): Prom
   const json = flagBool(args, "json");
   try {
     if (flagBool(args, "version") || command === "version" || argv.includes("-v")) return io.out(version()), 0;
+    if (!flagBool(args, "help") && !argv.includes("-h") && io.tui && !session && (!command || (command === "chat" && flagString(args, "prompt") === undefined))) return await io.tui((a, s) => main(a, io, s), version(), argv.filter((x) => x !== "chat"));
     if (!command && !flagBool(args, "help") && !argv.includes("-h") && io.prompt && !session) return await (await import("./repl")).runRepl(io, (a, s) => main(a, io, s), (cfg, what) => engineSlashCommand(io, cfg, what), version());
     if (!command || flagBool(args, "help") || command === "help" || argv.includes("-h")) return io.out(HELP), 0;
 
