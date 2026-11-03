@@ -27,6 +27,8 @@ snow = "0.9"
 rand = "0.8"
 base64 = "0.22"
 hex = "0.4"
+if-addrs = "0.13"
+keepawake = "0.5"
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 url = "2"
 tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "macros", "process", "sync", "time"] }

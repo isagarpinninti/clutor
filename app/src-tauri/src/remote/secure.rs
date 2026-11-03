@@ -14,7 +14,7 @@ const PROLOGUE: &[u8] = b"clutor-remote-v1";
 const MODE_KNOWN: u8 = 0;
 const MODE_PAIR: u8 = 1;
 const CHUNK: usize = 60_000;
-const MAX_MESSAGE: usize = 16 * 1024 * 1024;
+const MAX_MESSAGE: usize = 4 * 1024 * 1024;
 const READY: &[u8] = b"clutor-ready";
 
 pub type Key = Vec<u8>;
@@ -39,7 +39,7 @@ pub trait Link {
 pub enum Auth { Pair { secret: [u8; 32] }, Known }
 
 /// What the desktop knows: who is paired, and the one-time secret of the pairing offer on screen (if any).
-pub trait Policy {
+pub trait Policy: Sync {
     fn is_paired(&self, public: &[u8]) -> bool;
     /// Takes the secret of the open pairing offer. It can be taken once: a second attempt, or an expired offer, gets nothing.
     fn take_pairing_secret(&self) -> Option<[u8; 32]>;
