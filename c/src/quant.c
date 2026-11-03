@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "quant.h"
 #include "kernel.h"
 #include <math.h>
