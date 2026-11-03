@@ -1,6 +1,7 @@
 import type { EngineState } from "../engine";
 import { fmtBytes } from "../store";
 import { contextPercent, type ChatUsage } from "../usage";
+import { CloseIcon } from "./icons";
 
 interface Props {
   state: EngineState;
@@ -18,7 +19,7 @@ export function UsageDialog({ state, ramBytes, usage, agent, jobs, onClose }: Pr
   return (
     <div className="overlay" onClick={onClose} role="presentation">
       <div className="dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Usage">
-        <header><h2>Usage</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button></header>
+        <header><h2>Usage</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
         <p className="lead">Everything runs on this device, so there is no cost and no quota. These are the numbers the engine measured.</p>
 
         <section className="panel">

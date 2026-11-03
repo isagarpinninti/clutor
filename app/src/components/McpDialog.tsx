@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { serverName, splitCommandLine, type McpManager, type McpServerConfig } from "../agent/mcp";
+import { CloseIcon } from "./icons";
 
 interface Props { servers: McpServerConfig[]; manager: McpManager; onChange: (s: McpServerConfig[]) => void; onClose: () => void }
 
@@ -22,7 +23,7 @@ export function McpDialog({ servers, manager, onChange, onClose }: Props) {
   return (
     <div className="overlay" onClick={onClose} role="presentation">
       <div className="dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Tools">
-        <header><h2>Tools (MCP servers)</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button></header>
+        <header><h2>Tools (MCP servers)</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
         <p className="empty-hint">An MCP server is a program that gives the agent extra tools, such as web search or a database. It runs on this computer with your permissions: add only servers you trust. The agent asks before calling any tool the server does not mark read-only.</p>
         <div className="list">
           {servers.map((s) => {

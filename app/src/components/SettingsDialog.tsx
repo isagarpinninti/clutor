@@ -1,4 +1,5 @@
 import { DEFAULT_SYSTEM, type Settings } from "../store";
+import { CloseIcon } from "./icons";
 
 interface Props { settings: Settings; onChange: (s: Settings) => void; onTools: () => void; onClose: () => void }
 
@@ -7,7 +8,7 @@ export function SettingsDialog({ settings, onChange, onTools, onClose }: Props) 
   return (
     <div className="overlay" onClick={onClose} role="presentation">
       <div className="dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Settings">
-        <header><h2>Settings</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button></header>
+        <header><h2>Settings</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
         <div className="form sections">
           <section className="panel">
             <h3>Model and memory</h3>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { bridge, type CatalogItem, type DownloadProgress, type ModelInfo, type SystemInfo } from "../bridge";
 import { fmtBytes } from "../store";
-import { ChipIcon, DownloadIcon, FolderIcon } from "./icons";
+import { ChipIcon, DownloadIcon, FolderIcon, CloseIcon } from "./icons";
 
 interface Props {
   system: SystemInfo | undefined;
@@ -35,7 +35,7 @@ export function ModelDialog({ system, current, onPick, onClose }: Props) {
   return (
     <div className="overlay" onClick={onClose} role="presentation">
       <div className="dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Models">
-        <header><h2>Models</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close">✕</button></header>
+        <header><h2>Models</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
         <div className="tabs" role="tablist">
           <button type="button" role="tab" aria-selected={tab === "local"} className={tab === "local" ? "on" : ""} onClick={() => setTab("local")}>On this device</button>
           <button type="button" role="tab" aria-selected={tab === "get"} className={tab === "get" ? "on" : ""} onClick={() => setTab("get")}>Get a model</button>
