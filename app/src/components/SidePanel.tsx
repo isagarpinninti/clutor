@@ -3,6 +3,8 @@ import type { AgentHost } from "../bridge";
 import type { Turn } from "../agent/sessions";
 import { reviewable } from "../agent/sessions";
 import { Patch } from "./Patch";
+import { BrowserPane } from "./BrowserPane";
+import { TerminalPane } from "./TerminalPane";
 import { CloseIcon, SearchIcon } from "./icons";
 
 interface Props {
@@ -17,13 +19,15 @@ interface Props {
   onClose: () => void;
   busy: boolean;
   error: string | undefined;
+  hidden: boolean;
+  tab: PanelTab;
+  onTab: (t: PanelTab) => void;
 }
 
-type Tab = "changes" | "files";
+export type PanelTab = "changes" | "files" | "terminal" | "browser";
 
 /** The panel beside the conversation: the changes waiting for review, and the project's files. */
-export function SidePanel({ host, root, turn, focusFile, onApply, onDiscard, onUndo, onClose, busy, error }: Props) {
-  const [tab, setTab] = useState<Tab>("changes");
+export function SidePanel({ host, root, turn, focusFile, onApply, onDiscard, onUndo, onClose, busy, error, tab, onTab, hidden }: Props) {
   const [files, setFiles] = useState<string[]>([]);
   const [q, setQ] = useState("");
   const [viewing, setViewing] = useState<{ path: string; text: string | null; error?: string }>();
@@ -32,22 +36,24 @@ export function SidePanel({ host, root, turn, focusFile, onApply, onDiscard, onU
 
   useEffect(() => { if (root) void host.list(root).then(setFiles).catch(() => setFiles([])); }, [host, root, turn?.applied]);
   const open = (path: string): void => {
-    setTab("files");
+    onTab("files");
     void host.read(root, path).then((text) => setViewing({ path, text }), (e: unknown) => setViewing({ path, text: null, error: e instanceof Error ? e.message : String(e) }));
   };
   useEffect(() => { if (focusFile) open(focusFile); }, [focusFile]);
   const shown = useMemo(() => (q.trim() ? files.filter((f) => f.toLowerCase().includes(q.trim().toLowerCase())) : files).slice(0, 400), [files, q]);
 
   return (
-    <aside className="side-panel" aria-label="Changes and files">
+    <aside className="side-panel" aria-label="Changes, files, terminal and browser" hidden={hidden}>
       <header>
         <div className="seg" role="tablist">
-          <button type="button" role="tab" aria-selected={tab === "changes"} className={tab === "changes" ? "on" : ""} onClick={() => setTab("changes")}>Changes{diffs.length ? ` · ${diffs.length}` : ""}</button>
-          <button type="button" role="tab" aria-selected={tab === "files"} className={tab === "files" ? "on" : ""} onClick={() => setTab("files")}>Files</button>
+          <button type="button" role="tab" aria-selected={tab === "changes"} className={tab === "changes" ? "on" : ""} onClick={() => onTab("changes")}>Changes{diffs.length ? ` · ${diffs.length}` : ""}</button>
+          <button type="button" role="tab" aria-selected={tab === "files"} className={tab === "files" ? "on" : ""} onClick={() => onTab("files")}>Files</button>
+          <button type="button" role="tab" aria-selected={tab === "terminal"} className={tab === "terminal" ? "on" : ""} onClick={() => onTab("terminal")}>Terminal</button>
+          <button type="button" role="tab" aria-selected={tab === "browser"} className={tab === "browser" ? "on" : ""} onClick={() => onTab("browser")}>Browser</button>
         </div>
         <button type="button" className="icon-btn" onClick={onClose} aria-label="Close panel"><CloseIcon /></button>
       </header>
-      <div className="panel-body">
+      <div className="panel-body" hidden={tab === "terminal" || tab === "browser"}>
         {tab === "changes" ? (
           diffs.length === 0 ? <p className="empty-hint">{turn?.lost ? "The changes from this task were too large to keep after a restart. Run it again." : "No changes yet. When the agent edits files they appear here for review."}</p> : (
             <>
@@ -73,6 +79,8 @@ export function SidePanel({ host, root, turn, focusFile, onApply, onDiscard, onU
           </>
         )}
       </div>
+      <div className="panel-body flush" hidden={tab !== "terminal"}><TerminalPane key={root} root={root} /></div>
+      <div className="panel-body flush" hidden={tab !== "browser"}><BrowserPane /></div>
       {error ? <div className="notice err" role="alert">{error}</div> : null}
       {tab === "changes" && turn && diffs.length > 0 ? (
         <footer>

@@ -16,14 +16,19 @@ interface Props {
   notice?: string | undefined;
   /** The model picker, shown under the text box. */
   picker?: ReactNode;
+  /** Puts text in the box (a suggestion); `n` changes each time so the same text can be set again. */
+  prefill?: { text: string; n: number } | undefined;
+  /** Centered on the empty home screen: a larger box with room to breathe. */
+  home?: boolean;
   onStop: () => void;
 }
 
-export function Composer({ busy, disabled, placeholder, thinking, onThinking, browse, onBrowse, onSend, onBackground, notice, onStop, picker }: Props) {
+export function Composer({ busy, disabled, placeholder, thinking, onThinking, browse, onBrowse, onSend, onBackground, notice, onStop, picker, prefill, home }: Props) {
   const [text, setText] = useState("");
   const area = useRef<HTMLTextAreaElement>(null);
   const touch = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
+  useEffect(() => { if (prefill) { setText(prefill.text); area.current?.focus(); } }, [prefill?.n]);
   useEffect(() => {
     const a = area.current;
     if (!a) return;
@@ -49,7 +54,7 @@ export function Composer({ busy, disabled, placeholder, thinking, onThinking, br
   };
 
   return (
-    <div className="composer-wrap">
+    <div className={`composer-wrap${home ? " home" : ""}`}>
       {notice ? <div className="notice" role="status">{notice}</div> : null}
       <div className={`composer${disabled ? " is-disabled" : ""}`}>
         <textarea ref={area} rows={1} value={text} placeholder={placeholder} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} disabled={disabled} enterKeyHint="send" aria-label="Message" />
@@ -68,7 +73,7 @@ export function Composer({ busy, disabled, placeholder, thinking, onThinking, br
             : <button type="button" className="round send" onClick={send} disabled={!text.trim() || disabled} aria-label="Send"><SendIcon /></button>}
         </div>
       </div>
-      <p className="fineprint">Runs on this device with Clutor's engine. Replies can be wrong.</p>
+      {home ? null : <p className="fineprint">Runs on this device with Clutor's engine. Replies can be wrong.</p>}
     </div>
   );
 }

@@ -41,6 +41,14 @@ const host: AgentHost = {
     ];
     try { await invoke("mcp_start", { id, command: l.command, args: l.args, env: l.env, cwd: l.cwd ?? null }); } catch (e) { un.forEach((f) => f()); throw e; }
   },
+  async termRun(id, root, command, onOut, onExit) {
+    const un = [
+      await listen<{ id: string; text: string }>("term-out", (e) => { if (e.payload.id === id) onOut(e.payload.text); }),
+      await listen<{ id: string; code: number | null }>("term-exit", (e) => { if (e.payload.id === id) { un.forEach((f) => f()); onExit(e.payload.code); } }),
+    ];
+    try { await invoke("term_run", { id, root, command }); } catch (e) { un.forEach((f) => f()); throw e; }
+  },
+  termKill: (id) => invoke("term_kill", { id }),
   mcpSend: (id, line) => invoke("mcp_send", { id, line }),
   mcpStop: (id) => invoke("mcp_stop", { id }),
 };
@@ -56,7 +64,7 @@ export const tauriBridge: Bridge = {
   host,
   web,
   system: () => invoke<SystemInfo>("system_info"),
-  listModels: () => invoke<ModelInfo[]>("list_models"),
+  listModels: (folders) => invoke<ModelInfo[]>("list_models", { folders: folders ?? [] }),
   catalog: () => invoke<CatalogItem[]>("model_catalog"),
   revealModels: () => invoke("reveal_models"),
   async notify(title, body) {

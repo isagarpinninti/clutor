@@ -4,20 +4,24 @@ import { fmtBytes } from "../store";
 import { ChipIcon, DownloadIcon, FolderIcon, CloseIcon } from "./icons";
 
 interface Props {
+  folders: string[];
+  onFolder: (path: string) => void;
   system: SystemInfo | undefined;
   current: string | undefined;
   onPick: (m: ModelInfo) => void;
   onClose: () => void;
 }
 
-export function ModelDialog({ system, current, onPick, onClose }: Props) {
+export function ModelDialog({ folders, onFolder, system, current, onPick, onClose }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
   const [tab, setTab] = useState<"local" | "get">("local");
 
-  const refresh = (): void => { void bridge.listModels().then(setModels); };
-  useEffect(() => { refresh(); void bridge.catalog().then(setCatalog); }, []);
+  const refresh = (): void => { void bridge.listModels(folders).then(setModels); };
+  useEffect(() => { refresh(); }, [folders]);
+  useEffect(() => { void bridge.catalog().then(setCatalog); }, []);
+  const chooseFolder = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) onFolder(p); };
 
   const get = (item: CatalogItem): void => {
     setProgress((p) => ({ ...p, [item.id]: { id: item.id, done: 0, total: item.bytes, state: "downloading" } }));
@@ -50,6 +54,7 @@ export function ModelDialog({ system, current, onPick, onClose }: Props) {
                 {m.path === current ? <span className="badge">Loaded</span> : null}
               </button>
             ))}
+            <button type="button" className="row ghost" onClick={() => void chooseFolder()}><FolderIcon /><span className="row-main"><b>{folders[0] ? "Change models folder" : "Choose a models folder"}</b><small>{folders[0] ?? "Pick the folder where your .gguf files are"}</small></span></button>
             <button type="button" className="row ghost" onClick={() => void bridge.revealModels()}><FolderIcon /><span className="row-main"><b>Open models folder</b><small>{system?.modelsDir ?? ""}</small></span></button>
           </div>
         ) : (

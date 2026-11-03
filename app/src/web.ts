@@ -60,3 +60,10 @@ export function withWebContext(messages: ChatMessage[], g: Gathered): ChatMessag
   const [first, ...rest] = messages;
   return first?.role === "system" ? [{ ...first, content: first.content + note }, ...rest] : [{ role: "system", content: note.trim() }, ...messages];
 }
+
+const SMALL_TALK = /^(hi|hello|hey|yo|thanks|thank you|ok|okay|cool|nice|great|bye|good (morning|evening|night))\b[\s!.?]*$/i;
+/** Whether a message is worth a web lookup: not a greeting or a one-word reply. Anything else is looked up when Browse is on. */
+export function needsWeb(text: string): boolean {
+  const t = text.trim();
+  return t.split(/\s+/).filter(Boolean).length >= 3 && !SMALL_TALK.test(t);
+}

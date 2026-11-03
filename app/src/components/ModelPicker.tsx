@@ -8,17 +8,18 @@ interface Props {
   status: "idle" | "loading" | "ready" | "error";
   /** Short note about how the loaded model runs, e.g. "pinned in memory". */
   note?: string | undefined;
+  folders?: string[];
   onPick: (m: ModelInfo) => void;
   onMore: () => void;
 }
 
 /** The model chooser that sits under the message box: the loaded model's name, and a small menu of the models on this device. */
-export function ModelPicker({ current, status, note, onPick, onMore }: Props) {
+export function ModelPicker({ current, status, note, folders, onPick, onMore }: Props) {
   const [open, setOpen] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const box = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { if (open) void bridge.listModels().then(setModels); }, [open]);
+  useEffect(() => { if (open) void bridge.listModels(folders).then(setModels); }, [open, folders]);
   useEffect(() => {
     if (!open) return;
     const away = (e: MouseEvent): void => { if (!box.current?.contains(e.target as Node)) setOpen(false); };
@@ -33,7 +34,7 @@ export function ModelPicker({ current, status, note, onPick, onMore }: Props) {
       <button type="button" className={`picker-btn ${status}`} onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open}>
         {status === "loading" ? <Spark size={12} /> : null}
         <span className="picker-name">{label}</span>
-        {status === "ready" && note ? <small>{note}</small> : null}
+        {status === "ready" && note ? <small>{note}</small> : status === "idle" && current ? <small>not loaded</small> : null}
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="m2 4 3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
       </button>
       {open ? (

@@ -269,6 +269,62 @@ pub async fn mcp_stop(state: State<'_, McpState>, id: String) -> Result<(), Stri
     Ok(())
 }
 
+// ---- A terminal for the project folder ---------------------------------------------------------------------------------------------------------------------------
+// This is the user's own command line: it runs what they type in the project folder with their permissions and environment, with no sandbox. (The agent never uses it.)
+
+#[derive(Default)]
+pub struct TermState(Arc<Mutex<HashMap<String, Child>>>);
+
+#[derive(Serialize, Clone)]
+struct TermOut { id: String, text: String }
+#[derive(Serialize, Clone)]
+struct TermExit { id: String, code: Option<i32> }
+
+#[tauri::command]
+pub async fn term_run(app: AppHandle, state: State<'_, TermState>, id: String, root: String, command: String) -> Result<(), String> {
+    let root = root_of(&root)?;
+    #[cfg(not(windows))]
+    let mut cmd = { let mut c = Command::new("sh"); c.arg("-c").arg(&command); c };
+    #[cfg(windows)]
+    let mut cmd = { let mut c = Command::new("cmd"); c.arg("/C").arg(&command); c };
+    cmd.current_dir(&root).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let mut child = cmd.spawn().map_err(|e| format!("could not start: {e}"))?;
+    let out = child.stdout.take().ok_or("no stdout")?;
+    let err = child.stderr.take().ok_or("no stderr")?;
+    state.0.lock().await.insert(id.clone(), child);
+    let map = state.0.clone();
+    tokio::spawn(async move {
+        let pump = |stream: Box<dyn tokio::io::AsyncRead + Unpin + Send>, app: AppHandle, id: String| async move {
+            let mut r = BufReader::new(stream);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match r.read_until(b'\n', &mut buf).await { Ok(0) | Err(_) => break, Ok(_) => { let _ = app.emit("term-out", TermOut { id: id.clone(), text: String::from_utf8_lossy(&buf).to_string() }); } }
+            }
+        };
+        let a = tokio::spawn(pump(Box::new(out), app.clone(), id.clone()));
+        let b = tokio::spawn(pump(Box::new(err), app.clone(), id.clone()));
+        let _ = tokio::join!(a, b);
+        let code = match map.lock().await.remove(&id) { Some(mut c) => c.wait().await.ok().and_then(|s| s.code()), None => None };
+        let _ = app.emit("term-exit", TermExit { id, code });
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn term_kill(state: State<'_, TermState>, id: String) -> Result<(), String> {
+    if let Some(c) = state.0.lock().await.get_mut(&id) {
+        #[cfg(unix)]
+        kill_group(c);
+        let _ = c.start_kill();
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

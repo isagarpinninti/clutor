@@ -25,7 +25,7 @@ export function useEngine() {
     setState({ status: "idle" });
   }, []);
 
-  const load = useCallback(async (model: ModelInfo, settings: Pick<Settings, "ctx" | "lock">, ramBytes?: number) => {
+  const load = useCallback(async (model: ModelInfo, settings: Pick<Settings, "ctx" | "lock">, ramBytes?: number): Promise<EngineSession | null> => {
     const old = session.current;
     session.current = null;
     setState({ status: "loading", model });
@@ -36,8 +36,10 @@ export function useEngine() {
       const { transport, ready } = await bridge.openEngine(model.path, settings.ctx, pin);
       session.current = new EngineSession(transport, ready);
       setState({ status: "ready", model, ready, loadMs: performance.now() - t0, ...(settings.lock && !pin ? { unpinned: true } : {}) });
+      return session.current;
     } catch (e) {
       setState({ status: "error", model, error: e instanceof Error ? e.message : String(e) });
+      return null;
     }
   }, []);
 

@@ -11,6 +11,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(engine::EngineState::default())
         .manage(project::McpState::default())
+        .manage(project::TermState::default())
         .invoke_handler(tauri::generate_handler![
             engine::engine_open,
             engine::engine_op,
@@ -27,6 +28,8 @@ pub fn run() {
             project::mcp_start,
             project::mcp_send,
             project::mcp_stop,
+            project::term_run,
+            project::term_kill,
             web::web_fetch,
             web::web_search,
         ])

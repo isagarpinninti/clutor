@@ -4,7 +4,7 @@ import { CloseIcon } from "./icons";
 
 interface Props { servers: McpServerConfig[]; manager: McpManager; onChange: (s: McpServerConfig[]) => void; onClose: () => void }
 
-export function McpDialog({ servers, manager, onChange, onClose }: Props) {
+export function McpPanel({ servers, manager, onChange }: Omit<Props, "onClose">) {
   const [line, setLine] = useState("");
   const [name, setName] = useState("");
   const [env, setEnv] = useState("");
@@ -21,9 +21,7 @@ export function McpDialog({ servers, manager, onChange, onClose }: Props) {
   };
 
   return (
-    <div className="overlay" onClick={onClose} role="presentation">
-      <div className="dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Tools">
-        <header><h2>Tools (MCP servers)</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
+    <>
         <p className="empty-hint">An MCP server is a program that gives the agent extra tools, such as web search or a database. It runs on this computer with your permissions: add only servers you trust. The agent asks before calling any tool the server does not mark read-only.</p>
         <div className="list">
           {servers.map((s) => {
@@ -45,6 +43,16 @@ export function McpDialog({ servers, manager, onChange, onClose }: Props) {
           <label>Environment (optional, one NAME=value per line)<textarea rows={2} value={env} onChange={(e) => setEnv(e.target.value)} /></label>
           <button type="button" className="btn" onClick={add} disabled={!line.trim()}>Add server</button>
         </div>
+    </>
+  );
+}
+
+export function McpDialog({ servers, manager, onChange, onClose }: Props) {
+  return (
+    <div className="overlay" onClick={onClose} role="presentation">
+      <div className="dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Tools">
+        <header><h2>Tools (MCP servers)</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
+        <McpPanel servers={servers} manager={manager} onChange={onChange} />
       </div>
     </div>
   );

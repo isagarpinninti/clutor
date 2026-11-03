@@ -29,6 +29,9 @@ export interface AgentHost {
   mcpStart(id: string, l: McpLaunch, onLine: (line: string) => void, onExit: () => void, onLog: (line: string) => void): Promise<void>;
   mcpSend(id: string, line: string): Promise<void>;
   mcpStop(id: string): Promise<void>;
+  /** Runs a command typed by the user in the project folder (their own shell, no sandbox); output arrives line by line. */
+  termRun(id: string, root: string, command: string, onOut: (text: string) => void, onExit: (code: number | null) => void): Promise<void>;
+  termKill(id: string): Promise<void>;
 }
 
 /** Everything the interface needs from the machine it runs on. The real app implements it with Tauri commands; a browser preview with a mock. */
@@ -37,7 +40,8 @@ export interface Bridge {
   readonly host: AgentHost;
   readonly web: WebApi;
   system(): Promise<SystemInfo>;
-  listModels(): Promise<ModelInfo[]>;
+  /** The models in the app's folder, the command line's, and any folders you chose. */
+  listModels(folders?: string[]): Promise<ModelInfo[]>;
   catalog(): Promise<CatalogItem[]>;
   download(id: string, onProgress: (p: DownloadProgress) => void): Promise<void>;
   openEngine(path: string, ctx: number, lock: boolean): Promise<OpenEngine>;

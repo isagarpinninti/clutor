@@ -1,6 +1,6 @@
 import type { Conversation } from "../store";
 import { groupByProject, sessionDot, type CodeSession } from "../agent/sessions";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ClockIcon, GaugeIcon, GearIcon, PlusIcon, SearchIcon, SidebarIcon, TrashIcon } from "./icons";
 import { Logo } from "./Logo";
 
@@ -39,6 +39,12 @@ function group(conversations: Conversation[]): Array<[string, Conversation[]]> {
 
 export function Sidebar({ conversations, activeId, open, onSelect, onNew, mode, codeSessions, codeId, onSelectCode, onNewCode, onDeleteCode, onDelete, onSettings, onJobs, onUsage, onCollapse, collapsed, activeJobs, onClose }: Props) {
   const [q, setQ] = useState("");
+  const searchBox = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const k = (e: KeyboardEvent): void => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); searchBox.current?.focus(); searchBox.current?.select(); } };
+    document.addEventListener("keydown", k);
+    return () => document.removeEventListener("keydown", k);
+  }, []);
   const needle = q.trim().toLowerCase();
   const sessionsShown = needle ? codeSessions.filter((c) => c.title.toLowerCase().includes(needle) || c.root.toLowerCase().includes(needle)) : codeSessions;
   const shown = q.trim() ? conversations.filter((c) => c.title.toLowerCase().includes(q.trim().toLowerCase())) : conversations;
@@ -52,7 +58,7 @@ export function Sidebar({ conversations, activeId, open, onSelect, onNew, mode, 
         </div>
         <div className="side-nav">
           <button type="button" className="side-btn strong" onClick={mode === "code" ? onNewCode : onNew}><PlusIcon /> {mode === "code" ? "New session" : "New chat"}</button>
-          <label className="search"><SearchIcon /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" aria-label="Search conversations" /></label>
+          <label className="search"><SearchIcon /><input ref={searchBox} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search  ⌘K" aria-label="Search conversations" /></label>
         </div>
         {mode === "code" ? (
           <nav className="history">

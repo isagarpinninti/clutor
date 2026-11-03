@@ -9,7 +9,7 @@ import { titleFrom, uid } from "../store";
 import { Markdown } from "./Markdown";
 import { ModePicker, type ModeOption } from "./ModePicker";
 import { PlusMenu } from "./PlusMenu";
-import { SidePanel } from "./SidePanel";
+import { SidePanel, type PanelTab } from "./SidePanel";
 import { Spark } from "./Thinking";
 import { ToolBlock } from "./ToolBlock";
 import { FolderIcon, SendIcon, StopIcon } from "./icons";
@@ -29,7 +29,8 @@ interface Props {
   onCreate: (root: string) => CodeSession;
   ready: boolean;
   modelName: string;
-  engine: () => AgentSession | null;
+  /** The engine, loading the remembered model first if needed. */
+  engine: () => Promise<AgentSession | null>;
   mcp: McpManager;
   /** Takes the engine from background jobs for the length of a run; the returned function gives it back. */
   hold: () => Promise<() => void>;
@@ -39,14 +40,17 @@ interface Props {
   onUsage: (u: { steps: number; tokens: number }) => void;
   panel: boolean;
   onPanel: (open: boolean) => void;
+  tab: PanelTab;
+  onTab: (t: PanelTab) => void;
+  perm: Permission;
+  onPerm: (p: Permission) => void;
+  maxSteps: number;
 }
 
 const count = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-export function CodeView({ active, onChange, onCreate, ready, modelName, engine, mcp, hold, picker, onChooseModel, onMcp, onUsage, panel, onPanel }: Props) {
+export function CodeView({ active, onChange, onCreate, ready, modelName, engine, mcp, hold, picker, onChooseModel, onMcp, onUsage, panel, onPanel, tab, onTab, perm, onPerm, maxSteps }: Props) {
   const [task, setTask] = useState("");
-  const [perm, setPerm] = useState<Permission>(() => { try { const p = localStorage.getItem("clutor.perm"); return p === "auto" || p === "plan" ? p : "ask"; } catch { return "ask"; } });
-  useEffect(() => { try { localStorage.setItem("clutor.perm", perm); } catch { /* storage unavailable */ } }, [perm]);
   const [error, setError] = useState<string>();
   const [approval, setApproval] = useState<{ command: string; network: boolean; answer: (yes: boolean) => void }>();
   const [focusFile, setFocusFile] = useState<string>();
@@ -65,19 +69,20 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
   const patchTurn = (sid: string, tid: string, f: (t: Turn) => Turn): void => onChange(sid, (s) => ({ ...s, updated: Date.now(), turns: s.turns.map((t) => (t.id === tid ? f(t) : t)) }));
 
   const start = async (): Promise<void> => {
-    const s = engine();
     const text = task.trim();
-    if (!s || !active || !text || running) return;
+    if (!active || !text || running) return;
     const sid = active.id, root = active.root;
     const turn: Turn = { id: uid(), task: text, created: Date.now(), status: "running", blocks: [] };
     onChange(sid, (x) => ({ ...x, title: x.turns.length ? x.title : titleFrom(text), updated: Date.now(), turns: [...x.turns, turn] }));
     setTask(""); setError(undefined);
     const ac = new AbortController();
     abort.current = ac;
+    const s = await engine();
+    if (!s) { patchTurn(sid, turn.id, (t) => ({ ...t, status: "failed", error: "The model could not be loaded." })); return; }
     const release = await hold();
     try {
       const out = await runCodingTask({
-        host: bridge.host, web: bridge.web, root, session: s, modelName, task: text, mcp, signal: ac.signal, planOnly: perm === "plan",
+        host: bridge.host, web: bridge.web, root, session: s, modelName, task: text, mcp, maxSteps, signal: ac.signal, planOnly: perm === "plan",
         approve: (info) => perm === "plan" ? Promise.resolve(false) : perm === "auto" && !info.network ? Promise.resolve(true) : new Promise<boolean>((resolve) => setApproval({ ...info, answer: (yes) => { setApproval(undefined); resolve(yes); } })),
         onEvent: (e) => patchTurn(sid, turn.id, (t) => ({ ...t, blocks: applyEvent(t.blocks, e) })),
       });
@@ -89,7 +94,7 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
         usage: { steps: out.result.steps, tokens: out.result.usage.completionTokens }, ...(out.result.error ? { error: out.result.error } : {}),
         ...(diffs.length ? { changes, diffs } : {}),
       }));
-      if (diffs.length) onPanel(true);
+      if (diffs.length) { onTab("changes"); onPanel(true); }
     } catch (e) {
       patchTurn(sid, turn.id, (t) => ({ ...t, status: "failed", error: e instanceof Error ? e.message : String(e) }));
     } finally {
@@ -139,14 +144,14 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
                 <div className="turn-body">
                   {t.blocks.map((b) => b.kind === "text" ? <p key={b.id} className="turn-text">{b.text}</p>
                     : b.kind === "note" ? <p key={b.id} className={`turn-note${b.bad ? " bad" : ""}`}>{b.text}</p>
-                    : <ToolBlock key={b.id} block={b} onOpenFile={(p) => { setFocusFile(p); onPanel(true); }} />)}
+                    : <ToolBlock key={b.id} block={b} onOpenFile={(p) => { setFocusFile(p); onTab("files"); onPanel(true); }} />)}
                   {t.status === "running" && !approval ? <div className="working"><Spark size={14} /><span>Working…</span></div> : null}
                   {t.summary ? <div className="turn-summary"><Markdown text={t.summary} /></div> : null}
                   {t.status === "interrupted" ? <p className="turn-note bad">The app was closed while this ran.</p> : null}
                   {t.status === "stopped" ? <p className="turn-note">Stopped.</p> : null}
                   {t.status === "failed" ? <p className="turn-note bad">{t.error ?? "The task failed."}</p> : null}
                   {t.diffs?.length ? (
-                    <button type="button" className="changes-card" onClick={() => onPanel(true)}>
+                    <button type="button" className="changes-card" onClick={() => { onTab("changes"); onPanel(true); }}>
                       <b>{count(t.diffs.length, "file")} changed</b>
                       <span className="counts"><i className="add">+{t.diffs.reduce((n, d) => n + d.additions, 0)}</i> <i className="del">−{t.diffs.reduce((n, d) => n + d.deletions, 0)}</i></span>
                       <span className="card-state">{t.applied ? "Applied" : t.discarded ? "Discarded" : reviewable(t) ? "Review" : ""}</span>
@@ -177,7 +182,7 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
                 { id: "tools", label: "Tools (MCP servers)", hint: "Extra tools for the agent", onSelect: onMcp },
                 { id: "panel", label: "Changes and files panel", checked: panel, onSelect: () => onPanel(!panel) },
               ]} />
-              <ModePicker value={perm} options={PERMISSIONS} onChange={setPerm} label="Permissions" />
+              <ModePicker value={perm} options={PERMISSIONS} onChange={onPerm} label="Permissions" />
               <span className="spacer" />
               {picker}
               {!ready ? <button type="button" className="btn small ghost" onClick={onChooseModel}>Choose a model</button> : null}
@@ -188,7 +193,7 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
           <p className="fineprint">{perm === "plan" ? "Plan only: nothing will be changed." : "Every change is shown to you before it is written."}</p>
         </div>
       </div>
-      {panel ? <SidePanel host={bridge.host} root={active.root} turn={withChanges} focusFile={focusFile} onApply={() => void apply()} onDiscard={discard} onUndo={() => void undo()} onClose={() => onPanel(false)} busy={applying || running} error={error} /> : null}
+      <SidePanel host={bridge.host} root={active.root} turn={withChanges} focusFile={focusFile} onApply={() => void apply()} onDiscard={discard} onUndo={() => void undo()} onClose={() => onPanel(false)} busy={applying || running} error={error} tab={tab} onTab={onTab} hidden={!panel} />
     </div>
   );
 }

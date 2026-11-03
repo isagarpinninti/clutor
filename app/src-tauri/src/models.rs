@@ -77,8 +77,10 @@ fn walk(dir: &Path, depth: u32, out: &mut Vec<ModelInfo>) {
 }
 
 #[tauri::command]
-pub fn list_models(app: AppHandle) -> Result<Vec<ModelInfo>, String> {
-    let mut dirs = vec![models_dir(&app)?];
+pub fn list_models(app: AppHandle, folders: Option<Vec<String>>) -> Result<Vec<ModelInfo>, String> {
+    // The folders the user chose come first, then the app's own.
+    let mut dirs: Vec<PathBuf> = folders.unwrap_or_default().into_iter().filter(|f| !f.is_empty()).map(PathBuf::from).collect();
+    dirs.push(models_dir(&app)?);
     if let Ok(home) = app.path().home_dir() { dirs.push(home.join(".clutor").join("models")); }   // the command line's folder, on a computer
     let mut found = Vec::new();
     for d in dirs { walk(&d, 4, &mut found); }

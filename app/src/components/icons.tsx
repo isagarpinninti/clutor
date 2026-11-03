@@ -24,3 +24,7 @@ export const ChevronIcon = () => <svg width="10" height="10" viewBox="0 0 10 10"
 export const CheckIcon = () => I(<path d="m5.5 12.5 4.2 4.2 8.8-9.4" />);
 export const CloseIcon = () => I(<path d="m6.5 6.5 11 11M17.5 6.5l-11 11" />);
 export const PanelIcon = () => I(<><rect x="3.5" y="4.5" width="17" height="15" rx="3.5" /><path d="M14.5 4.5v15" /></>);
+export const TerminalIcon = () => I(<><rect x="3.5" y="4.5" width="17" height="15" rx="3" /><path d="m7.5 10 3 2.5-3 2.5M13 15h3.5" /></>);
+export const GlobeIcon = () => I(<><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.2 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.2-3.6-8.5S9.6 5.9 12 3.5Z" /></>);
+export const DiffIcon = () => I(<><path d="M8 4.5v11M8 15.5a2.2 2.2 0 1 0 0 .01M8 8a2.2 2.2 0 1 0 0-.01" /><path d="M16 8.5v7M13.5 11 16 8.5 18.5 11" /></>);
+export const FilesIcon = () => I(<><path d="M7 3.5h6.5L18 8v10.5c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1v-14c0-.6.4-1 1-1Z" /><path d="M13.5 3.5V8H18" /></>);

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ModelInfo, type SystemInfo } from "./bridge";
 import { streamReply, toChatMessages } from "./chat";
-import { GearIcon, PanelIcon, SidebarIcon } from "./components/icons";
+import { DiffIcon, FilesIcon, GearIcon, GlobeIcon, SidebarIcon, TerminalIcon } from "./components/icons";
 import { Logo } from "./components/Logo";
 import { Thinking } from "./components/Thinking";
 import { Composer } from "./components/Composer";
@@ -9,21 +9,31 @@ import { JobsDialog } from "./components/JobsDialog";
 import type { JobAction } from "./components/JobStrip";
 import { MessageView } from "./components/MessageView";
 import { CodeView } from "./components/CodeView";
+import type { PanelTab } from "./components/SidePanel";
 import { McpDialog } from "./components/McpDialog";
 import { loadServers, McpManager, saveServers, type McpServerConfig } from "./agent/mcp";
 import { ModelPicker } from "./components/ModelPicker";
 import { UsageDialog } from "./components/UsageDialog";
-import { gather, withWebContext, type Gathered } from "./web";
+import { gather, needsWeb, withWebContext, type Gathered } from "./web";
 import { chatUsage, contextPercent } from "./usage";
 import { ModelDialog } from "./components/ModelDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { folderName, loadSessions, newSession, saveSessions, type CodeSession } from "./agent/sessions";
 import { Sidebar } from "./components/Sidebar";
+import type { EngineSession } from "@engine/session";
 import { useEngine } from "./engine";
 import { isActive, JobQueue, localJobStore, uid as jobUid, type Job } from "./jobs";
 import { loadConversations, loadSettings, saveConversations, saveSettings, titleFrom, uid, type Conversation, type Msg, type Settings } from "./store";
 
 const newConversation = (): Conversation => ({ id: uid(), title: "New chat", updated: Date.now(), messages: [] });
+
+const SUGGESTIONS = [
+  { label: "Explain something", text: "Explain how a mixture-of-experts model works, in simple terms." },
+  { label: "Write code", text: "Write a function that " },
+  { label: "Summarise", text: "Summarise the following text in five bullet points:\n\n" },
+  { label: "Look something up", text: "What are the latest developments in " },
+];
+const greeting = (): string => { const h = new Date().getHours(); return h < 5 ? "Burning the midnight oil?" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; };
 
 const FolderMini = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3.5 7.5c0-1.1.9-2 2-2h3.2c.5 0 1 .2 1.4.6l1 1.1c.3.3.8.5 1.3.5h5.1c1.1 0 2 .9 2 2v7.8c0 1.1-.9 2-2 2h-12c-1.1 0-2-.9-2-2z" /></svg>;
 
@@ -33,6 +43,7 @@ export function App() {
   const [activeId, setActiveId] = useState<string>(() => conversations[0]?.id ?? "");
   const [system, setSystem] = useState<SystemInfo>();
   const [dialog, setDialog] = useState<"models" | "settings" | "jobs" | "mcp" | "usage" | null>(null);
+  const folders = useMemo(() => (settings.modelsDir ? [settings.modelsDir] : []), [settings.modelsDir]);
   const [lastModel, setLastModel] = useState<ModelInfo>();
   const [mode, setMode] = useState<"chat" | "code">(() => { try { return localStorage.getItem("clutor.mode") === "code" ? "code" : "chat"; } catch { return "chat"; } });
   const [servers, setServers] = useState<McpServerConfig[]>(loadServers);
@@ -43,6 +54,8 @@ export function App() {
   const [codeSessions, setCodeSessions] = useState<CodeSession[]>(loadSessions);
   const [codeId, setCodeId] = useState<string>(() => { try { return localStorage.getItem("clutor.codeSession") ?? ""; } catch { return ""; } });
   const [panel, setPanel] = useState(false);
+  const [panelTab, setPanelTab] = useState<PanelTab>("changes");
+  const togglePanel = (t: PanelTab): void => { if (panel && panelTab === t) setPanel(false); else { setPanelTab(t); setPanel(true); } };
   useEffect(() => { saveSessions(codeSessions); }, [codeSessions]);
   useEffect(() => { try { localStorage.setItem("clutor.codeSession", codeId); } catch { /* storage unavailable */ } }, [codeId]);
   const codeActive = codeSessions.find((s) => s.id === codeId);
@@ -84,8 +97,8 @@ export function App() {
   useEffect(() => {
     void bridge.system().then(setSystem);
     // The model is not loaded until you ask: pinning several GB at launch stalls the whole computer.
-    void bridge.listModels().then((models) => {
-      const last = models.find((m) => m.path === settings.lastModel) ?? (models.length === 1 ? models[0] : undefined);
+    void bridge.listModels(folders).then((models) => {
+      const last = models.find((m) => m.path === settings.model?.path) ?? (models.length === 1 ? models[0] : undefined);
       if (last) setLastModel(last);
       else if (models.length > 1) setDialog("models");
     });
@@ -125,11 +138,16 @@ export function App() {
   };
   const jobAction = (id: string, a: JobAction): void => { if (a === "pause") queue.pause(id); else if (a === "resume") queue.resume(id); else if (a === "cancel") queue.cancel(id); else queue.retry(id); };
 
-  const pickModel = (m: ModelInfo): void => { setSettings((s) => ({ ...s, lastModel: m.path })); void load(m, settings, system?.ramBytes); };
+  const pickModel = (m: ModelInfo): void => { setSettings((s) => ({ ...s, model: m })); setLastModel(m); void load(m, settings, system?.ramBytes); };
+  /** The engine, loading the remembered model first if nothing is loaded yet (so a restart needs no choosing, and launching stays instant). */
+  const ensureModel = async (): Promise<EngineSession | null> => {
+    if (session.current) return session.current;
+    if (!lastModel) return null;
+    return load(lastModel, settings, system?.ramBytes);
+  };
 
   const send = async (text: string): Promise<void> => {
-    const s = session.current;
-    if (!s || !active) return;
+    if (!active || (!session.current && !lastModel)) return;
     const convId = active.id;
     const user: Msg = { id: uid(), role: "user", content: text };
     const reply: Msg = { id: uid(), role: "assistant", content: "" };
@@ -139,15 +157,18 @@ export function App() {
     const ac = new AbortController();
     abort.current = ac;
     setBusy(true);
+    if (!session.current) flash("Loading your model first…");
+    const s = await ensureModel();
+    if (!s) { update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, error: "The model could not be loaded." } : m)) })); abort.current = null; setBusy(false); return; }
     // Browse: look the question up first (this only uses the network, so a background job keeps running meanwhile).
     let web: Gathered | undefined;
-    if (settings.browse) {
-      flash("Searching the web…");
+    const setWeb = (w: NonNullable<Msg["web"]>, sources?: Gathered["sources"]): void => update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, web: w, ...(sources ? { sources } : {}) } : m)) }));
+    if (settings.browse && needsWeb(text)) {
+      setWeb({ query: text.slice(0, 120), state: "searching" });
       try {
         web = await gather(bridge.web, text);
-        if (!ac.signal.aborted) update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, sources: web?.sources ?? [] } : m)) }));
-        flash(web.sources.length ? `Read ${web.sources.length} source${web.sources.length === 1 ? "" : "s"}.` : "Nothing useful found; answering without the web.");
-      } catch (e) { flash(`The web lookup failed (${e instanceof Error ? e.message : String(e)}); answering without it.`); }
+        if (!ac.signal.aborted) setWeb({ query: text.slice(0, 120), state: "done" }, web.sources);
+      } catch (e) { setWeb({ query: text.slice(0, 120), state: "failed", error: e instanceof Error ? e.message : String(e) }); }
     }
     // A background job on the engine steps aside for this message, and carries on afterwards.
     const jobWasRunning = queue.running !== undefined;
@@ -171,9 +192,14 @@ export function App() {
 
   const ready = state.status === "ready";
   const note = state.ready?.locked ? "pinned" : state.unpinned ? "not pinned" : undefined;
-  const picker = <ModelPicker current={state.model} status={state.status} note={note} onPick={pickModel} onMore={() => setDialog("models")} />;
+  const picker = <ModelPicker current={state.model ?? lastModel} folders={folders} status={state.status} note={note} onPick={pickModel} onMore={() => setDialog("models")} />;
   const usage = chatUsage(active?.messages ?? [], state.ready?.nCtx ?? settings.ctx);
   const pct = contextPercent(usage);
+  const homeScreen = !!active && active.messages.length === 0 && (ready || !!lastModel) && state.status !== "loading";
+  const [prefill, setPrefill] = useState<{ text: string; n: number }>();
+  const composer = (home: boolean) => (
+    <Composer busy={busy} disabled={!ready && !lastModel} placeholder={ready || lastModel ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t) => void send(t)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
+  );
   const lastAssistant = active?.messages[active.messages.length - 1];
 
   return (
@@ -194,16 +220,32 @@ export function App() {
               <span>{pct}%</span>
             </button>
           ) : null}
-          {mode === "code" && codeActive ? <button type="button" className={`icon-btn${panel ? " on" : ""}`} onClick={() => setPanel((p) => !p)} aria-label="Toggle changes panel" aria-pressed={panel} title="Changes and files"><PanelIcon /></button> : null}
+          {mode === "code" && codeActive ? (
+            <div className="tool-tabs" role="toolbar" aria-label="Panels">
+              {([["terminal", "Terminal", <TerminalIcon key="t" />], ["browser", "Browser", <GlobeIcon key="b" />], ["changes", "Changes", <DiffIcon key="c" />], ["files", "Files", <FilesIcon key="f" />]] as Array<[PanelTab, string, JSX.Element]>).map(([id, label, icon]) => (
+                <button type="button" key={id} className={`tool-tab${panel && panelTab === id ? " on" : ""}`} onClick={() => togglePanel(id)} aria-pressed={panel && panelTab === id} title={label}>{icon}<span>{label}</span></button>
+              ))}
+            </div>
+          ) : null}
           <button type="button" className="icon-btn" onClick={() => setDialog("settings")} aria-label="Settings" title="Settings"><GearIcon /></button>
         </header>
-        {mode === "code" ? <CodeView active={codeActive} onChange={changeSession} onCreate={createSession} ready={ready} modelName={state.model?.name ?? "model"} engine={() => session.current} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => setDialog("mcp")} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} panel={panel} onPanel={setPanel} /> : <>
+        {mode === "code" ? <CodeView active={codeActive} onChange={changeSession} onCreate={createSession} ready={ready || !!lastModel} modelName={state.model?.name ?? lastModel?.name ?? "model"} engine={ensureModel} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => setDialog("mcp")} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} panel={panel} onPanel={setPanel} tab={panelTab} onTab={setPanelTab} perm={settings.permission} onPerm={(p) => setSettings((s) => ({ ...s, permission: p }))} maxSteps={settings.maxSteps} /> : <>
         <div className="scroll" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           {active && active.messages.length > 0 ? (
             <div className="thread">
               {active.messages.map((m) => <MessageView key={m.id} msg={m} streaming={busy && m.id === lastAssistant?.id && !m.jobId} showReasoning={settings.showReasoning} job={jobByMessage.get(m.id)} position={m.jobId ? queue.position(m.jobId) : 0} onJobAction={jobAction} />)}
             </div>
           ) : (
+            homeScreen ? (
+              <div className="home">
+                <div className="mark"><Logo size={48} /></div>
+                <h2>{greeting()}</h2>
+                {composer(true)}
+                <div className="suggest">
+                  {SUGGESTIONS.map((s) => <button type="button" key={s.label} className="suggestion" onClick={() => setPrefill((p) => ({ text: s.text, n: (p?.n ?? 0) + 1 }))}>{s.label}</button>)}
+                </div>
+              </div>
+            ) : (
             <div className="welcome">
               <div className="mark"><Logo size={64} /></div>
               {state.status === "loading" ? <div className="loading-wait"><Thinking label="Loading your model" /></div> : <h2>{ready ? "What can I help with?" : "Welcome to Clutor"}</h2>}
@@ -211,16 +253,17 @@ export function App() {
               {!ready && state.status !== "loading" && lastModel ? <button type="button" className="btn" onClick={() => pickModel(lastModel)}>Load {lastModel.name}</button> : null}
               {!ready && state.status !== "loading" ? <button type="button" className={lastModel ? "btn ghost" : "btn"} onClick={() => setDialog("models")}>Choose a model</button> : null}
             </div>
+            )
           )}
         </div>
-        <Composer busy={busy} disabled={!ready} placeholder={ready ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t) => void send(t)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} />
+        {homeScreen ? null : composer(false)}
         </>}
       </main>
-      {dialog === "models" ? <ModelDialog system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}
+      {dialog === "models" ? <ModelDialog folders={folders} onFolder={(p) => setSettings((s) => ({ ...s, modelsDir: p }))} system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
       {dialog === "usage" ? <UsageDialog state={state} ramBytes={system?.ramBytes} usage={usage} agent={agentUsage} jobs={{ active: activeJobs, done: jobList.filter((j) => j.status === "done").length }} onClose={() => setDialog(null)} /> : null}
       {dialog === "mcp" ? <McpDialog servers={servers} manager={mcp} onChange={setServers} onClose={() => setDialog(null)} /> : null}
-      {dialog === "settings" ? <SettingsDialog settings={settings} onChange={setSettings} onTools={() => setDialog("mcp")} onClose={() => setDialog(null)} /> : null}
+      {dialog === "settings" ? <SettingsDialog settings={settings} onChange={setSettings} system={system} modelName={state.model?.name ?? lastModel?.name} servers={servers} manager={mcp} onServers={setServers} onModels={() => setDialog("models")} onClose={() => setDialog(null)} /> : null}
     </div>
   );
 }

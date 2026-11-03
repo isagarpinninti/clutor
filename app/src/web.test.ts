@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WebApi } from "./bridge";
-import { agentWeb, gather, withWebContext } from "./web";
+import { agentWeb, gather, needsWeb, withWebContext } from "./web";
 
 const api = (over: Partial<WebApi> = {}): WebApi => ({
   search: async () => [{ title: "A", url: "https://a.org/x", snippet: "sa" }, { title: "B", url: "https://b.org/y", snippet: "sb" }, { title: "C", url: "https://c.org/z", snippet: "sc" }],
@@ -48,5 +48,12 @@ describe("withWebContext", () => {
   it("leaves the messages alone when there is nothing", () => {
     const m = [{ role: "user" as const, content: "hi" }];
     expect(withWebContext(m, { context: "", sources: [] })).toBe(m);
+  });
+});
+
+describe("needsWeb", () => {
+  it("skips greetings and one-word replies, and looks up real questions", () => {
+    for (const s of ["hi", "thanks!", "ok", "Hello there", "yes"]) expect(needsWeb(s)).toBe(false);
+    for (const s of ["who won the match last night", "latest rust release notes", "what is a MoE model"]) expect(needsWeb(s)).toBe(true);
   });
 });

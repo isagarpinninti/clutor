@@ -83,6 +83,11 @@ const mockHost: AgentHost = {
   async mcpStart() { throw new Error("MCP servers run in the desktop app, not in the browser preview"); },
   async mcpSend() { /* none */ },
   async mcpStop() { /* none */ },
+  async termRun(_id, _root, command, onOut, onExit) {
+    setTimeout(() => onOut(`preview terminal: pretending to run "${command}"\n`), 150);
+    setTimeout(() => { onOut("ok\n"); onExit(0); }, 500);
+  },
+  async termKill() { /* nothing runs */ },
 };
 
 const mockWeb: WebApi = {
@@ -105,7 +110,7 @@ export const mockBridge: Bridge = {
   host: mockHost,
   web: mockWeb,
   async system(): Promise<SystemInfo> { return { os: "preview", arch: "browser", ramBytes: 16 * 2 ** 30, cores: 8, modelsDir: "~/.clutor/models" }; },
-  async listModels() { return MODELS; },
+  async listModels(folders) { return folders?.length ? [...MODELS, { path: `${folders[0]}/Custom-Model-7B-Q4_K_M.gguf`, name: "Custom-Model-7B-Q4_K_M", bytes: 4_400_000_000 }] : MODELS; },
   async catalog() { return CATALOG; },
   async revealModels() { /* nothing to open in a browser */ },
   async notify(title, body) {

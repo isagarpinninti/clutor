@@ -1,9 +1,9 @@
 import { useState } from "react";
 import type { Msg } from "../store";
 import { Markdown } from "./Markdown";
-import { CopyIcon } from "./icons";
+import { CheckIcon, CloseIcon, CopyIcon } from "./icons";
 import { Logo } from "./Logo";
-import { Thinking } from "./Thinking";
+import { Spark, Thinking } from "./Thinking";
 import { bridge } from "../bridge";
 import type { Job } from "../jobs";
 import { JobStrip, type JobAction } from "./JobStrip";
@@ -25,6 +25,12 @@ export function MessageView({ msg, streaming, showReasoning, job, position, onJo
         ) : null}
         {job && onJobAction ? <JobStrip job={job} position={position ?? 0} onAction={onJobAction} /> : null}
         {msg.content ? <Markdown text={msg.content} /> : (streaming || job?.status === "running") && !msg.reasoning ? <Thinking /> : null}
+        {msg.web ? (
+          <div className={`websearch ${msg.web.state}`} role="status">
+            {msg.web.state === "searching" ? <Spark size={12} /> : msg.web.state === "done" ? <CheckIcon /> : <CloseIcon />}
+            <span>{msg.web.state === "searching" ? `Searching the web for “${msg.web.query}”…` : msg.web.state === "done" ? `Searched the web${msg.sources?.length ? ` · read ${msg.sources.length} source${msg.sources.length === 1 ? "" : "s"}` : " · nothing useful found"}` : `Could not search the web${msg.web.error ? ` (${msg.web.error})` : ""}; answered without it`}</span>
+          </div>
+        ) : null}
         {msg.sources?.length ? (
           <div className="sources" aria-label="Sources">
             {msg.sources.map((s, i) => <button type="button" key={s.url} className="source" title={s.url} onClick={() => void bridge.web.openExternal(s.url)}><i>{i + 1}</i><span>{s.title || s.url}</span></button>)}
