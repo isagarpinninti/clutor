@@ -1,4 +1,5 @@
 import { type Style, width, wrap } from "./ansi";
+import { highlightLine } from "./highlight";
 
 /**
  * Renders a model's Markdown reply for a terminal while it is still arriving. Complete lines are rendered once and become permanent;
@@ -16,6 +17,7 @@ export interface Rendered {
 export class MarkdownStream {
   private buf = "";
   private inCode = false;
+  private lang = "";
   private table: string[] = [];
 
   constructor(private readonly st: Style, private readonly cols: () => number) {}
@@ -43,7 +45,7 @@ export class MarkdownStream {
 
   private liveRows(): string[] {
     if (!this.buf) return [];
-    if (this.inCode) return wrap(this.st.dim("│ ") + this.st.code(this.buf), this.cols(), 2);
+    if (this.inCode) return wrap(this.st.dim("│ ") + highlightLine(this.buf, this.lang, this.st), this.cols(), 2);
     if (this.buf.trimStart().startsWith("|")) return wrap(this.st.dim(this.buf), this.cols());
     return this.format(this.buf);
   }
@@ -54,10 +56,10 @@ export class MarkdownStream {
     if (fence && (this.inCode ? /^\s*```\s*$/.test(line) : true)) {
       const out = this.flushTable();
       if (this.inCode) { this.inCode = false; out.push(st.dim("╰─")); }
-      else { this.inCode = true; out.push(st.dim(`╭─${fence[1] ? ` ${fence[1]} ` : ""}`)); }
+      else { this.inCode = true; this.lang = fence[1] ?? ""; out.push(st.dim(`╭─${fence[1] ? ` ${fence[1]} ` : ""}`)); }
       return out;
     }
-    if (this.inCode) return wrap(st.dim("│ ") + st.code(line), this.cols(), 2);
+    if (this.inCode) return wrap(st.dim("│ ") + highlightLine(line, this.lang, st), this.cols(), 2);
     if (line.trimStart().startsWith("|")) { this.table.push(line); return []; }
     const out = this.flushTable();
     out.push(...this.format(line));

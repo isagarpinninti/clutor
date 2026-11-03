@@ -70,23 +70,44 @@ export function wrap(line: string, cols: number, hang = 0): string[] {
   return rows;
 }
 
+export type ThemeName = "dark" | "light" | "ocean" | "mono";
+export const THEMES: ThemeName[] = ["dark", "light", "ocean", "mono"];
+
+/** xterm 256-colour numbers. `mono` has none: emphasis only. */
+export interface Palette { accent: number; hi: number; ok: number; warn: number; bad: number; code: number; kw: number; str: number; num: number; com: number; fn: number; ty: number }
+
+const PALETTES: Record<Exclude<ThemeName, "mono">, Palette> = {
+  dark: { accent: 209, hi: 223, ok: 114, warn: 221, bad: 203, code: 180, kw: 176, str: 114, num: 215, com: 244, fn: 111, ty: 80 },
+  light: { accent: 166, hi: 208, ok: 28, warn: 130, bad: 160, code: 94, kw: 90, str: 28, num: 130, com: 245, fn: 25, ty: 30 },
+  ocean: { accent: 75, hi: 159, ok: 79, warn: 222, bad: 204, code: 117, kw: 141, str: 114, num: 215, com: 244, fn: 111, ty: 80 },
+};
+
 export interface Style {
   color: boolean;
+  theme: ThemeName;
+  pal: Palette;
   bold(s: string): string; dim(s: string): string; italic(s: string): string; underline(s: string): string; inverse(s: string): string;
   /** xterm 256-colour foreground. */
   fg(n: number, s: string): string;
   bg(n: number, s: string): string;
-  accent(s: string): string; ok(s: string): string; warn(s: string): string; bad(s: string): string; code(s: string): string;
+  accent(s: string): string; hi(s: string): string; ok(s: string): string; warn(s: string): string; bad(s: string): string; code(s: string): string;
+  /** Syntax colours: keyword, string, number, comment, function, type. */
+  tok(kind: "kw" | "str" | "num" | "com" | "fn" | "ty", s: string): string;
 }
 
-export function makeStyle(color: boolean): Style {
+export function makeStyle(color: boolean, theme: ThemeName = "dark"): Style {
   const w = (open: string, close: string) => (s: string): string => (color ? `${ESC}[${open}m${s}${ESC}[${close}m` : s);
-  const fg = (n: number, s: string): string => (color ? `${ESC}[38;5;${n}m${s}${ESC}[39m` : s);
+  const mono = theme === "mono";
+  const pal = PALETTES[mono ? "dark" : theme];
+  const fg = (n: number, s: string): string => (color && !mono ? `${ESC}[38;5;${n}m${s}${ESC}[39m` : s);
+  const bold = w("1", "22"), dim = w("2", "22"), italic = w("3", "23");
+  const hue = (n: number, emphasis: (s: string) => string = (s) => s) => (s: string): string => (mono ? emphasis(s) : fg(n, s));
   return {
-    color,
-    bold: w("1", "22"), dim: w("2", "22"), italic: w("3", "23"), underline: w("4", "24"), inverse: w("7", "27"),
-    fg, bg: (n, s) => (color ? `${ESC}[48;5;${n}m${s}${ESC}[49m` : s),
-    accent: (s) => fg(209, s), ok: (s) => fg(114, s), warn: (s) => fg(221, s), bad: (s) => fg(203, s), code: (s) => fg(180, s),
+    color, theme, pal,
+    bold, dim, italic, underline: w("4", "24"), inverse: w("7", "27"),
+    fg, bg: (n, s) => (color && !mono ? `${ESC}[48;5;${n}m${s}${ESC}[49m` : s),
+    accent: hue(pal.accent, bold), hi: hue(pal.hi, bold), ok: hue(pal.ok), warn: hue(pal.warn, bold), bad: hue(pal.bad, bold), code: hue(pal.code),
+    tok: (kind, s) => (mono ? (kind === "com" ? dim(s) : kind === "kw" ? bold(s) : s) : kind === "com" ? fg(pal.com, s) : fg(pal[kind], s)),
   };
 }
 

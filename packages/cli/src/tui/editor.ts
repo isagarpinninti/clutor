@@ -9,6 +9,7 @@ export type Action =
   | { type: "submit"; text: string }
   | { type: "exit" }
   | { type: "clear-screen" }
+  | { type: "cycle-mode" }
   | { type: "notice"; text: string };
 
 interface Seg { start: number; end: number }
@@ -77,10 +78,11 @@ export class Editor {
         return { type: "submit", text };
       }
       case "newline": this.insert("\n"); return;
-      case "tab": case "backtab": {
+      case "tab": {
         if (menu.length > 0) { const pick = menu[Math.min(this.menuIdx, menu.length - 1)] as Cmd; this.set(`/${pick.name}${pick.args ? " " : ""}`); }
         return;
       }
+      case "backtab": return { type: "cycle-mode" };
       case "backspace":
         if (k.alt) { const p = this.wordLeft(); this.set(this.text.slice(0, p) + this.text.slice(this.pos), p); }
         else if (this.pos > 0) { const prev = this.pos - ((this.text.codePointAt(this.pos - 2) ?? 0) > 0xffff ? 2 : 1); this.set(this.text.slice(0, prev) + this.text.slice(this.pos), prev); }
@@ -132,35 +134,41 @@ export class Editor {
   }
 
   /**
-   * What to draw: a rule, the text (the first row after `❯`), a rule, then either the command menu, the shortcut list, or the status line.
-   * `left` and `right` are the status line's two ends.
+   * What to draw: a rounded box holding the text (the first row after the prompt glyph), then either the command menu, the shortcut
+   * list, or the status line. `left` and `right` are the status line's two ends; `look` colours the border and glyph for the current mode.
    */
-  view(st: Style, cols: number, status: { left: string; right: string }, notice?: string): { lines: string[]; cursor: { row: number; col: number } } {
-    const inner = Math.max(10, cols - 3);
-    const segs = layout(this.text, inner);
-    const rule = st.dim("─".repeat(cols));
-    const lines: string[] = [rule];
-    segs.forEach((s, i) => lines.push(`${i === 0 ? st.accent("❯") : " "} ${this.text.slice(s.start, s.end)}`));
-    lines.push(rule);
-    let row = 1, col = 2;
+  view(st: Style, cols: number, status: { left: string; right: string }, notice?: string, look: { border?: (s: string) => string; glyph?: string } = {}): { lines: string[]; cursor: { row: number; col: number } } {
+    const border = look.border ?? st.dim;
+    const inner = Math.max(10, cols - 6);
+    const segs = layout(this.text, inner - 1);
+    const lines: string[] = [border(`╭${"─".repeat(cols - 2)}╮`)];
+    segs.forEach((s, i) => {
+      const t = this.text.slice(s.start, s.end);
+      lines.push(`${border("│")} ${i === 0 ? st.accent(look.glyph ?? "❯") : " "} ${t}${" ".repeat(Math.max(0, inner - width(t)))}${border("│")}`);
+    });
+    lines.push(border(`╰${"─".repeat(cols - 2)}╯`));
+    let row = 1, col = 4;
     for (let i = 0; i < segs.length; i++) {
       const s = segs[i] as Seg;
       const last = i === segs.length - 1;
       if (this.pos >= s.start && (this.pos < s.end || (this.pos === s.end && (last || this.text[s.end] === "\n")))) {
-        row = 1 + i; col = 2 + width(this.text.slice(s.start, this.pos)); break;
+        row = 1 + i; col = 4 + width(this.text.slice(s.start, this.pos)); break;
       }
     }
     const menu = this.matches();
     if (menu.length > 0) {
       const shown = menu.slice(Math.max(0, Math.min(this.menuIdx - 3, menu.length - 8)), Math.max(0, Math.min(this.menuIdx - 3, menu.length - 8)) + 8);
       const nameW = Math.max(...shown.map((c) => c.name.length + (c.args ? c.args.length + 1 : 0))) + 3;
+      const first = menu.indexOf(shown[0] as Cmd);
       for (const c of shown) {
         const on = c === menu[Math.min(this.menuIdx, menu.length - 1)];
         const label = `/${c.name}${c.args ? ` ${c.args}` : ""}`.padEnd(nameW + 1);
         lines.push(fit(on ? `  ${st.accent(label)}${st.accent(c.help)}` : `  ${st.dim(label)}${st.dim(c.help)}`, cols));
       }
+      const more = menu.length - first - shown.length;
+      if (more > 0) lines.push(st.dim(`  ↓ ${more} more`));
     } else if (this.showShortcuts) {
-      for (const l of ["/ for commands       enter to send        \\ then enter for a new line", "esc to clear         ctrl-c to cancel     ctrl-d to exit (empty prompt)", "↑ ↓ for history     ctrl-a / ctrl-e line start / end      ctrl-w delete word", "@file to attach a file's text        while the model replies: esc to stop"]) lines.push(`  ${st.dim(l)}`);
+      for (const l of ["/ for commands       enter to send        \\ then enter for a new line", "esc to clear         ctrl-c to cancel     ctrl-d to exit (empty prompt)", "↑ ↓ for history     ctrl-a / ctrl-e line start / end      ctrl-w delete word", "@file to attach a file's text        shift+tab to switch mode      while it works: esc to stop"]) lines.push(`  ${st.dim(l)}`);
     } else {
       const left = notice ? st.warn(notice) : st.dim(status.left);
       const gap = Math.max(1, cols - 2 - width(left) - width(status.right));

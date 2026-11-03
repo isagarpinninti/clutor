@@ -129,6 +129,9 @@ export class BackendManager {
     throw new Error(this.error ?? "timeout");
   }
 
+  /** Ends the server at once and without waiting; for a process that is exiting and cannot await anything. */
+  killNow(): void { try { this.child?.kill("SIGKILL"); } catch { /* already gone */ } }
+
   async stop(): Promise<void> {
     const c = this.child;
     this.set("stopped");

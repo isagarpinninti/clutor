@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,9 @@ import { MarkdownStream } from "../src/tui/markdown";
 import { spinnerLine } from "../src/tui/spinner";
 import { streamChat } from "../src/tui/stream";
 import { expandFiles, runTui } from "../src/tui/app";
+import { callTitle, renderPatch, resultSummary, withoutThinking } from "../src/tui/agent";
+import { highlightLine } from "../src/tui/highlight";
+import { THEMES } from "../src/tui/ansi";
 
 const plain = makeStyle(false);
 const color = makeStyle(true);
@@ -135,16 +138,17 @@ describe("Editor", () => {
     const e = new Editor([], cmds);
     type(e, "hello world");
     const v = e.view(plain, 30, { left: "model", right: "ctx" });
-    expect(v.lines[0]).toBe("─".repeat(30));
-    expect(v.lines[1]).toBe("❯ hello world");
-    expect(v.cursor).toEqual({ row: 1, col: 13 });
+    expect(v.lines[0]).toBe(`╭${"─".repeat(28)}╮`);
+    expect(v.lines[1]).toBe(`│ ❯ hello world${" ".repeat(13)}│`);
+    expect(v.lines[2]).toBe(`╰${"─".repeat(28)}╯`);
+    expect(v.cursor).toEqual({ row: 1, col: 15 });
     for (const l of v.lines) expect(width(l)).toBeLessThanOrEqual(30);
   });
   it("wraps long input over several rows and tracks the cursor", () => {
     const e = new Editor([], cmds);
     type(e, "x".repeat(50));
     const v = e.view(plain, 24, { left: "", right: "" });
-    expect(layout(e.text, 21).length).toBe(3);
+    expect(layout(e.text, 17).length).toBe(3);
     expect(v.cursor.row).toBe(3);
     for (const l of v.lines) expect(width(l)).toBeLessThanOrEqual(24);
   });
@@ -154,6 +158,12 @@ describe("Editor", () => {
     const v = e.view(plain, 60, { left: "", right: "" });
     expect(v.lines.slice(3).join("\n")).toContain("/help");
     expect(v.lines.slice(3).join("\n")).toContain("/think [on|off]");
+  });
+  it("scrolls a long menu and says how many more there are", () => {
+    const many: Cmd[] = Array.from({ length: 20 }, (_, i) => ({ name: `c${i}`, help: "x" }));
+    const e = new Editor([], many);
+    type(e, "/");
+    expect(e.view(plain, 60, { left: "", right: "" }).lines.join("\n")).toMatch(/↓ 12 more/);
   });
 });
 
@@ -307,7 +317,8 @@ describe("the interactive session, against a fake model server", () => {
     expect(await done).toBe(0);
 
     const text = stripAnsi(screen);
-    expect(text).toContain("Welcome to Clutor");
+    expect(text).toContain("Clutor v9.9.9");
+    expect(text).toContain("Welcome back!");
     expect(text).toContain("● Hello there");
     expect(text).toContain("2 tokens · 9.5 tok/s");
     expect(text).toContain("thinking on");
@@ -318,5 +329,204 @@ describe("the interactive session, against a fake model server", () => {
     expect(seen[1]?.chat_template_kwargs).toEqual({ enable_thinking: true });
     expect(ran).toEqual([["status"]]);
     expect(text).toContain("Goodbye. 4 tokens generated in 2 replies.");
+  });
+});
+
+describe("shift+tab", () => {
+  it("is reported as a request to switch mode, not as menu completion", () => {
+    expect(new KeyParser().feed("\x1b[Z")).toEqual([{ name: "backtab" }]);
+    const e = new Editor([], [{ name: "help", help: "h" }]);
+    expect(e.handle({ name: "backtab" })).toEqual({ type: "cycle-mode" });
+  });
+});
+
+describe("themes", () => {
+  it("every theme renders, and mono uses no colour", () => {
+    for (const t of THEMES) {
+      const s = makeStyle(true, t);
+      expect(stripAnsi(s.accent("x"))).toBe("x");
+      if (t === "mono") expect(s.tok("str", "x")).toBe("x");
+      else expect(s.tok("str", "x")).toContain("\x1b[38;5;");
+    }
+    expect(makeStyle(true, "dark").accent("x")).not.toBe(makeStyle(true, "light").accent("x"));
+  });
+  it("can be switched in place without rebuilding what holds the style", () => {
+    const s = makeStyle(true, "dark");
+    const before = s.accent("x");
+    Object.assign(s, makeStyle(true, "ocean"));
+    expect(s.accent("x")).not.toBe(before);
+  });
+});
+
+describe("syntax highlighting", () => {
+  const c = makeStyle(true);
+  it("colours keywords, strings, numbers, calls and comments, and keeps the text intact", () => {
+    const line = 'const total = add(1, "two"); // done';
+    const h = highlightLine(line, "ts", c);
+    expect(stripAnsi(h)).toBe(line);
+    expect(h).toContain(c.tok("kw", "const"));
+    expect(h).toContain(c.tok("fn", "add"));
+    expect(h).toContain(c.tok("num", "1"));
+    expect(h).toContain(c.tok("str", '"two"'));
+    expect(h).toContain(c.tok("com", "// done"));
+  });
+  it("handles python comments and JSON keys, and leaves unknown languages plain", () => {
+    expect(highlightLine("x = 1  # note", "python", c)).toContain(c.tok("com", "# note"));
+    expect(highlightLine('  "name": "x"', "json", c)).toContain(c.tok("fn", '"name"'));
+    expect(highlightLine("whatever 1", "klingon", c)).toBe(c.code("whatever 1"));
+    expect(highlightLine("let x", "ts", plain)).toBe(plain.code("let x"));
+  });
+  it("does not treat a number inside a word as a number", () => {
+    const h = highlightLine("abc123 = 5", "py", c);
+    expect(h).not.toContain(c.tok("num", "123"));
+    expect(h).toContain(c.tok("num", "5"));
+  });
+  it("is used inside code blocks, whatever the chunking", () => {
+    const md = new MarkdownStream(c, () => 60);
+    const rows = [...md.push("```ts\nconst a = 1;\n```\n").done];
+    expect(rows[1]).toContain(c.tok("kw", "const"));
+  });
+});
+
+describe("agent display", () => {
+  it("titles tool calls like Claude's: Read(file), Update(file), Run(command)", () => {
+    expect(callTitle("read_file", { path: "a.ts" })).toBe("Read(a.ts)");
+    expect(callTitle("edit_file", { path: "a.ts" })).toBe("Update(a.ts)");
+    expect(callTitle("run_command", { command: "npm test" })).toBe("Run(npm test)");
+    expect(callTitle("search", { pattern: "foo", dir: "src" })).toBe('Search("foo" in src)');
+    expect(callTitle("finish", {})).toBeUndefined();
+  });
+  it("summarises results in a few words", () => {
+    expect(resultSummary("read_file", true, "    1| a\n    2| b\n    3| ")).toBe("Read 2 lines");
+    expect(resultSummary("read_file", true, "    1| a\n    2| ")).toBe("Read 1 line");
+    expect(resultSummary("list_files", true, "a\nb\nc")).toBe("3 files");
+    expect(resultSummary("search", true, "a.ts:1: x\nb.ts:2: y")).toBe("2 matches");
+    expect(resultSummary("read_file", false, "x.ts does not exist")).toBe("x.ts does not exist");
+  });
+  it("colours a diff with line numbers and cuts long ones", () => {
+    const patch = "--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n keep\n-old\n+new\n tail\n";
+    const rows = renderPatch(plain, patch).map(stripAnsi);
+    expect(rows).toEqual(["    1   keep", "    2 - old", "    2 + new", "    3   tail"]);
+    const big = `@@ -1,100 +1,100 @@\n${Array.from({ length: 100 }, (_, i) => `+l${i}`).join("\n")}\n`;
+    const cut = renderPatch(plain, big, 10);
+    expect(cut.length).toBe(11);
+    expect(stripAnsi(cut[10] as string)).toContain("90 more lines");
+  });
+  it("turns thinking off in every request body it forwards", async () => {
+    let body = "";
+    const f = withoutThinking((async (_u: unknown, init: { body: string }) => { body = init.body; return new Response("{}"); }) as unknown as typeof fetch);
+    await f("http://x", { method: "POST", body: JSON.stringify({ model: "m" }) });
+    expect(JSON.parse(body)).toEqual({ model: "m", chat_template_kwargs: { enable_thinking: false } });
+  });
+});
+
+describe("the coding agent inside the session", () => {
+  const cleanup: Array<() => void> = [];
+  afterEach(() => { for (const c of cleanup.splice(0)) c(); });
+
+  it("shows each tool call, shows the diff, and writes the file only after you say yes", async () => {
+    const script = [
+      { tool: "read_file", args: { path: "a.txt" } },
+      { tool: "edit_file", args: { path: "a.txt", old_text: "hello", new_text: "goodbye" } },
+      { tool: "finish", args: { summary: "Changed the greeting." } },
+    ];
+    let n = 0;
+    const bodies: Array<Record<string, unknown>> = [];
+    const server: Server = createServer((req, res) => {
+      let b = ""; req.on("data", (c) => (b += c));
+      req.on("end", () => {
+        bodies.push(JSON.parse(b) as Record<string, unknown>);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(script[Math.min(n++, script.length - 1)]) }, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 5 } }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    cleanup.push(() => server.close());
+    const port = (server.address() as { port: number }).port;
+    const d = mkdtempSync(join(tmpdir(), "clt-tui-agent-"));
+    cleanup.push(() => rmSync(d, { recursive: true, force: true }));
+    writeFileSync(join(d, "a.txt"), "hello world\n");
+    writeFileSync(join(d, "clutor.config.json"), JSON.stringify({ backend: { kind: "openai", baseUrl: `http://127.0.0.1:${port}/v1`, model: "fake" } }));
+
+    const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+    const stdout = new PassThrough() as unknown as NodeJS.WriteStream;
+    (stdout as unknown as { columns: number }).columns = 100;
+    let screen = "";
+    stdout.on("data", (c) => (screen += String(c)));
+    const done = runTui({ io: { out: () => undefined, err: () => undefined, cwd: d }, version: "9.9.9", argv: [], stdin, stdout, color: false, home: d, run: async () => 0 });
+    const send = async (s: string, ms = 300) => { stdin.emit("data", s); await new Promise((r) => setTimeout(r, ms)); };
+    await new Promise((r) => setTimeout(r, 150));
+    await send("\x1b[Z");                       // shift+tab: agent mode
+    await send("change the greeting to goodbye\r", 1500);
+    expect(readFileSync(join(d, "a.txt"), "utf8")).toBe("hello world\n");   // nothing written yet: waiting for the answer
+    await send("\r", 600);                      // "Yes, write the changes"
+    await send("/exit\r");
+    expect(await done).toBe(0);
+
+    const text = stripAnsi(screen);
+    expect(text).toContain("agent · edits need approval");
+    expect(text).toContain("● Read(a.txt)");
+    expect(text).toContain("Read 1 line");
+    expect(text).toContain("● Update(a.txt)");
+    expect(text).toContain("- hello");
+    expect(text).toContain("+ goodbye");
+    expect(text).toContain("Changed the greeting.");
+    expect(text).toContain("Apply 1 change to a.txt?");
+    expect(text).toContain("applied 1 file");
+    expect(readFileSync(join(d, "a.txt"), "utf8")).toBe("goodbye world\n");
+    expect(bodies[0]?.["chat_template_kwargs"]).toEqual({ enable_thinking: false });
+  });
+
+  it("writes nothing when you say no", async () => {
+    const script = [{ tool: "write_file", args: { path: "new.txt", content: "x\n" } }, { tool: "finish", args: { summary: "Made a file." } }];
+    let n = 0;
+    const server: Server = createServer((req, res) => {
+      req.on("data", () => undefined);
+      req.on("end", () => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(script[Math.min(n++, 1)]) }, finish_reason: "stop" }] })); });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    cleanup.push(() => server.close());
+    const port = (server.address() as { port: number }).port;
+    const d = mkdtempSync(join(tmpdir(), "clt-tui-agent2-"));
+    cleanup.push(() => rmSync(d, { recursive: true, force: true }));
+    writeFileSync(join(d, "clutor.config.json"), JSON.stringify({ backend: { kind: "openai", baseUrl: `http://127.0.0.1:${port}/v1`, model: "fake" } }));
+    const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+    const stdout = new PassThrough() as unknown as NodeJS.WriteStream;
+    (stdout as unknown as { columns: number }).columns = 100;
+    let screen = "";
+    stdout.on("data", (c) => (screen += String(c)));
+    const done = runTui({ io: { out: () => undefined, err: () => undefined, cwd: d }, version: "9.9.9", argv: [], stdin, stdout, color: false, home: d, run: async () => 0 });
+    const send = async (s: string, ms = 300) => { stdin.emit("data", s); await new Promise((r) => setTimeout(r, ms)); };
+    await new Promise((r) => setTimeout(r, 150));
+    await send("/agent make a file\r", 1500);
+    await send("\x1b[B", 200);                  // down to "No, discard them"
+    await send("\r", 500);
+    await send("/exit\r");
+    expect(await done).toBe(0);
+    expect(stripAnsi(screen)).toContain("nothing was written");
+    expect(existsSync(join(d, "new.txt"))).toBe(false);
+  });
+});
+
+describe("welcome panel", () => {
+  const info = { version: "1.2.3", cwd: "/work/proj", model: "Qwen3.5-9B", detail: "5.6 GB · 8.2k context", recent: ["fix the parser", "explain mmap"] };
+  it("is a two-column panel with the version in the border, every row exactly as wide as the panel", async () => {
+    const { welcomeLines } = await import("../src/tui/welcome");
+    const rows = welcomeLines(plain, 100, info);
+    expect(rows[0]).toContain("Clutor v1.2.3");
+    expect(rows[0]?.startsWith("╭")).toBe(true);
+    expect(rows[rows.length - 1]?.startsWith("╰")).toBe(true);
+    for (const r of rows) expect(width(r)).toBe(100);
+    const text = rows.join("\n");
+    for (const s of ["Welcome back!", "C L U T O R", "Qwen3.5-9B", "Tips for getting started", "shift+tab", "Recent conversations", "· fix the parser"]) expect(text).toContain(s);
+  });
+  it("folds into one column on a narrow terminal and says when there is no model", async () => {
+    const { welcomeLines } = await import("../src/tui/welcome");
+    const rows = welcomeLines(plain, 50, { ...info, model: "", recent: [] });
+    for (const r of rows) expect(width(r)).toBe(50);
+    expect(rows.join("\n")).toContain("Welcome");
+    const wide = welcomeLines(plain, 100, { ...info, model: "", recent: [] }).join("\n");
+    expect(wide).toContain("no model loaded");
+    expect(wide).toContain("nothing yet");
   });
 });

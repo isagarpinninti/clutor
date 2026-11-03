@@ -7,7 +7,9 @@ import { BackendManager, buildLlamaArgs, findLlamaServer, probeLlamaServer } fro
 import { ConfigError, loadConfig, type ClutorConfig } from "../config";
 import { flagInt, flagString, parseArgs } from "../args";
 import type { Io, SessionState } from "../cli";
-import { Region, fit, makeStyle, stripAnsi, width, wrap } from "./ansi";
+import { Region, THEMES, fit, makeStyle, stripAnsi, wrap, type ThemeName } from "./ansi";
+import { runAgentTask, type AgentHost } from "./agent";
+import { welcomeLines } from "./welcome";
 import { discoverModels, displayName, gb, type FoundModel } from "./discover";
 import { Editor, type Cmd } from "./editor";
 import { KeyParser } from "./keys";
@@ -54,6 +56,10 @@ const COMMANDS: Cmd[] = [
   { name: "system", args: "<text>", help: "set the instructions the model always follows" },
   { name: "temp", args: "<0-2>", help: "how adventurous the replies are" },
   { name: "agent", args: "<task>", help: "hand a task to the coding agent (changes wait for your approval)" },
+  { name: "undo", help: "restore the files the last agent task changed" },
+  { name: "verify", args: "[command|off]", help: "a check the agent must pass before changes are offered" },
+  { name: "yes", help: "toggle: let the agent run project commands without asking" },
+  { name: "theme", args: "[dark|light|ocean|mono]", help: "change the colours" },
   { name: "resume", help: "continue an earlier conversation" },
   { name: "copy", help: "copy the last reply to the clipboard" },
   { name: "save", args: "[file]", help: "write this conversation to a Markdown file" },
@@ -70,6 +76,9 @@ const COMMANDS: Cmd[] = [
 
 /** Commands that are the ordinary clutor commands, run exactly as they are outside the session. */
 const FORWARD = new Set(["status", "doctor", "models", "plan", "bench", "pull", "init", "simulate", "inspect", "ledger", "decide", "backend", "stream"]);
+
+type Mode = "chat" | "agent" | "auto";
+const MODES: Mode[] = ["chat", "agent", "auto"];
 
 const SYSTEM_DEFAULT = "You are a helpful assistant running locally in a terminal through Clutor. Answer directly and concisely. Use Markdown only where it helps (short lists, code blocks).";
 
@@ -113,15 +122,23 @@ export function loadPhase(log: string[]): string | undefined {
   return undefined;
 }
 
+const trunc = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
 const compactNum = (n: number): string => (n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
 export async function runTui(o: TuiOptions): Promise<number> {
   const inp = o.stdin ?? process.stdin;
   const out = o.stdout ?? process.stdout;
-  const st = makeStyle(o.color ?? true);
+  const colour = o.color ?? true;
   const cwd = o.io.cwd;
   const args = parseArgs(o.argv);
   const stateDir = join(o.home ?? homedir(), ".clutor");
+  const settingsFile = join(stateDir, "settings.json");
+  const settings = ((): { theme?: ThemeName; mode?: Mode } => { try { return JSON.parse(readFileSync(settingsFile, "utf8")) as { theme?: ThemeName; mode?: Mode }; } catch { return {}; } })();
+  const saveSettings = (): void => { try { mkdirSync(stateDir, { recursive: true, mode: 0o700 }); writeFileSync(settingsFile, JSON.stringify(settings), { mode: 0o600 }); } catch { /* a setting is a convenience */ } };
+  const st = makeStyle(colour, THEMES.includes(settings.theme as ThemeName) ? (settings.theme as ThemeName) : "dark");
+  let mode: Mode = flagString(args, "mode") === "agent" ? "agent" : "chat";
+  const agentState = { allowCommands: false };
   const cols = (): number => (out.columns && out.columns > 0 ? out.columns : 80);
 
   let config: ClutorConfig;
@@ -134,7 +151,14 @@ export async function runTui(o: TuiOptions): Promise<number> {
     if (on) { inp.resume(); inp.setEncoding("utf8"); out.write("\x1b[?2004h"); } else out.write("\x1b[?2004l");
   };
   const restore = (): void => { try { setRaw(false); out.write("\x1b[?25h\x1b[0m"); } catch { /* terminal already gone */ } };
-  process.once("exit", restore);
+  // Whatever way the process ends (window closed, kill, crash), the terminal is put back and the model server does not outlive it.
+  let starting: BackendManager | undefined;
+  const onExit = (): void => { restore(); starting?.killNow(); target?.backend?.killNow(); };
+  process.once("exit", onExit);
+  const onSignal = (code: number) => (): void => { onExit(); process.exit(code); };
+  const sighup = onSignal(129), sigterm = onSignal(143);
+  process.once("SIGHUP", sighup);
+  process.once("SIGTERM", sigterm);
 
   const history = (() => { try { return readFileSync(join(stateDir, "history"), "utf8").split("\n").filter(Boolean).slice(-500); } catch { return []; } })();
   const editor = new Editor(history, COMMANDS);
@@ -155,36 +179,39 @@ export async function runTui(o: TuiOptions): Promise<number> {
   const fail = (s: string): void => mark("⎿", st.bad, s);
 
   // ---- welcome ----
+  const recentTitles = (): string[] => {
+    try {
+      return readdirSync(join(stateDir, "sessions")).filter((f) => f.endsWith(".json")).sort().reverse().slice(0, 3).flatMap((f) => {
+        const j = JSON.parse(readFileSync(join(stateDir, "sessions", f), "utf8")) as { messages?: ChatMessage[] };
+        const first = j.messages?.find((m) => m.role === "user")?.content.replace(/\s+/g, " ").trim();
+        return first ? [first] : [];
+      });
+    } catch { return []; }
+  };
   const welcome = (): void => {
-    const w = Math.min(cols(), 62);
-    const inner = w - 4;
-    const row = (s = ""): string => `${st.accent("│")} ${s}${" ".repeat(Math.max(0, inner - width(s)))} ${st.accent("│")}`;
-    const short = cwd.replace(homedir(), "~");
     println();
-    println(st.accent(`╭${"─".repeat(w - 2)}╮`));
-    println(row(`${st.accent("✻")} ${st.bold("Welcome to Clutor")} ${st.dim(`v${o.version}`)}`));
-    println(row());
-    println(row(st.dim("big models on small machines, with honest numbers")));
-    println(row());
-    println(row(st.dim(`cwd: ${short.length > inner - 5 ? `…${short.slice(-(inner - 6))}` : short}`)));
-    println(st.accent(`╰${"─".repeat(w - 2)}╯`));
-    println();
-    for (const r of wrap(st.dim("Tips:  /help for commands · @file to attach a file · \\ + enter for a new line · esc stops a reply"), cols() - 2, 7)) println(`  ${r}`);
+    for (const l of welcomeLines(st, cols(), { version: o.version, cwd, model: target?.name ?? "", detail: target ? `${target.bytes ? `${gb(target.bytes)} · ` : ""}${compactNum(chat.ctx)} context${target.loadMs ? ` · loaded in ${(target.loadMs / 1000).toFixed(1)} s` : ""}` : "", recent: recentTitles() })) println(l);
     println();
   };
 
   // ---- input ----
   let notice: string | undefined;
+  const MODE_TEXT: Record<Mode, string> = {
+    chat: "chat · shift+tab: coding agent",
+    agent: "agent · edits need approval · shift+tab: next mode",
+    auto: "auto-apply · edits are written for you · shift+tab: next mode",
+  };
   const footer = (): { left: string; right: string } => ({
-    left: `${target?.name ?? "no model"} · thinking ${chat.thinking ? "on" : "off"} · ? for shortcuts`,
-    right: stats.ctxUsed > 0 ? `${compactNum(stats.ctxUsed)}/${compactNum(chat.ctx)} context` : `${compactNum(chat.ctx)} context`,
+    left: `${MODE_TEXT[mode]}`,
+    right: `${trunc(target?.name ?? "no model", 34)} · ${stats.ctxUsed > 0 ? `${compactNum(stats.ctxUsed)}/${compactNum(chat.ctx)}` : compactNum(chat.ctx)} ctx`,
   });
+  const look = (): { border?: (s: string) => string; glyph?: string } => (mode === "chat" ? {} : { border: mode === "auto" ? st.warn : st.accent, glyph: mode === "auto" ? "⏵⏵" : "⏵" });
 
   const readInput = (): Promise<string | null> => new Promise((done) => {
     let region = new Region(out);
     const parser = new KeyParser();
     let timer: NodeJS.Timeout | undefined;
-    const draw = (): void => { const v = editor.view(st, cols(), footer(), notice); region.draw(v.lines, v.cursor); };
+    const draw = (): void => { const v = editor.view(st, cols(), footer(), notice, look()); region.draw(v.lines, v.cursor); };
     const finish = (value: string | null): void => {
       inp.off("data", onData);
       out.off("resize", draw);
@@ -200,6 +227,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
         if (a.type === "submit") { finish(a.text); return; }
         if (a.type === "exit") { finish(null); return; }
         if (a.type === "notice") { notice = a.text; timer = setTimeout(() => { notice = undefined; draw(); }, 2000); }
+        if (a.type === "cycle-mode") { mode = MODES[(MODES.indexOf(mode) + 1) % MODES.length] as Mode; settings.mode = mode; saveSettings(); }
         if (a.type === "clear-screen") { out.write("\x1b[2J\x1b[H"); region = new Region(out); }
       }
       draw();
@@ -258,6 +286,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
     const port = await freePort();
     const { args: a } = buildLlamaArgs({ modelPath: m.path, port, contextTokens: chat.ctx, kvBits: config.memory.kvBits, ...(ls.threads ? { threads: ls.threads } : {}), caps, extraArgs: ["--parallel", "1", ...ls.extraArgs] });
     const backend = new BackendManager(port);
+    starting = backend;
     const t0 = Date.now();
     await busy(`Loading ${m.name}`, async (detail) => {
       const poll = setInterval(() => { const p = loadPhase(backend.recentLog); if (p) detail(p); }, 300);
@@ -379,6 +408,22 @@ export async function runTui(o: TuiOptions): Promise<number> {
     saveSession();
   };
 
+  // ---- the coding agent ----
+  const host: AgentHost = {
+    st, cols, println: (x) => println(x), region: () => new Region(out),
+    choose: (title, items) => pick(title, items),
+    listen: (f) => { setRaw(true); const on = (d: string | Buffer): void => f(String(d)); inp.on("data", on); return () => void inp.off("data", on); },
+  };
+  const agentTask = async (task: string): Promise<void> => {
+    if (!target) { fail("no model is loaded. Use /model to choose one."); return; }
+    println(`${st.dim("❯")} ${st.dim(task.split("\n").join("\n  "))}`);
+    println();
+    try {
+      await runAgentTask(host, { task, dir: cwd, config, endpoint: { baseUrl: target.baseUrl, model: target.model, ...(target.apiKey ? { apiKey: target.apiKey } : {}), local: target.backend !== undefined }, session, autoApply: mode === "auto", contextTokens: chat.ctx }, agentState);
+    } catch (e) { fail(e instanceof Error ? e.message : String(e)); }
+    println();
+  };
+
   // ---- transcripts ----
   const sessionDir = join(stateDir, "sessions");
   const saveSession = (): void => {
@@ -476,9 +521,34 @@ export async function runTui(o: TuiOptions): Promise<number> {
         return;
       }
       case "agent": {
-        if (!rest) { fail('usage: /agent <task>   (needs a model configured in clutor.config.json; run /init to create one)'); return; }
+        if (!rest) { fail("usage: /agent <task>   (or press shift+tab to make agent mode the default)"); return; }
+        await agentTask(rest); return;
+      }
+      case "undo": {
+        if (!session.lastCheckpoint) { note("nothing to undo in this session"); return; }
+        const { id, dir } = session.lastCheckpoint;
         setRaw(false);
-        await o.run(["code", rest, "--dir", cwd], session).catch((e: unknown) => fail(e instanceof Error ? e.message : String(e)));
+        if (await o.run(["rollback", id, "--dir", dir], session).catch(() => 1) === 0) delete session.lastCheckpoint;
+        return;
+      }
+      case "verify": {
+        if (!rest) note(session.verify ? `verify: ${session.verify}` : "verify: none. Set one with /verify npm test");
+        else if (rest === "off") { delete session.verify; note("verify: off"); }
+        else { session.verify = rest; note(`verify: ${rest}. It runs in a scratch copy after each task; changes are only offered when it passes`); }
+        return;
+      }
+      case "yes": session.auto = !session.auto; note(session.auto ? "the agent may run project commands without asking (only for projects you trust)" : "the agent asks before running project commands"); return;
+      case "theme": {
+        let pickName = restWords[0] as ThemeName | undefined;
+        if (!pickName) {
+          const i = await pick("Choose a theme", THEMES.map((t) => ({ label: t, hint: t === st.theme ? "(current)" : "" })), THEMES.indexOf(st.theme));
+          if (i === undefined) return;
+          pickName = THEMES[i];
+        }
+        if (!pickName || !THEMES.includes(pickName)) { fail(`themes: ${THEMES.join(", ")}`); return; }
+        Object.assign(st, makeStyle(colour, pickName));
+        settings.theme = pickName; saveSettings();
+        note(`${pickName} theme`);
         return;
       }
       default:
@@ -493,10 +563,12 @@ export async function runTui(o: TuiOptions): Promise<number> {
   };
 
   // ---- main ----
-  welcome();
   try {
+    println();
     target = await chooseModel(false).catch((e: unknown) => { fail(e instanceof Error ? e.message : String(e)); return undefined; });
-    if (target) note(`${target.name}${target.bytes ? ` (${gb(target.bytes)})` : ""} ready${target.loadMs ? ` in ${(target.loadMs / 1000).toFixed(1)} s` : ""}, context ${compactNum(chat.ctx)} tokens${chat.thinking ? "" : ", thinking off (/think to change)"}`);
+    if (out.isTTY) out.write("\x1b[2J\x1b[H");
+    welcome();
+    if (!target) note("no model loaded: /model chooses one, /pull downloads a small one");
     println();
     for (;;) {
       const line = await readInput();
@@ -505,13 +577,15 @@ export async function runTui(o: TuiOptions): Promise<number> {
         if (line.startsWith("/")) {
           println(`${st.dim("❯")} ${st.dim(line)}`);
           if ((await slash(line)) === "exit") break;
-        } else await turn(line);
+        } else if (mode === "chat") await turn(line);
+        else await agentTask(line);
       } catch (e) { fail(e instanceof Error ? e.message : String(e)); }
       try { mkdirSync(stateDir, { recursive: true, mode: 0o700 }); writeFileSync(join(stateDir, "history"), `${editor.history.slice(-500).map((h) => h.replace(/\n/g, " ")).join("\n")}\n`, { mode: 0o600 }); } catch { /* history is a convenience */ }
     }
   } finally {
     restore();
     await stopTarget();
+    process.off("exit", onExit); process.off("SIGHUP", sighup); process.off("SIGTERM", sigterm);
   }
   println();
   println(st.dim(stats.turns > 0 ? `  Goodbye. ${stats.completion} tokens generated in ${stats.turns} repl${stats.turns === 1 ? "y" : "ies"}.` : "  Goodbye."));

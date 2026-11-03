@@ -17,7 +17,7 @@ export function spinnerLine(st: Style, t: number, label: string, details: string
   const glyph = st.accent(FRAMES[Math.floor(t / 110) % FRAMES.length] as string);
   const chars = [...label];
   const lit = (Math.floor(t / 70) % (chars.length + 8)) - 4;
-  const word = chars.map((ch, i) => (Math.abs(i - lit) <= 1 ? st.fg(223, ch) : st.accent(ch))).join("");
+  const word = chars.map((ch, i) => (Math.abs(i - lit) <= 1 ? st.hi(ch) : st.accent(ch))).join("");
   const tail = details.length ? ` ${st.dim(`(${details.join(" · ")})`)}` : "";
   return `${glyph} ${word}${st.accent("…")}${tail}`;
 }
