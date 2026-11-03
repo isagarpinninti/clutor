@@ -189,6 +189,6 @@ The terminal UI talks to the engine through a long-lived process, one JSON objec
 | `{"op":"cancel"}` | Stops a prompt or a reply at the next token. |
 | `{"op":"reset"}` | Forgets the conversation. |
 
-The KV cache is kept between calls, so a turn costs its new tokens. The UI keeps the text the cache holds and sends only the remainder when the next conversation extends it; otherwise it resets. At temperature 0 the tokens are exactly those `generate` produces (`make chat-test` checks this on all five architectures, and that cancel, reset, a refused over-long append, seeded sampling and escaped JSON inside the text all behave). Decode speed is reported without the prompt's share; the prompt's own speed is reported separately.
+The KV cache is kept between calls, so a turn costs its new tokens. The UI keeps the text the cache holds and sends only the remainder when the next conversation extends it; otherwise it resets. At temperature 0 the tokens are exactly those `generate` produces (`make chat-test` checks this on all six architectures, and that cancel, reset, a refused over-long append, seeded sampling and escaped JSON inside the text all behave). Decode speed is reported without the prompt's share; the prompt's own speed is reported separately.
 
 Not done: `repeat` penalty and the sampler are simple (no min-p, no Mirostat); nothing constrains decoding to a grammar, which llama-server's JSON-schema mode does for the coding agent.

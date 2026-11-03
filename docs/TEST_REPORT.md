@@ -85,6 +85,21 @@ The file (807,694,464 bytes, 770 MiB) was verified byte-exact against the publis
 
 The two greedy divergences, investigated the same way as for Qwen2.5. At token 3 (prompt "The capital of France is"), llama.cpp evaluating the prefix as one batch ranks 469 over 6864 by 0.17, as does this engine (gap 0.05 integer, 0.13 exact float), while llama.cpp's own incremental run chose 6864: llama.cpp disagrees with its own batch evaluation. At token 12 (the code prompt), llama.cpp ranks 76798 over 1925 by 0.10 and this engine's exact float math agrees (gap 0.014); the 8-bit activation rounding of the integer path flips it to 1925 by 0.03. Near-ties of at most 0.17: consistent with numerical noise, not proof. Two dense models (Qwen2.5 and Llama) now show 1 of 3 identical greedy continuations, against 3 of 3 for Granite and Qwen3 and 2 of 3 for OLMoE; a perplexity or long-generation comparison with llama.cpp is the check that would settle whether dense models carry a small systematic difference.
 
+## 3e. Agreement with llama.cpp, Qwen3.5-9B Q4_K_M (the sixth architecture, hybrid; run 2026-11-03)
+
+llama.cpp `llama-server -ngl 0` (CPU) against `clutor-engine`, same file (5.23 GiB, 32 layers: 24 Gated DeltaNet, 8 gated attention).
+
+| Check | Result |
+|---|---|
+| Tokenization, 24 strings (`verify_tokenizer.py`) | identical 24/24, including `<think>`, `</think>` and the ChatML markers |
+| Next-token logprobs, 6 prompts (`verify_llama.py`) | token ids identical 6/6; same top token 6/6; top-5 overlap 4-5 of 5; mean abs logprob difference 0.085-0.146 on the five normal prompts (worst single 0.36) and 0.327 on the off-format sixth (worst 0.86); all 6 inside the tolerances |
+| Greedy continuation, 3 prompts, 24 tokens (`verify_greedy.py`) | identical on 3 of 3 |
+| Layer 0, tensor by tensor against `llama-eval-callback` (sums over the 5 prompt tokens) | attn_norm 3e-6, qkv projection 4e-8, z 2e-6, softplus 4e-8, gate 8e-8, beta 2e-7, convolution+SiLU 6e-7, both L2 norms 1e-6, delta-rule output 1e-6, gated norm 1e-6, output projection 2e-6; the feed-forward sums agree to 1e-5 to 5e-5 and the layer output to 1.4e-4 |
+| Golden test (tiny generated `qwen35` with Q4_K, Q5_K and Q6_K weights, partial rotary, 3 recurrent layers and 1 attention layer; independent pure-Python reference) | float math agrees to 5e-5 in logprob on every seed tried; the 8-bit path agrees to 5e-5 on the default seed on NEON, NEON without dot product and portable C. On other seeds and on a differently compiled build (the sanitizer build) it drifts on some prompts by up to 0.13 (mean up to 0.035): a rounding flip at one quantization point, carried by the recurrent state, which the double-precision reference does not make identically. So for this architecture the 8-bit path is checked with wider limits (mean 0.08, max 0.3) and the float path, strict at 1e-3, is the logic check |
+| Chat protocol (`make chat-test`) | passes, including `reset` (which must zero the recurrent state) and cancel |
+
+What this does not show: the logprob gaps (about 0.1) are not zero, and the exact cause is not isolated. After adding a `Q5_K` integer kernel, which made the first layer's projection match llama.cpp to 4e-8, the end-to-end gaps did not shrink, so they are not (only) from that. Candidates not ruled out: llama.cpp's f16 KV cache against this engine's f32, its chunked delta-rule algorithm for batched prompts, and accumulated 8-bit rounding differences over 32 layers. Per-layer hidden states drift away from llama.cpp's by a few percent of the largest shown value by layer 3 and stay there; judged as numerical noise, not proven. Speed: about 2 tok/s warm (0.47 s/token, one run, memory free) and 0.1 tok/s when the machine was under heavy memory pressure (compressor holding about 11 GiB): this model is memory-bound and there is no batched prompt processing.
+
 ## 4. Speed and memory (earlier; one run per setting, about 30% run-to-run spread)
 
 OLMoE, 100-token job: this engine 9.6-9.9 s with the file in RAM against Colibri 15.4-16.9 s; with experts streamed from a cold disk under a memory budget, 481 MiB-1.4 GiB peak RSS and 15.5-26.6 s depending on the cache (docs/BENCHMARKS.md). Streaming is disk-bound at about 1.4 GB/s on this SSD.

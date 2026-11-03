@@ -44,7 +44,7 @@ interface Target {
 }
 
 /** The architectures Clutor's engine runs (see docs/MODELS.md). */
-const NATIVE_ARCHS = new Set(["olmoe", "qwen3moe", "granitemoe", "qwen2", "llama"]);
+const NATIVE_ARCHS = new Set(["olmoe", "qwen3moe", "granitemoe", "qwen2", "llama", "qwen35"]);
 
 export interface TuiOptions {
   io: Io;

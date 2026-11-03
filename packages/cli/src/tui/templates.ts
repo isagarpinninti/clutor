@@ -10,14 +10,16 @@ export type TemplateFamily = "chatml" | "llama3" | "granite" | "olmo" | "plain";
 
 export interface TemplateInfo {
   family: TemplateFamily;
-  /** The model writes its reasoning between <think> tags (Qwen3). */
+  /** The model writes its reasoning between <think> tags (Qwen3, Qwen3.5). */
   thinkTags: boolean;
+  /** With thinking on, the template itself opens the block (`<think>\n` ends the prompt), as Qwen3.5's does; Qwen3's model writes the opening tag itself. */
+  opensThink?: boolean;
 }
 
 export function detectTemplate(jinja: string | undefined): TemplateInfo {
   const t = jinja ?? "";
   const thinkTags = t.includes("<think>");
-  if (t.includes("<|im_start|>")) return { family: "chatml", thinkTags };
+  if (t.includes("<|im_start|>")) return { family: "chatml", thinkTags, ...(thinkTags && /\{%-?\s*else\s*%\}\s*\{\{-?\s*'<think>\\n'\s*\}\}/.test(t) ? { opensThink: true } : {}) };
   if (t.includes("<|start_header_id|>")) return { family: "llama3", thinkTags: false };
   if (t.includes("<|start_of_role|>")) return { family: "granite", thinkTags: false };
   if (t.includes("<|assistant|>") && t.includes("<|user|>")) return { family: "olmo", thinkTags: false };
@@ -37,7 +39,8 @@ export function renderChat(info: TemplateInfo, messages: ChatMessage[], o: Rende
   let out = "";
   for (const m of messages) {
     switch (info.family) {
-      case "chatml": out += `<|im_start|>${m.role}\n${m.content}<|im_end|>\n`; break;
+      // A reply generated with thinking off began with an empty think block; rendering it that way keeps the engine's cache valid when the conversation continues.
+      case "chatml": out += `<|im_start|>${m.role}\n${m.role === "assistant" && info.thinkTags && o.thinking !== true ? "<think>\n\n</think>\n\n" : ""}${m.content}<|im_end|>\n`; break;
       case "llama3": out += `<|start_header_id|>${m.role}<|end_header_id|>\n\n${m.content}<|eot_id|>`; break;
       case "granite": out += `<|start_of_role|>${m.role}<|end_of_role|>${m.content}<|end_of_text|>\n`; break;
       case "olmo": out += m.role === "assistant" ? `<|assistant|>\n${m.content}<|endoftext|>\n` : `<|${m.role}|>\n${m.content}\n`; break;
@@ -46,7 +49,7 @@ export function renderChat(info: TemplateInfo, messages: ChatMessage[], o: Rende
   }
   if (!gen) return out;
   switch (info.family) {
-    case "chatml": return `${out}<|im_start|>assistant\n${info.thinkTags && o.thinking === false ? "<think>\n\n</think>\n\n" : ""}`;
+    case "chatml": return `${out}<|im_start|>assistant\n${info.thinkTags ? (o.thinking === true ? (info.opensThink ? "<think>\n" : "") : "<think>\n\n</think>\n\n") : ""}`;
     case "llama3": return `${out}<|start_header_id|>assistant<|end_header_id|>\n\n`;
     case "granite": return `${out}<|start_of_role|>assistant<|end_of_role|>`;
     case "olmo": return `${out}<|assistant|>\n`;

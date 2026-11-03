@@ -35,15 +35,54 @@ static float *to_float(const cl_w *w, size_t n) {
 }
 
 /* A metadata key of this model's architecture, for example "olmoe.block_count". */
-typedef struct { const char *name; int qk_mode, norm_topk, rope_pairs, expert_ff_key, scaled, dense, qkv_bias; } arch_spec;
+typedef struct { const char *name; int qk_mode, norm_topk, rope_pairs, expert_ff_key, scaled, dense, qkv_bias, hybrid; } arch_spec;
 static const arch_spec ARCHS[] = {
   /* name        qk-norm  renorm  pair-rope  expert_feed_forward_length  granite multipliers  dense  qkv bias */
-  {"olmoe",      1,       0,      0,         0,                          0,                   0,     0},
-  {"qwen3moe",   2,       1,      0,         1,                          0,                   0,     0},
-  {"granitemoe", 0,       1,      1,         0,                          1,                   0,     0},
-  {"qwen2",      0,       0,      0,         0,                          0,                   1,     1},
-  {"llama",      0,       0,      1,         0,                          0,                   1,     0},
+  {"olmoe",      1,       0,      0,         0,                          0,                   0,     0,        0},
+  {"qwen3moe",   2,       1,      0,         1,                          0,                   0,     0,        0},
+  {"granitemoe", 0,       1,      1,         0,                          1,                   0,     0,        0},
+  {"qwen2",      0,       0,      0,         0,                          0,                   1,     1,        0},
+  {"llama",      0,       0,      1,         0,                          0,                   1,     0,        0},
+  {"qwen35",     2,       0,      0,         0,                          0,                   1,     0,        1},   /* hybrid: Gated DeltaNet + gated attention, dense feed-forward */
 };
+
+/* One layer of a qwen35 model: either a Gated DeltaNet layer (a causal convolution, a per-head gated delta rule, a gated norm) or a gated full-attention layer, then a plain SwiGLU feed-forward. */
+static int bind_q35_layer(cl_fwd *f, int l, char *err, size_t errlen) {
+  cl_fwd_layer *y = &f->L[l];
+  const int N = f->n_embd, S = f->ssm_state, HV = f->ssm_heads, HK = f->ssm_groups, CK = f->ssm_conv, CC = 2 * S * HK + S * HV, FF = f->n_ff_exp, hd = f->head_dim;
+  y->recurrent = (l + 1) % f->attn_interval != 0;
+  if (bind(f, &y->attn_norm, "attn_norm.weight", l, 1, err, errlen) || bind(f, &y->ffn_norm, "post_attention_norm.weight", l, 1, err, errlen) ||
+      bind(f, &y->gate, "ffn_gate.weight", l, 2, err, errlen) || bind(f, &y->up, "ffn_up.weight", l, 2, err, errlen) || bind(f, &y->down, "ffn_down.weight", l, 2, err, errlen)) return 1;
+  if (y->attn_norm.cols != N || y->ffn_norm.cols != N || y->gate.rows != FF || y->gate.cols != N || y->up.rows != FF || y->up.cols != N || y->down.rows != N || y->down.cols != FF) {
+    snprintf(err, errlen, "layer %d: feed-forward or norm shapes do not match the hyper-parameters", l); return 1;
+  }
+  y->attn_norm_f = to_float(&y->attn_norm, (size_t)N); y->ffn_norm_f = to_float(&y->ffn_norm, (size_t)N);
+  if (!y->attn_norm_f || !y->ffn_norm_f) { snprintf(err, errlen, "out of memory"); return 1; }
+  if (y->recurrent) {
+    cl_w conv, a, dt, nm;
+    if (bind(f, &y->attn_qkv, "attn_qkv.weight", l, 2, err, errlen) || bind(f, &y->attn_gate, "attn_gate.weight", l, 2, err, errlen) || bind(f, &y->ssm_alpha, "ssm_alpha.weight", l, 2, err, errlen) ||
+        bind(f, &y->ssm_beta, "ssm_beta.weight", l, 2, err, errlen) || bind(f, &y->ssm_out, "ssm_out.weight", l, 2, err, errlen) || bind(f, &conv, "ssm_conv1d.weight", l, 2, err, errlen) ||
+        bind(f, &a, "ssm_a", l, 1, err, errlen) || bind(f, &dt, "ssm_dt.bias", l, 1, err, errlen) || bind(f, &nm, "ssm_norm.weight", l, 1, err, errlen)) return 1;
+    if (y->attn_qkv.rows != CC || y->attn_qkv.cols != N || y->attn_gate.rows != S * HV || y->attn_gate.cols != N || y->ssm_alpha.rows != HV || y->ssm_alpha.cols != N || y->ssm_beta.rows != HV || y->ssm_beta.cols != N ||
+        y->ssm_out.rows != N || y->ssm_out.cols != S * HV || conv.cols != CK || conv.rows != CC || a.cols != HV || dt.cols != HV || nm.cols != S) {
+      snprintf(err, errlen, "layer %d: Gated DeltaNet tensor shapes do not match the hyper-parameters", l); return 1;
+    }
+    if (conv.type != CL_T_F32 || a.type != CL_T_F32 || dt.type != CL_T_F32 || nm.type != CL_T_F32) { snprintf(err, errlen, "layer %d: the convolution, decay and norm tensors must be float32", l); return 1; }
+    y->conv_f = to_float(&conv, (size_t)CK * CC); y->ssm_a_f = to_float(&a, (size_t)HV); y->ssm_dt_f = to_float(&dt, (size_t)HV); y->ssm_norm_f = to_float(&nm, (size_t)S);
+    if (!y->conv_f || !y->ssm_a_f || !y->ssm_dt_f || !y->ssm_norm_f) { snprintf(err, errlen, "out of memory"); return 1; }
+    y->rec_idx = f->n_rec++;
+  } else {
+    if (bind(f, &y->wq, "attn_q.weight", l, 2, err, errlen) || bind(f, &y->wk, "attn_k.weight", l, 2, err, errlen) || bind(f, &y->wv, "attn_v.weight", l, 2, err, errlen) ||
+        bind(f, &y->wo, "attn_output.weight", l, 2, err, errlen) || bind(f, &y->qn, "attn_q_norm.weight", l, 1, err, errlen) || bind(f, &y->kn, "attn_k_norm.weight", l, 1, err, errlen)) return 1;
+    if (y->wq.rows != 2 * f->n_q || y->wq.cols != N || y->wk.rows != f->n_kvw || y->wk.cols != N || y->wv.rows != f->n_kvw || y->wv.cols != N || y->wo.rows != N || y->wo.cols != f->n_q || y->qn.cols != hd || y->kn.cols != hd) {
+      snprintf(err, errlen, "layer %d: gated attention tensor shapes do not match the hyper-parameters", l); return 1;
+    }
+    y->qn_f = to_float(&y->qn, (size_t)hd); y->kn_f = to_float(&y->kn, (size_t)hd);
+    if (!y->qn_f || !y->kn_f) { snprintf(err, errlen, "out of memory"); return 1; }
+    y->kv_idx = f->n_kv_layers++;
+  }
+  return 0;
+}
 
 #define AKEY(buf, suffix) snprintf(buf, sizeof buf, "%s.%s", f->arch, suffix)
 #define REQ_U(suffix, dst) do { char k_[96]; uint64_t v_; AKEY(k_, suffix); if (!cl_meta_u64(&f->meta, k_, &v_)) { snprintf(err, errlen, "the model does not state %s", k_); goto fail; } dst = (int)v_; } while (0)
@@ -53,9 +92,9 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   if (cl_model_open(&f->model, path, err, errlen)) return 1;
   const arch_spec *spec = NULL;
   for (size_t i = 0; i < sizeof ARCHS / sizeof *ARCHS; i++) if (!strcmp(f->model.arch, ARCHS[i].name)) spec = &ARCHS[i];
-  if (!spec) { snprintf(err, errlen, "the forward pass supports the \"olmoe\", \"qwen3moe\", \"granitemoe\", \"qwen2\" (dense) and \"llama\" (dense) architectures, not \"%s\"", f->model.arch); goto fail; }
+  if (!spec) { snprintf(err, errlen, "the forward pass supports the \"olmoe\", \"qwen3moe\", \"granitemoe\", \"qwen2\" (dense), \"llama\" (dense) and \"qwen35\" (hybrid) architectures, not \"%s\"", f->model.arch); goto fail; }
   snprintf(f->arch, sizeof f->arch, "%s", spec->name);
-  f->qk_mode = spec->qk_mode; f->qk_per_head = spec->qk_mode == 2; f->norm_topk = spec->norm_topk; f->rope_pairs = spec->rope_pairs; f->dense = spec->dense; f->qkv_bias = spec->qkv_bias;
+  f->qk_mode = spec->qk_mode; f->qk_per_head = spec->qk_mode == 2; f->norm_topk = spec->norm_topk; f->rope_pairs = spec->rope_pairs; f->dense = spec->dense; f->qkv_bias = spec->qkv_bias; f->hybrid = spec->hybrid;
   const int NU = spec->dense ? 1 : 0;   /* a dense model has no experts, but its single feed-forward needs the same scratch as one expert */
   f->embed_scale = f->resid_scale = f->logit_scale = 1.0f; f->attn_scale = 0;
   int fd = open(path, O_RDONLY);
@@ -83,8 +122,20 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   f->head_dim = f->n_embd / f->n_head;
   { char k[96]; uint64_t v_; AKEY(k, "attention.key_length"); if (cl_meta_u64(&f->meta, k, &v_) && v_ >= 2 && v_ <= 1024 && v_ % 2 == 0) f->head_dim = (int)v_; }   /* qwen3moe: 128, not n_embd / n_head */
   if (f->n_head_kv < 1 || f->n_head_kv > f->n_head || f->n_head % f->n_head_kv) { snprintf(err, errlen, "implausible head counts (%d query heads, %d key/value heads)", f->n_head, f->n_head_kv); goto fail; }
+  f->rope_dim = f->head_dim;
   { char k[96]; uint64_t v_; AKEY(k, "rope.dimension_count");
-    if (cl_meta_u64(&f->meta, k, &v_) && (int)v_ != f->head_dim) { snprintf(err, errlen, "partial rotary embeddings (%d of %d dimensions) are not implemented", (int)v_, f->head_dim); goto fail; } }
+    if (cl_meta_u64(&f->meta, k, &v_) && (int)v_ != f->head_dim) {
+      if (!f->hybrid || v_ < 2 || (int)v_ > f->head_dim || v_ % 2) { snprintf(err, errlen, "partial rotary embeddings (%d of %d dimensions) are not implemented for this architecture", (int)v_, f->head_dim); goto fail; }
+      f->rope_dim = (int)v_;   /* qwen35 rotates the first 64 of each head's 256 dimensions */
+    } }
+  if (f->hybrid) {
+    REQ_U("ssm.conv_kernel", f->ssm_conv); REQ_U("ssm.state_size", f->ssm_state); REQ_U("ssm.group_count", f->ssm_groups); REQ_U("ssm.time_step_rank", f->ssm_heads); REQ_U("ssm.inner_size", f->ssm_inner);
+    f->attn_interval = 4;
+    { char k[96]; uint64_t v_; AKEY(k, "full_attention_interval"); if (cl_meta_u64(&f->meta, k, &v_)) f->attn_interval = (int)v_; }
+    if (f->ssm_conv < 2 || f->ssm_conv > 8 || f->ssm_state < 8 || f->ssm_state > 512 || f->ssm_groups < 1 || f->ssm_heads < f->ssm_groups || f->ssm_heads % f->ssm_groups || f->ssm_inner != f->ssm_heads * f->ssm_state || f->attn_interval < 1 || f->attn_interval > f->n_layer) {
+      snprintf(err, errlen, "implausible Gated DeltaNet hyper-parameters (conv %d, state %d, groups %d, heads %d, inner %d, attention every %d layers)", f->ssm_conv, f->ssm_state, f->ssm_groups, f->ssm_heads, f->ssm_inner, f->attn_interval); goto fail;
+    }
+  }
   if (spec->scaled) {
     char k[96]; double dv;
     AKEY(k, "embedding_scale"); if (cl_meta_f64(&f->meta, k, &dv)) f->embed_scale = (float)dv;
@@ -122,6 +173,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   if (!f->L || !f->out_norm_f) { snprintf(err, errlen, "out of memory"); goto fail; }
   for (int l = 0; l < f->n_layer; l++) {
     cl_fwd_layer *y = &f->L[l];
+    if (f->hybrid) { if (bind_q35_layer(f, l, err, errlen)) goto fail; continue; }
     if (bind(f, &y->attn_norm, "attn_norm.weight", l, 1, err, errlen) || bind(f, &y->wq, "attn_q.weight", l, 2, err, errlen) || bind(f, &y->wk, "attn_k.weight", l, 2, err, errlen) ||
         bind(f, &y->wv, "attn_v.weight", l, 2, err, errlen) || bind(f, &y->wo, "attn_output.weight", l, 2, err, errlen) || (f->qk_mode && bind(f, &y->qn, "attn_q_norm.weight", l, 1, err, errlen)) ||
         (f->qk_mode && bind(f, &y->kn, "attn_k_norm.weight", l, 1, err, errlen)) || bind(f, &y->ffn_norm, "ffn_norm.weight", l, 1, err, errlen)) goto fail;
@@ -156,7 +208,8 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
     if (!y->attn_norm_f || !y->ffn_norm_f || (f->qk_mode && (!y->qn_f || !y->kn_f)) || (!f->dense && !y->router_f) || (f->qkv_bias && (!y->bq_f || !y->bk_f || !y->bv_f))) { snprintf(err, errlen, "out of memory"); goto fail; }
     for (int e = 0; e < f->n_expert; e++) cl_dequant_row(y->router.type, y->router.p + (size_t)e * cl_row_bytes(y->router.type, (uint64_t)f->n_embd), y->router_f + (size_t)e * f->n_embd, f->n_embd);
   }
-  size_t kvn = (size_t)f->n_layer * f->n_ctx_max * f->n_kvw;
+  if (!f->hybrid) f->n_kv_layers = f->n_layer;
+  size_t kvn = (size_t)f->n_kv_layers * f->n_ctx_max * f->n_kvw;
   size_t E = (size_t)f->n_embd;
   f->kc = calloc(kvn, sizeof(float)); f->vc = calloc(kvn, sizeof(float));
   f->x = calloc(E, 4); f->xn = calloc(E, 4); f->q = calloc((size_t)f->n_q, 4); f->k = calloc((size_t)f->n_kvw, 4); f->v = calloc((size_t)f->n_kvw, 4); f->att = calloc((size_t)f->n_q, 4);
@@ -165,6 +218,12 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   f->xq_ffk = calloc((size_t)f->n_used + 1, sizeof(cl_xq));
   if (!f->xq_ffk || !cl_xq_init(&f->xq_e, f->n_embd) || !cl_xq_init(&f->xq_q, f->n_q) || !cl_xq_init(&f->xq_ff, f->n_ff_exp)) { snprintf(err, errlen, "out of memory"); goto fail; }
   for (int k = 0; k < f->n_used; k++) if (!cl_xq_init(&f->xq_ffk[k], f->n_ff_exp)) { snprintf(err, errlen, "out of memory"); goto fail; }
+  if (f->hybrid) {
+    const int CC = 2 * f->ssm_state * f->ssm_groups + f->ssm_state * f->ssm_heads;
+    f->conv_state = calloc((size_t)f->n_rec * CC * (f->ssm_conv - 1), 4); f->ssm_st = calloc((size_t)f->n_rec * f->ssm_heads * f->ssm_state * f->ssm_state, 4);
+    f->qg = calloc((size_t)2 * f->n_q, 4); f->qkv = calloc((size_t)CC, 4); f->cvo = calloc((size_t)CC, 4); f->zbuf = calloc((size_t)f->ssm_inner, 4); f->ab = calloc((size_t)2 * f->ssm_heads, 4);
+    if (!f->conv_state || !f->ssm_st || !f->qg || !f->qkv || !f->cvo || !f->zbuf || !f->ab || !cl_xq_init(&f->xq_ss, f->ssm_inner)) { snprintf(err, errlen, "out of memory"); goto fail; }
+  }
   if (!f->kc || !f->vc || !f->x || !f->xn || !f->q || !f->k || !f->v || !f->att || !f->scores || !f->moe || !f->hg || !f->hu || !f->hd || !f->rl || !f->rlogit) { snprintf(err, errlen, "out of memory"); goto fail; }
   if (f->dense && opts && (opts->cache_bytes || opts->smart.enabled)) { snprintf(err, errlen, "this model is dense (it has no experts), so there is nothing to stream or substitute: --cache-mb and --smart apply to mixture-of-experts models only"); goto fail; }
   { long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
@@ -201,8 +260,9 @@ fail:
 }
 
 void cl_fwd_close(cl_fwd *f) {
-  if (f->L) for (int l = 0; l < f->n_layer; l++) { free(f->L[l].attn_norm_f); free(f->L[l].ffn_norm_f); free(f->L[l].bq_f); free(f->L[l].bk_f); free(f->L[l].bv_f); free(f->L[l].qn_f); free(f->L[l].kn_f); free(f->L[l].router_f); }
-  free(f->L); free(f->out_norm_f); free(f->rope_factors);
+  if (f->L) for (int l = 0; l < f->n_layer; l++) { free(f->L[l].attn_norm_f); free(f->L[l].ffn_norm_f); free(f->L[l].bq_f); free(f->L[l].bk_f); free(f->L[l].bv_f); free(f->L[l].qn_f); free(f->L[l].kn_f); free(f->L[l].router_f); free(f->L[l].ssm_a_f); free(f->L[l].ssm_dt_f); free(f->L[l].ssm_norm_f); free(f->L[l].conv_f); }
+  free(f->L); free(f->out_norm_f); free(f->rope_factors); free(f->conv_state); free(f->ssm_st); free(f->qg); free(f->qkv); free(f->cvo); free(f->zbuf); free(f->ab);
+  if (f->hybrid) cl_xq_free(&f->xq_ss);
   free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
   cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_q); cl_xq_free(&f->xq_ff);
   if (f->xq_ffk) for (int k = 0; k < f->n_used; k++) cl_xq_free(&f->xq_ffk[k]);
@@ -214,7 +274,14 @@ void cl_fwd_close(cl_fwd *f) {
   memset(f, 0, sizeof *f);
 }
 
-void cl_fwd_reset(cl_fwd *f) { f->pos = 0; }
+void cl_fwd_reset(cl_fwd *f) {
+  f->pos = 0;
+  if (f->hybrid) {   /* the recurrent state is the conversation: forgetting it means zeroing it */
+    const size_t CC = (size_t)(2 * f->ssm_state * f->ssm_groups + f->ssm_state * f->ssm_heads);
+    memset(f->conv_state, 0, (size_t)f->n_rec * CC * (size_t)(f->ssm_conv - 1) * 4);
+    memset(f->ssm_st, 0, (size_t)f->n_rec * f->ssm_heads * f->ssm_state * f->ssm_state * 4);
+  }
+}
 
 static void rmsnorm(float *out, const float *x, const float *w, int n, float eps) {
   double ss = 0;
@@ -248,11 +315,127 @@ static int resident_cb(void *ctx, int expert) {
   return cl_xs_resident(c->xs, c->layer, expert);
 }
 
+static float sigmoidf(float x) { return 1.0f / (1.0f + expf(-x)); }
+static float siluf(float x) { return x / (1.0f + expf(-x)); }
+static float softplusf(float x) { return x > 20.0f ? x : logf(1.0f + expf(x)); }   /* ggml's softplus */
+
+/* x / sqrt(sum(x^2) + eps): what llama.cpp's build_gdn_l2_norm computes (rms_norm with eps / n, then scaled by 1 / sqrt(n)). */
+static void l2norm(float *x, int n, float eps) {
+  double ss = 0;
+  for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
+  float s = 1.0f / sqrtf((float)ss + eps);
+  for (int i = 0; i < n; i++) x[i] *= s;
+}
+
+/* One token through a qwen35 model. Layers 0, 1, 2, 4, 5, 6, ... are Gated DeltaNet layers: a causal depthwise convolution over the concatenated
+ * query / key / value projections, then, for each value head, the delta rule on a (state x state) matrix that decays by exp(g), is corrected towards
+ * the new value by beta, and is read out with the query. Every fourth layer is full attention whose query projection also produces an output gate
+ * (sigmoid), with per-head QK RMS-norm and rotary embeddings on the first rope_dim dimensions of each head. Both end in a SwiGLU feed-forward. */
+static int step_q35(cl_fwd *f, float *logits, char *err, size_t errlen) {
+  const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos, KW = f->n_kvw, GROUP = H / KVH, FF = f->n_ff_exp;
+  const int S = f->ssm_state, HK = f->ssm_groups, HV = f->ssm_heads, CK = f->ssm_conv, KEYD = S * HK, VALD = S * HV, CC = 2 * KEYD + VALD;
+  (void)err; (void)errlen;
+  for (int l = 0; l < f->n_layer; l++) {
+    cl_fwd_layer *y = &f->L[l];
+    rmsnorm(f->xn, f->x, y->attn_norm_f, E, f->rms_eps);
+    cl_xq_quantize(&f->xq_e, f->xn);
+    if (y->recurrent) {
+      float *beta = f->ab, *g = f->ab + HV;
+      { cl_mv j[4] = {mv(&y->attn_qkv, f->xn, &f->xq_e, f->qkv), mv(&y->attn_gate, f->xn, &f->xq_e, f->zbuf), mv(&y->ssm_beta, f->xn, &f->xq_e, beta), mv(&y->ssm_alpha, f->xn, &f->xq_e, g)}; cl_matvec_batch(j, 4); }
+      /* g currently holds alpha; beta holds the raw beta */
+      for (int h = 0; h < HV; h++) { beta[h] = sigmoidf(beta[h]); g[h] = softplusf(g[h] + y->ssm_dt_f[h]) * y->ssm_a_f[h]; }
+      /* causal depthwise convolution (kernel CK, oldest tap first), then SiLU; the last CK - 1 inputs stay as the state */
+      float *cs = f->conv_state + (size_t)y->rec_idx * CC * (CK - 1);
+      for (int c = 0; c < CC; c++) {
+        float *st = cs + (size_t)c * (CK - 1);
+        const float *w = y->conv_f + (size_t)c * CK;
+        float acc = 0;
+        for (int k = 0; k < CK - 1; k++) acc += st[k] * w[k];
+        acc += f->qkv[c] * w[CK - 1];
+        for (int k = 0; k + 1 < CK - 1; k++) st[k] = st[k + 1];
+        st[CK - 2] = f->qkv[c];
+        f->cvo[c] = siluf(acc);
+      }
+      float *q = f->cvo, *k = f->cvo + KEYD, *v = f->cvo + 2 * KEYD;
+      for (int gi = 0; gi < HK; gi++) { l2norm(q + gi * S, S, f->rms_eps); l2norm(k + gi * S, S, f->rms_eps); }
+      const float qscale = 1.0f / sqrtf((float)S);
+      float *st = f->ssm_st + (size_t)y->rec_idx * HV * S * S, *out = f->att;
+      for (int h = 0; h < HV; h++) {
+        const int kh = h % HK;   /* the key heads are repeated across the value heads in tiles (ggml_repeat), not in pairs */
+        const float *kk = k + kh * S, *qq = q + kh * S, *vv = v + h * S;
+        float *sm = st + (size_t)h * S * S;
+        const float eg = expf(g[h]), bh = beta[h];
+        for (int j = 0; j < S; j++) {
+          float *sj = sm + (size_t)j * S;   /* sj[i]: key dimension i of value dimension j */
+          float sk = 0;
+          for (int i = 0; i < S; i++) { sj[i] *= eg; sk += sj[i] * kk[i]; }
+          const float d = (vv[j] - sk) * bh;
+          float o = 0;
+          for (int i = 0; i < S; i++) { sj[i] += kk[i] * d; o += sj[i] * qq[i]; }
+          out[h * S + j] = o * qscale;
+        }
+      }
+      /* gated RMS-norm: norm(out) * silu(z), per value head */
+      for (int h = 0; h < HV; h++) {
+        float *o = out + h * S;
+        rmsnorm(o, o, y->ssm_norm_f, S, f->rms_eps);
+        const float *z = f->zbuf + h * S;
+        for (int i = 0; i < S; i++) o[i] *= siluf(z[i]);
+      }
+      cl_xq_quantize(&f->xq_ss, out);
+      { cl_mv j = mv(&y->ssm_out, out, &f->xq_ss, f->hd); cl_matvec_batch(&j, 1); }
+    } else {
+      { cl_mv j[3] = {mv(&y->wq, f->xn, &f->xq_e, f->qg), mv(&y->wk, f->xn, &f->xq_e, f->k), mv(&y->wv, f->xn, &f->xq_e, f->v)}; cl_matvec_batch(j, 3); }
+      for (int h = 0; h < H; h++) { float *qh = f->qg + (size_t)h * 2 * hd; rmsnorm(qh, qh, y->qn_f, hd, f->rms_eps); rope_neox(qh, f->rope_dim, pos, f->rope_base, NULL); }
+      for (int h = 0; h < KVH; h++) { float *kh = f->k + (size_t)h * hd; rmsnorm(kh, kh, y->kn_f, hd, f->rms_eps); rope_neox(kh, f->rope_dim, pos, f->rope_base, NULL); }
+      float *kc = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW;
+      memcpy(kc, f->k, (size_t)KW * 4); memcpy(vc, f->v, (size_t)KW * 4);
+      for (int h = 0; h < H; h++) {
+        const float *qh = f->qg + (size_t)h * 2 * hd, *gate = qh + hd;
+        const int kvo = (h / GROUP) * hd;
+        float mx = -INFINITY;
+        for (int t = 0; t <= pos; t++) {
+          const float *kt = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
+          float sc = 0;
+          for (int i = 0; i < hd; i++) sc += qh[i] * kt[i];
+          f->scores[t] = sc * f->attn_scale;
+          if (f->scores[t] > mx) mx = f->scores[t];
+        }
+        float sum = 0;
+        for (int t = 0; t <= pos; t++) { f->scores[t] = expf(f->scores[t] - mx); sum += f->scores[t]; }
+        float *oh = f->att + h * hd;
+        memset(oh, 0, (size_t)hd * 4);
+        for (int t = 0; t <= pos; t++) {
+          const float *vt = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
+          const float p = f->scores[t] / sum;
+          for (int i = 0; i < hd; i++) oh[i] += p * vt[i];
+        }
+        for (int i = 0; i < hd; i++) oh[i] *= sigmoidf(gate[i]);
+      }
+      cl_xq_quantize(&f->xq_q, f->att);
+      { cl_mv j = mv(&y->wo, f->att, &f->xq_q, f->hd); cl_matvec_batch(&j, 1); }
+    }
+    for (int i = 0; i < E; i++) f->x[i] += f->hd[i];
+    rmsnorm(f->xn, f->x, y->ffn_norm_f, E, f->rms_eps);   /* post_attention_norm */
+    cl_xq_quantize(&f->xq_e, f->xn);
+    { cl_mv j[2] = {mv(&y->gate, f->xn, &f->xq_e, f->hg), mv(&y->up, f->xn, &f->xq_e, f->hu)}; cl_matvec_batch(j, 2); }
+    for (int i = 0; i < FF; i++) f->hg[i] = siluf(f->hg[i]) * f->hu[i];
+    cl_xq_quantize(&f->xq_ff, f->hg);
+    { cl_mv j = mv(&y->down, f->hg, &f->xq_ff, f->hd); cl_matvec_batch(&j, 1); }
+    for (int i = 0; i < E; i++) f->x[i] += f->hd[i];
+  }
+  rmsnorm(f->xn, f->x, f->out_norm_f, E, f->rms_eps);
+  cl_xq_quantize(&f->xq_e, f->xn);
+  { cl_mv j = mv(&f->output, f->xn, &f->xq_e, logits); cl_matvec_batch(&j, 1); }
+  return 0;
+}
+
 int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *err, size_t errlen) {
   if (token < 0 || token >= f->n_vocab) { snprintf(err, errlen, "token %d is outside the vocabulary", token); return 1; }
   if (f->pos >= f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
   const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos, KW = f->n_kvw, GROUP = f->n_head / f->n_head_kv;
   cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)token * cl_row_bytes(f->tok_embd.type, (uint64_t)E), f->x, E);
+  if (f->hybrid) { if (step_q35(f, logits, err, errlen)) return 1; f->pos++; return 0; }
   if (f->embed_scale != 1.0f) for (int i = 0; i < E; i++) f->x[i] *= f->embed_scale;
   if (f->pred_sel) for (int i = 0; i < f->n_layer * f->n_used; i++) f->pred_sel[i] = -1;
   if (f->xs && f->prefetch) for (int k = 0; k < f->prefetch_n; k++) { cl_xs_prefetch(f->xs, 0, f->prev_sel[k]); f->pred_sel[k] = f->prev_sel[k]; }   /* layer 0, as the previous token chose it (nothing else is known yet) */

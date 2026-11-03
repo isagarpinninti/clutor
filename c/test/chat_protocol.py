@@ -47,7 +47,7 @@ ref_ids = json.load(open(idf)); os.unlink(idf)
 expect = ref_ids["full_ids"][len(ref_ids["prompt_ids"]):]
 
 c = Chat()
-check(c.ready and c.ready["ev"] == "ready" and c.ready["nCtx"] == 256, "starts and reports itself", c.ready)
+check(c.ready and c.ready["ev"] == "ready" and 0 < c.ready["nCtx"] <= 256, "starts and reports itself (with the model's real context limit when it is below the request)", c.ready)
 a, text, d = c.say(prompt, max=12, temp=0)
 check(d["ids"] == expect and len(expect) > 0, "chat at temperature 0 matches generate token for token", f"{d['ids']} vs {expect}")
 check(d["finish"] in ("length", "stop") and d["tokens"] >= 1 and d["pos"] == a["pos"] + d["tokens"], "reports finish, tokens and position", d)

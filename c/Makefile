@@ -47,33 +47,38 @@ GOLDEN_Q3 = build/tiny_qwen3moe.gguf
 GOLDEN_GR = build/tiny_granitemoe.gguf
 GOLDEN_Q2 = build/tiny_qwen2.gguf
 GOLDEN_LL = build/tiny_llama.gguf
+GOLDEN_Q35 = build/tiny_qwen35.gguf   # default seed: the 8-bit path agrees to 5e-5 on it. Other seeds drift up to ~0.08 in the 8-bit path (rounding flips carried by the recurrent state); the float path agrees to 5e-5 on every seed tried
 golden-files: build
 	python3 test/tiny_olmoe.py write $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py write $(GOLDEN_Q3) --arch qwen3moe
 	python3 test/tiny_olmoe.py write $(GOLDEN_GR) --arch granitemoe
 	python3 test/tiny_olmoe.py write $(GOLDEN_Q2) --arch qwen2
 	python3 test/tiny_olmoe.py write $(GOLDEN_LL) --arch llama
+	python3 test/tiny_olmoe.py write $(GOLDEN_Q35) --arch qwen35
 golden: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q3) --arch qwen3moe
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GR) --arch granitemoe
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q2) --arch qwen2
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_LL) --arch llama
+	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q35) --arch qwen35
 # The chat protocol (the terminal UI's way into the engine) on every architecture, checked against `generate`.
 chat-test: $(BIN) golden-files
-	for g in $(GOLDEN_GGUF) $(GOLDEN_Q3) $(GOLDEN_GR) $(GOLDEN_Q2) $(GOLDEN_LL); do echo "== $$g"; python3 test/chat_protocol.py $(BIN) $$g || exit 1; done
+	for g in $(GOLDEN_GGUF) $(GOLDEN_Q3) $(GOLDEN_GR) $(GOLDEN_Q2) $(GOLDEN_LL) $(GOLDEN_Q35); do echo "== $$g"; python3 test/chat_protocol.py $(BIN) $$g || exit 1; done
 golden-paths: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q3) --arch qwen3moe
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GR) --arch granitemoe
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q2) --arch qwen2
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_LL) --arch llama
+	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q35) --arch qwen35
 	$(CC) $(PATH_FLAGS) -DCL_FORCE_SCALAR $(SRC) src/main.c -o build/engine-scalar $(LDLIBS)
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_Q3) --arch qwen3moe
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_GR) --arch granitemoe
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_Q2) --arch qwen2
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_LL) --arch llama
+	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_Q35) --arch qwen35
 ifeq ($(shell uname -m),arm64)
 	$(CC) $(PATH_FLAGS) -mcpu=native -DCL_NO_DOTPROD $(SRC) src/main.c -o build/engine-neon $(LDLIBS)
 	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_GGUF)
@@ -81,6 +86,7 @@ ifeq ($(shell uname -m),arm64)
 	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_GR) --arch granitemoe
 	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_Q2) --arch qwen2
 	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_LL) --arch llama
+	python3 test/tiny_olmoe.py check build/engine-neon $(GOLDEN_Q35) --arch qwen35
 endif
 
 # Mutation fuzzing of the file readers under ASan + UBSan: corrupt a valid model many ways, expect clean errors and never a crash or hang.

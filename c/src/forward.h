@@ -20,6 +20,9 @@ typedef struct { const uint8_t *p; uint32_t type; int rows, cols; } cl_w;   /* r
 typedef struct {
   cl_w attn_norm, wq, wk, wv, wo, qn, kn, ffn_norm, router, gate, up, down; /* gate/up/down are the fused expert tensors, or (dense models) the plain feed-forward matrices */
   cl_w bq, bk, bv;                          /* qwen2: biases of the query, key and value projections */
+  cl_w attn_qkv, attn_gate, ssm_alpha, ssm_beta, ssm_out;   /* qwen35: the Gated DeltaNet layers (recurrent); the other layers use wq/wk/wv/wo with a gated query */
+  float *ssm_a_f, *ssm_dt_f, *ssm_norm_f, *conv_f;
+  int recurrent, rec_idx, kv_idx;           /* qwen35: Gated DeltaNet layer or gated full attention; index among the recurrent layers / among the attention layers */
   float *bq_f, *bk_f, *bv_f;
   float *attn_norm_f, *qn_f, *kn_f, *ffn_norm_f, *router_f;
   uint64_t gate_slab, up_slab, down_slab;   /* bytes of one expert in each fused tensor */
@@ -57,6 +60,12 @@ typedef struct {
   int *pred_sel;           /* [layer][prefetch_n]: what was predicted for this token's layer, -1 for none */
   uint64_t pred_total, pred_hit; /* predicted experts, and how many of them the router then chose */
   int *prev_sel;           /* [layer][n_used]: the experts each layer chose for the previous token, -1 before the first */
+  int hybrid;              /* qwen35: three Gated DeltaNet (linear attention) layers, then one gated full-attention layer, repeating; a plain SwiGLU feed-forward in every layer */
+  int rope_dim;            /* dimensions of each head that are rotated (the first rope_dim); head_dim for every architecture but qwen35 */
+  int ssm_conv, ssm_state, ssm_groups, ssm_heads, ssm_inner, attn_interval, n_kv_layers, n_rec;
+  float *conv_state, *ssm_st;  /* per recurrent layer: the last (conv - 1) inputs of the causal convolution, and one state matrix per head */
+  float *qg, *qkv, *zbuf, *ab, *cvo;   /* qwen35 scratch */
+  cl_xq xq_ss;
   int pos;                 /* tokens already in the KV cache */
 } cl_fwd;
 

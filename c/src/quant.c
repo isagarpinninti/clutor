@@ -132,7 +132,7 @@ const char *cl_quant_path(void) {
   return "scalar";
 #endif
 }
-int cl_type_integer_dot(uint32_t t) { return t == CL_T_Q4_K || t == CL_T_Q6_K; }
+int cl_type_integer_dot(uint32_t t) { return t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K; }
 
 int cl_xq_init(cl_xq *q, int n) { q->n = n; q->b = n % 256 == 0 ? malloc((size_t)(n / 256) * sizeof(cl_q8k)) : NULL; return q->b != NULL; }
 void cl_xq_free(cl_xq *q) { free(q->b); q->b = NULL; q->n = 0; }
@@ -195,6 +195,47 @@ static float dot_q4_K(int nb, const b_q4_K *x, const cl_q8k *y) {
       for (int l = 0; l < 32; l++) { a += (q4[32 * g + l] & 0xF) * q8[64 * g + l]; b += (q4[32 * g + l] >> 4) * q8[64 * g + 32 + l]; }
       sumi += sc[2 * g] * a + sc[2 * g + 1] * b;
     }
+#endif
+    int32_t summs = 0;
+    for (int j = 0; j < 8; j++) summs += mn[j] * (y[i].bsums[2 * j] + y[i].bsums[2 * j + 1]);
+    sum += y[i].d * (cl_f16_to_f32(x[i].d) * (float)sumi - cl_f16_to_f32(x[i].dmin) * (float)summs);
+  }
+  return sum;
+}
+
+/* Q5_K: like Q4_K, but each weight is a 5-bit value (a nibble plus one bit from qh), so the unpacked values are 0..31. ggml's vec_dot_q5_K_q8_K computes the same integer sums. */
+static float dot_q5_K(int nb, const b_q5_K *x, const cl_q8k *y) {
+  float sum = 0;
+  for (int i = 0; i < nb; i++) {
+    uint8_t sc[8], mn[8], q[256];
+    for (int j = 0; j < 8; j++) scale_min_k4(j, x[i].scales, &sc[j], &mn[j]);
+    const uint8_t *ql = x[i].qs, *qh = x[i].qh;
+    uint8_t u1 = 1, u2 = 2;
+    for (int c = 0; c < 4; c++) {
+      for (int l = 0; l < 32; l++) {
+        q[64 * c + l] = (uint8_t)((ql[l] & 0xF) + (qh[l] & u1 ? 16 : 0));
+        q[64 * c + 32 + l] = (uint8_t)((ql[l] >> 4) + (qh[l] & u2 ? 16 : 0));
+      }
+      ql += 32; u1 = (uint8_t)(u1 << 2); u2 = (uint8_t)(u2 << 2);
+    }
+    const int8_t *q8 = y[i].qs;
+    int32_t sumi = 0;
+#ifdef CL_Q_NEON
+    for (int g = 0; g < 8; g++) sumi += sc[g] * (dot16(vld1q_s8((const int8_t *)q + 32 * g), vld1q_s8(q8 + 32 * g)) + dot16(vld1q_s8((const int8_t *)q + 32 * g + 16), vld1q_s8(q8 + 32 * g + 16)));
+#elif defined(CL_Q_AVX2)
+    {   /* the values are unsigned 0..31 and the activations signed: maddubs pair-sums are at most 31*127*2 and fit int16 */
+      __m256i acc = _mm256_setzero_si256();
+      for (int g = 0; g < 8; g++) {
+        __m256i v = _mm256_loadu_si256((const __m256i *)(const void *)(q + 32 * g)), a = _mm256_loadu_si256((const __m256i *)(const void *)(q8 + 32 * g));
+        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(v, a), _mm256_set1_epi16((short)sc[g])));
+      }
+      __m128i t = _mm_add_epi32(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
+      t = _mm_add_epi32(t, _mm_shuffle_epi32(t, _MM_SHUFFLE(1, 0, 3, 2)));
+      t = _mm_add_epi32(t, _mm_shuffle_epi32(t, _MM_SHUFFLE(2, 3, 0, 1)));
+      sumi = _mm_cvtsi128_si32(t);
+    }
+#else
+    for (int g = 0; g < 8; g++) { int32_t a = 0; for (int l = 0; l < 32; l++) a += q[32 * g + l] * q8[32 * g + l]; sumi += sc[g] * a; }
 #endif
     int32_t summs = 0;
     for (int j = 0; j < 8; j++) summs += mn[j] * (y[i].bsums[2 * j] + y[i].bsums[2 * j + 1]);
@@ -278,6 +319,7 @@ static void do_rows(const cl_mv *j, int r0, int r1) {
   uint64_t rb = cl_row_bytes(t, (uint64_t)j->cols);
   const uint8_t *w = j->w;
   if (t == CL_T_Q4_K && xq) for (int r = r0; r < r1; r++) j->out[r] = dot_q4_K(j->cols / 256, (const b_q4_K *)(const void *)(w + (size_t)r * rb), xq->b);
+  else if (t == CL_T_Q5_K && xq) for (int r = r0; r < r1; r++) j->out[r] = dot_q5_K(j->cols / 256, (const b_q5_K *)(const void *)(w + (size_t)r * rb), xq->b);
   else if (t == CL_T_Q6_K && xq) for (int r = r0; r < r1; r++) j->out[r] = dot_q6_K(j->cols / 256, (const b_q6_K *)(const void *)(w + (size_t)r * rb), xq->b);
   else {   /* any other type: dequantize a block at a time and use the float vector */
     uint32_t bl = cl_type_block(t), bb = cl_type_bytes(t);

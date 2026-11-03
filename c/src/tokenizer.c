@@ -185,8 +185,9 @@ cl_tok *cl_tok_load(const cl_meta *m, char *err, size_t errlen) {
     else if (pre.len == 5 && !memcmp(pre.p, "qwen2", 5)) pre_kind = 1;
     else if (pre.len == 6 && !memcmp(pre.p, "refact", 6)) pre_kind = 2;
     else if (pre.len == 9 && !memcmp(pre.p, "llama-bpe", 9)) pre_kind = 3;
+    else if (pre.len == 6 && !memcmp(pre.p, "qwen35", 6)) pre_kind = 1;   /* the qwen2 pattern with combining marks counted as letters, which is_letter already does */
   }
-  if (pre_kind < 0) { snprintf(err, errlen, "only the \"olmo\", \"qwen2\", \"refact\" and \"llama-bpe\" pre-tokenizers are implemented"); return NULL; }
+  if (pre_kind < 0) { snprintf(err, errlen, "only the \"olmo\", \"qwen2\", \"qwen35\", \"refact\" and \"llama-bpe\" pre-tokenizers are implemented"); return NULL; }
   cl_tok *t = calloc(1, sizeof *t);
   if (!t) { snprintf(err, errlen, "out of memory"); return NULL; }
   t->pre = pre_kind;

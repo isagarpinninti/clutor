@@ -45,6 +45,21 @@ describe("chat templates", () => {
     expect(renderChat(q3, msgs, { thinking: false }).endsWith("<|im_start|>assistant\n<think>\n\n</think>\n\n")).toBe(true);
     expect(renderChat(q3, msgs, { thinking: true }).endsWith("<|im_start|>assistant\n")).toBe(true);
   });
+  it("tells Qwen3.5's template (which opens the think block itself) from Qwen3's (which does not)", () => {
+    const q35 = "{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n    {%- if enable_thinking is defined and enable_thinking is false %}\n        {{- '<think>\\n\\n</think>\\n\\n' }}\n    {%- else %}\n        {{- '<think>\\n' }}\n    {%- endif %}\n{%- endif %}<|im_start|>";
+    expect(detectTemplate(q35)).toEqual({ family: "chatml", thinkTags: true, opensThink: true });
+    expect(detectTemplate("<|im_start|> <think> without an opening in the prompt")).toEqual({ family: "chatml", thinkTags: true });
+    const info = detectTemplate(q35);
+    const msgs2 = [{ role: "user" as const, content: "Hi" }];
+    expect(renderChat(info, msgs2, { thinking: true }).endsWith("<|im_start|>assistant\n<think>\n")).toBe(true);
+    expect(renderChat(info, msgs2, { thinking: false }).endsWith("<|im_start|>assistant\n<think>\n\n</think>\n\n")).toBe(true);
+  });
+  it("renders earlier replies the way they were generated, so the engine's cache stays valid across turns", () => {
+    const info = { family: "chatml" as const, thinkTags: true, opensThink: true };
+    const first = renderChat(info, [{ role: "user", content: "Hi" }], { thinking: false });
+    const next = renderChat(info, [{ role: "user", content: "Hi" }, { role: "assistant", content: "Hello!" }, { role: "user", content: "Again" }], { thinking: false });
+    expect(next.startsWith(`${first}Hello!<|im_end|>`)).toBe(true);
+  });
   it("closes earlier assistant turns, so a longer conversation extends the shorter one", () => {
     const info = { family: "chatml" as const, thinkTags: false };
     const first = renderChat(info, msgs);
