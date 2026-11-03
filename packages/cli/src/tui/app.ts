@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir, totalmem } from "node:os";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { BackendManager, buildLlamaArgs, findLlamaServer, probeLlamaServer } from "../backend";
 import { ConfigError, loadConfig, type ClutorConfig } from "../config";
 import { flagInt, flagString, parseArgs } from "../args";
@@ -10,7 +10,7 @@ import type { Io, SessionState } from "../cli";
 import { Region, THEMES, fit, makeStyle, stripAnsi, wrap, type ThemeName } from "./ansi";
 import { runAgentTask, type AgentHost } from "./agent";
 import { welcomeLines } from "./welcome";
-import { discoverModels, displayName, gb, type FoundModel } from "./discover";
+import { discoverModels, displayName, gb, modelFolders, type FoundModel } from "./discover";
 import { Editor, type Cmd } from "./editor";
 import { KeyParser } from "./keys";
 import { MarkdownStream } from "./markdown";
@@ -146,7 +146,8 @@ export async function runTui(o: TuiOptions): Promise<number> {
   const args = parseArgs(o.argv);
   const stateDir = join(o.home ?? homedir(), ".clutor");
   const settingsFile = join(stateDir, "settings.json");
-  const settings = ((): { theme?: ThemeName; mode?: Mode } => { try { return JSON.parse(readFileSync(settingsFile, "utf8")) as { theme?: ThemeName; mode?: Mode }; } catch { return {}; } })();
+  type Settings = { theme?: ThemeName; mode?: Mode; lastModel?: string; modelDirs?: string[] };
+  const settings = ((): Settings => { try { return JSON.parse(readFileSync(settingsFile, "utf8")) as Settings; } catch { return {}; } })();
   const saveSettings = (): void => { try { mkdirSync(stateDir, { recursive: true, mode: 0o700 }); writeFileSync(settingsFile, JSON.stringify(settings), { mode: 0o600 }); } catch { /* a setting is a convenience */ } };
   const st = makeStyle(colour, THEMES.includes(settings.theme as ThemeName) ? (settings.theme as ThemeName) : "dark");
   let mode: Mode = flagString(args, "mode") === "agent" ? "agent" : "chat";
@@ -355,17 +356,22 @@ export async function runTui(o: TuiOptions): Promise<number> {
       if (!existsSync(p)) { fail(`${p} does not exist`); return undefined; }
       return startLocal({ path: p, name: displayName(p), bytes: statSync(p).size });
     }
-    const found = discoverModels(cwd, config.models);
+    const found = discoverModels(cwd, config.models, settings.modelDirs ?? []);
     if (found.length === 0) {
-      fail("no .gguf model found. Put one in ./models (or ./Models), pass --model <file.gguf>, or run /pull to download a small one.");
+      fail(`no .gguf model found. Looked in: ${modelFolders(cwd, config.models, settings.modelDirs ?? []).join(", ")}. Put a model in one of them, pass --model <file.gguf>, or run /pull to download a small one.`);
       return undefined;
     }
-    let m = found[0] as FoundModel;
-    if (found.length > 1 || forcePick) {
-      const i = await pick("Choose a model", found.map((f) => ({ label: f.name, hint: gb(f.bytes) })), Math.max(0, found.findIndex((f) => f.path === target?.path)));
+    const last = found.findIndex((f) => f.path === (target?.path ?? settings.lastModel));
+    let m = found[last >= 0 ? last : 0] as FoundModel;
+    // With only one model, or one chosen last time (and no request to choose), there is nothing to ask; /model changes it.
+    if (forcePick || (found.length > 1 && last < 0)) {
+      const i = await pick("Choose a model", found.map((f) => ({ label: f.name, hint: gb(f.bytes) })), Math.max(0, last));
       if (i === undefined) return undefined;
       m = found[i] as FoundModel;
     }
+    settings.lastModel = m.path;
+    settings.modelDirs = [...new Set([dirname(m.path), ...(settings.modelDirs ?? [])])].slice(0, 5);
+    saveSettings();
     return startLocal(m);
   };
 

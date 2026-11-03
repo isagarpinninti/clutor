@@ -1,6 +1,7 @@
-import { readdirSync, statSync, type Dirent } from "node:fs";
+import { existsSync, readdirSync, statSync, type Dirent } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export interface FoundModel { path: string; name: string; bytes: number }
 
@@ -30,15 +31,27 @@ function laterPart(name: string): boolean {
 
 export function displayName(path: string): string { return basename(path).replace(/\.gguf$/i, "").replace(/-?\d{5}-of-\d{5}$/, ""); }
 
-/** The folders a first run looks in: the configured models folder, `Models` beside it, and ~/.clutor/models. */
-export function modelFolders(root: string, configured: string): string[] {
-  return [...new Set([resolve(root, configured), resolve(root, "models"), resolve(root, "Models"), join(homedir(), ".clutor", "models")])];
+/** The clutor checkout this command runs from (…/packages/cli/dist → the repository), or undefined when it is an installed package. */
+export function checkoutRoot(): string | undefined {
+  try {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+    return existsSync(join(root, "c", "Makefile")) && existsSync(join(root, "packages", "cli")) ? root : undefined;
+  } catch { return undefined; }
 }
 
-export function discoverModels(root: string, configured: string): FoundModel[] {
+/**
+ * Where models are looked for: the configured folder and `models` / `Models` under the folder you are in, ~/.clutor/models, the `models` and
+ * `Models` folders of the clutor checkout this command runs from (so it works from any directory), and folders models were chosen from before.
+ */
+export function modelFolders(root: string, configured: string, remembered: string[] = []): string[] {
+  const co = checkoutRoot();
+  return [...new Set([resolve(root, configured), resolve(root, "models"), resolve(root, "Models"), join(homedir(), ".clutor", "models"), ...(co ? [join(co, "models"), join(co, "Models")] : []), ...remembered])];
+}
+
+export function discoverModels(root: string, configured: string, remembered: string[] = []): FoundModel[] {
   const seen = new Set<string>();
   const out: FoundModel[] = [];
-  for (const d of modelFolders(root, configured)) {
+  for (const d of modelFolders(root, configured, remembered)) {
     for (const m of findGguf(d)) {
       let key = m.path;
       try { key = `${statSync(m.path).dev}:${statSync(m.path).ino}`; } catch { /* keep the path */ }

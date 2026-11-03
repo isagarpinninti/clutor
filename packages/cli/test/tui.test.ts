@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { Region, fit, makeStyle, stripAnsi, width, wrap } from "../src/tui/ansi";
 import { Editor, layout, type Cmd } from "../src/tui/editor";
-import { findGguf } from "../src/tui/discover";
+import { checkoutRoot, discoverModels, findGguf, modelFolders } from "../src/tui/discover";
 import { KeyParser } from "../src/tui/keys";
 import { MarkdownStream } from "../src/tui/markdown";
 import { spinnerLine } from "../src/tui/spinner";
@@ -261,6 +261,17 @@ describe("files", () => {
     mkdirSync(join(d, "Qwen", "x"), { recursive: true });
     for (const f of ["Qwen/x/a-Q4.gguf", "b.gguf", "mmproj-b.gguf", "c-00002-of-00003.gguf", "c-00001-of-00003.gguf", "notes.txt"]) writeFileSync(join(d, f), "x");
     expect(findGguf(d).map((m) => m.name).sort()).toEqual(["a-Q4", "b", "c"]);
+  });
+  it("looks beyond the current folder: the checkout's models folders and folders remembered from earlier choices", () => {
+    const here = tmp(), elsewhere = tmp();
+    writeFileSync(join(elsewhere, "remembered.gguf"), "x");
+    expect(discoverModels(here, "models")).toEqual(discoverModels(here, "models").filter(() => true));   // nothing under `here`, whatever else is found
+    expect(discoverModels(here, "models", [elsewhere]).map((m) => m.name)).toContain("remembered");
+    const folders = modelFolders(here, "models", [elsewhere]);
+    expect(folders).toContain(elsewhere);
+    expect(folders).toContain(join(here, "Models"));
+    const co = checkoutRoot();
+    if (co) { expect(folders).toContain(join(co, "models")); expect(folders).toContain(join(co, "Models")); }
   });
   it("attaches @files inside the folder only", () => {
     const d = tmp();

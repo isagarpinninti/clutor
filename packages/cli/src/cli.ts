@@ -16,6 +16,7 @@ import { formatGates, formatPlan, formatSimulation, pct, table, tps } from "./fo
 import { EngineError, buildEngine, installPrebuilt, run, engineInfo, engineRun, engineStream, findEngine, type StreamOptions, type StreamReport } from "./engine";
 import { DOWNLOADS, downloadFile, downloadUrl, listLocalModels, resolveModel } from "./models";
 import { createClutorServer } from "./server";
+import { discoverModels, modelFolders } from "./tui/discover";
 
 export interface Io {
   out(line: string): void;
@@ -159,11 +160,12 @@ function init(io: Io, dirArg?: string): number {
 async function models(io: Io, args: ReturnType<typeof parseArgs>, dirArg: string | undefined, json: boolean): Promise<number> {
   const { config, root } = cfgFor(args, io, dirArg);
   const local = await listLocalModels(resolve(root, config.models));
-  if (json) { io.out(JSON.stringify({ local, catalog: CATALOG.map((c) => c.id) }, null, 2)); return 0; }
+  const found = discoverModels(root, config.models);
+  if (json) { io.out(JSON.stringify({ local, found: found.map((m) => ({ file: m.path, bytes: m.bytes })), catalog: CATALOG.map((c) => c.id) }, null, 2)); return 0; }
   io.out("Catalog (architectures you can plan for before downloading anything):");
   io.out(table(CATALOG.map((c) => [c.id, c.name, `${c.publishedParamsB}B`, c.experts ? `${c.experts} experts, ${c.expertsUsed} used` : "dense"])));
   io.out("");
-  io.out(local.length ? `In ${resolve(root, config.models)}:\n${table(local.map((m) => [m.file, fmtBytes(m.bytes)]))}` : `No .gguf files in ${resolve(root, config.models)}.`);
+  io.out(found.length ? `Model files found:\n${table(found.map((m) => [m.path, fmtBytes(m.bytes)]))}` : `No .gguf files found. Looked in: ${modelFolders(root, config.models).join(", ")}.`);
   return 0;
 }
 
