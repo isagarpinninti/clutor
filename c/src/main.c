@@ -4,6 +4,8 @@
 #include "kernel.h"
 #include "forward.h"
 #include "tokenizer.h"
+#include "chat.h"
+#include "plat.h"
 #include "quant.h"
 #include <math.h>
 #include <time.h>
@@ -213,18 +215,7 @@ static void json_str(const char *p, int n) {
 
 static int load_tok(const char *path, cl_meta *meta, uint8_t **map, size_t *msize, cl_tok **tok) {
   char err[256];
-  FILE *fp = fopen(path, "rb");
-  if (!fp) { fprintf(stderr, "cannot open %s\n", path); return 1; }
-  fseek(fp, 0, SEEK_END); long sz = ftell(fp); fclose(fp);
-  /* the metadata sits at the front of the file; read only the first part that holds it */
-  size_t want = (size_t)sz < ((size_t)64 << 20) ? (size_t)sz : ((size_t)64 << 20);
-  *map = malloc(want); *msize = want;
-  fp = fopen(path, "rb");
-  if (!*map || !fp || fread(*map, 1, want, fp) != want) { if (fp) fclose(fp); fprintf(stderr, "cannot read %s\n", path); return 1; }
-  fclose(fp);
-  if (cl_meta_parse(meta, *map, want, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
-  *tok = cl_tok_load(meta, err, sizeof err);
-  if (!*tok) { fprintf(stderr, "%s\n", err); return 1; }
+  if (cl_load_tokenizer(path, meta, map, msize, tok, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
   return 0;
 }
 
@@ -243,23 +234,9 @@ static int cmd_tokenize(int argc, char **argv) {
 
 /* --cache-mb N turns on streaming: experts come from disk through an N MiB cache. --prefetch on|off, --policy, --io-threads, --no-os-cache tune it. */
 static cl_fwd_opts fwd_opts(int argc, char **argv) {
-  cl_fwd_opts o = {0};
-  o.cache_bytes = (uint64_t)(num(argc, argv, "--cache-mb", 0) * 1048576.0);
-  const char *pf = arg(argc, argv, "--prefetch");
-  o.prefetch = pf ? (!strcmp(pf, "on") || !strcmp(pf, "prev") ? 1 : !strcmp(pf, "ahead") ? 2 : 0) : 0;   /* off by default: previous-token prefetch lost on every disk-bound measurement (docs/NATIVE_ENGINE.md) */
-  const char *pol = arg(argc, argv, "--policy");
-  o.policy = !pol || !strcmp(pol, "adaptive") ? CL_ADAPTIVE : !strcmp(pol, "lru") ? CL_LRU : CL_WTINYLFU;
-  o.io_threads = (int)num(argc, argv, "--io-threads", 3);
-  o.stage_slots = (int)num(argc, argv, "--stage", 0);
-  o.prefetch_n = (int)num(argc, argv, "--prefetch-n", 0);
-  o.os_bypass = flag(argc, argv, "--no-os-cache");
-  o.lock = flag(argc, argv, "--lock");
-  const char *sm = arg(argc, argv, "--smart");
-  if (sm && strcmp(sm, "off")) {
-    int J, M; double tau;
-    if (sscanf(sm, "%d,%d,%lf", &J, &M, &tau) != 3 || J < 0 || M < 1 || tau < 0) { fprintf(stderr, "--smart wants J,M,TAU (for example 4,16,0.02) or off\n"); exit(2); }
-    o.smart.enabled = 1; o.smart.J = J; o.smart.M = M; o.smart.tau = tau;
-  }
+  char err[256];
+  cl_fwd_opts o = cl_fwd_opts_from_args(argc, (const char *const *)argv, err, sizeof err);
+  if ((int)o.policy == -1) { fprintf(stderr, "%s\n", err); exit(2); }
   return o;
 }
 
@@ -468,23 +445,25 @@ static int cmd_quality(int argc, char **argv) {
 }
 
 
-/* ---- chat: a long-lived conversation over stdin/stdout ------------------------------------------------------------------------------------------------
- * The caller (the clutor terminal UI) formats the chat template and sends text; this process tokenizes it, keeps the KV cache between calls so a
- * turn only pays for its new tokens, samples the reply and streams it. Lines in, lines out, each one JSON object. */
+/* ---- chat: the library's conversation (chat.c) served over standard input and output, one JSON object per line ---- */
 static struct { char *buf; size_t len, cap; int eof; } ib;
 
 /* Reads whatever is available (block: wait for at least one byte). Returns 1 if bytes arrived, 0 if none, -1 at end of input. */
 static int ib_fill(int block) {
   if (ib.eof) return -1;
-  if (!block) { struct pollfd p = {0, POLLIN, 0}; int r = poll(&p, 1, 0); if (r < 0 && errno == EINTR) return 0; if (r <= 0) return 0; }
+  if (!block && !cl_stdin_ready()) return 0;
   while (ib.cap - ib.len < 65536) {
     if (ib.cap > ((size_t)256 << 20)) return -1;
     ib.cap = ib.cap ? ib.cap * 2 : (1u << 20);
     ib.buf = realloc(ib.buf, ib.cap);
     if (!ib.buf) return -1;
   }
-  ssize_t n;
-  do n = read(0, ib.buf + ib.len, ib.cap - ib.len); while (n < 0 && errno == EINTR);
+  int n;
+#ifdef _WIN32
+  n = _read(0, ib.buf + ib.len, (unsigned)(ib.cap - ib.len));
+#else
+  do n = (int)read(0, ib.buf + ib.len, ib.cap - ib.len); while (n < 0 && errno == EINTR);
+#endif
   if (n <= 0) { ib.eof = 1; return -1; }
   ib.len += (size_t)n;
   return 1;
@@ -498,6 +477,7 @@ static char *ib_line(void) {
       size_t n = (size_t)(nl - ib.buf);
       char *s = malloc(n + 1);
       memcpy(s, ib.buf, n); s[n] = 0;
+      if (n && s[n - 1] == '\r') s[n - 1] = 0;
       memmove(ib.buf, nl + 1, ib.len - n - 1); ib.len -= n + 1;
       return s;
     }
@@ -506,7 +486,8 @@ static char *ib_line(void) {
 }
 
 /* True if a {"op":"cancel"} line has arrived (it is removed); input that has ended counts as a cancel too. Other lines wait where they are. */
-static int ib_cancelled(void) {
+static int ib_cancelled(void *unused) {
+  (void)unused;
   int r = ib_fill(0);
   if (r < 0 && ib.len == 0) return 1;
   size_t start = 0;
@@ -523,227 +504,22 @@ static int ib_cancelled(void) {
   return 0;
 }
 
-/* Finds the value of a top-level key in one JSON object line. Walks the object, so a key name inside a string value is never mistaken for a key. */
-static const char *jfind(const char *j, const char *key) {
-  size_t kl = strlen(key);
-  while (*j && *j != '{') j++;
-  if (!*j) return NULL;
-  j++;
-  for (;;) {
-    while (*j == ' ' || *j == ',' || *j == '\t') j++;
-    if (*j != '"') return NULL;
-    const char *ks = ++j;
-    while (*j && *j != '"') j += *j == '\\' && j[1] ? 2 : 1;
-    if (!*j) return NULL;
-    size_t n = (size_t)(j - ks);
-    j++;
-    while (*j == ' ') j++;
-    if (*j != ':') return NULL;
-    j++;
-    while (*j == ' ') j++;
-    if (n == kl && !strncmp(ks, key, kl)) return j;
-    if (*j == '"') { j++; while (*j && *j != '"') j += *j == '\\' && j[1] ? 2 : 1; if (!*j) return NULL; j++; }
-    else { int depth = 0; while (*j && (depth > 0 || (*j != ',' && *j != '}'))) { if (*j == '{' || *j == '[') depth++; if (*j == '}' || *j == ']') depth--; j++; } }
-  }
-}
-static double jnum(const char *j, const char *key, double d) { const char *v = jfind(j, key); return v && (*v == '-' || (*v >= '0' && *v <= '9')) ? atof(v) : d; }
-
-static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
-static int put_utf8(char *o, unsigned cp) {
-  if (cp < 0x80) { o[0] = (char)cp; return 1; }
-  if (cp < 0x800) { o[0] = (char)(0xC0 | cp >> 6); o[1] = (char)(0x80 | (cp & 63)); return 2; }
-  if (cp < 0x10000) { o[0] = (char)(0xE0 | cp >> 12); o[1] = (char)(0x80 | ((cp >> 6) & 63)); o[2] = (char)(0x80 | (cp & 63)); return 3; }
-  o[0] = (char)(0xF0 | cp >> 18); o[1] = (char)(0x80 | ((cp >> 12) & 63)); o[2] = (char)(0x80 | ((cp >> 6) & 63)); o[3] = (char)(0x80 | (cp & 63)); return 4;
-}
-/* A JSON string value decoded to UTF-8 (malloc'd), or NULL when the key is missing or not a string. */
-static char *jstr(const char *j, const char *key, size_t *outlen) {
-  const char *v = jfind(j, key);
-  if (!v || *v != '"') return NULL;
-  v++;
-  size_t cap = strlen(v) + 1, n = 0;
-  char *o = malloc(cap);
-  while (*v && *v != '"') {
-    if (*v != '\\') { o[n++] = *v++; continue; }
-    v++;
-    switch (*v) {
-      case 'n': o[n++] = '\n'; v++; break; case 't': o[n++] = '\t'; v++; break; case 'r': o[n++] = '\r'; v++; break;
-      case 'b': o[n++] = '\b'; v++; break; case 'f': o[n++] = '\f'; v++; break;
-      case 'u': {
-        unsigned cp = 0; int ok = 1;
-        for (int i = 1; i <= 4; i++) { int h = hexv(v[i]); if (h < 0) ok = 0; else cp = cp << 4 | (unsigned)h; }
-        if (!ok) { o[n++] = '?'; v++; break; }
-        v += 5;
-        if (cp >= 0xD800 && cp < 0xDC00 && v[0] == '\\' && v[1] == 'u') {
-          unsigned lo = 0; int ok2 = 1;
-          for (int i = 2; i <= 5; i++) { int h = hexv(v[i]); if (h < 0) ok2 = 0; else lo = lo << 4 | (unsigned)h; }
-          if (ok2 && lo >= 0xDC00 && lo < 0xE000) { cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); v += 6; }
-        }
-        n += (size_t)put_utf8(o + n, cp);
-        break;
-      }
-      case 0: break;
-      default: o[n++] = *v++; break;
-    }
-  }
-  o[n] = 0;
-  if (outlen) *outlen = n;
-  return o;
-}
-
-static uint64_t rng_s = 88172645463325252ull;
-static double rnd(void) { rng_s ^= rng_s >> 12; rng_s ^= rng_s << 25; rng_s ^= rng_s >> 27; return (double)((rng_s * 2685821657736338717ull) >> 11) / 9007199254740992.0; }
-
-/* temp <= 0: the most likely token. Otherwise: repetition penalty over `recent`, the top_k best, temperature, top_p, then a draw. */
-static int sample_token(float *logits, int n, double temp, int top_k, double top_p, double rep, const int32_t *recent, int nrecent) {
-  if (rep > 1.0) for (int i = 0; i < nrecent; i++) { float *l = &logits[recent[i]]; *l = *l > 0 ? (float)(*l / rep) : (float)(*l * rep); }
-  if (temp <= 0) { int b = 0; for (int i = 1; i < n; i++) if (logits[i] > logits[b]) b = i; return b; }
-  if (top_k < 1) top_k = 1;
-  if (top_k > 200) top_k = 200;
-  int idx[200]; float val[200]; int k = 0;
-  for (int i = 0; i < n; i++) {
-    float v = logits[i];
-    if (k == top_k && v <= val[k - 1]) continue;
-    int p = k < top_k ? k++ : k - 1;
-    while (p > 0 && val[p - 1] < v) { val[p] = val[p - 1]; idx[p] = idx[p - 1]; p--; }
-    val[p] = v; idx[p] = i;
-  }
-  double mx = val[0], sum = 0, pr[200];
-  for (int i = 0; i < k; i++) { pr[i] = exp((val[i] - mx) / temp); sum += pr[i]; }
-  double cum = 0; int keep = k;
-  for (int i = 0; i < k; i++) { cum += pr[i] / sum; if (cum >= top_p) { keep = i + 1; break; } }
-  double tot = 0;
-  for (int i = 0; i < keep; i++) tot += pr[i];
-  double r = rnd() * tot;
-  for (int i = 0; i < keep; i++) { r -= pr[i]; if (r <= 0) return idx[i]; }
-  return idx[keep - 1];
-}
-
-/* How many bytes of p[0..n) end on a character boundary: an incomplete UTF-8 sequence at the end is held back until its remaining bytes arrive. */
-static int utf8_complete(const unsigned char *p, int n) {
-  for (int back = 1; back <= 3 && back <= n; back++) {
-    unsigned char c = p[n - back];
-    if ((c & 0xC0) == 0x80) continue;
-    int need = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
-    return need > back ? n - back : n;
-  }
-  return n;
-}
-
-static void ev_error(const char *msg) { fputs("{\"ev\":\"error\",\"msg\":", stdout); json_str(msg, (int)strlen(msg)); puts("}"); fflush(stdout); }
+static void emit_stdout(void *unused, const char *line) { (void)unused; fputs(line, stdout); fputc('\n', stdout); fflush(stdout); }
 
 static int cmd_chat(int argc, char **argv) {
   if (argc < 1) { usage(); return 2; }
   char err[256];
-  cl_meta meta; uint8_t *map; size_t ms; cl_tok *tok;
-  if (load_tok(argv[0], &meta, &map, &ms, &tok)) return 1;
-  int ctx = (int)num(argc, argv, "--ctx", 4096);
-  if (ctx < 64) ctx = 64;
-  cl_fwd f;
-  cl_fwd_opts fo = fwd_opts(argc, argv);
-  if (cl_fwd_open(&f, argv[0], ctx, &fo, err, sizeof err)) { ev_error(err); return 1; }
-  if (f.n_ctx_max > 0 && ctx > f.n_ctx_max) ctx = f.n_ctx_max;   /* the model's own limit; the caller reads the real size from the ready line */
-  float *logits = malloc((size_t)f.n_vocab * sizeof *logits);
-  int32_t *hist = malloc((size_t)ctx * sizeof *hist);   /* every token in the KV cache, for the repetition penalty */
-  int nhist = 0, have_logits = 0;
-  cl_str tpl = {0};
-  cl_meta_str(&meta, "tokenizer.chat_template", &tpl);
-  printf("{\"ev\":\"ready\",\"arch\":\"%s\",\"name\":\"%s\",\"nCtx\":%d,\"nVocab\":%d,\"nLayer\":%d,\"threads\":%d,\"streaming\":%s,\"locked\":%s,\"addBos\":%s,\"template\":", f.arch, f.model.name, ctx, f.n_vocab, f.n_layer, cl_get_threads(), f.xs ? "true" : "false", f.locked ? "true" : "false", cl_tok_add_bos(tok) ? "true" : "false");
-  json_str(tpl.p ? tpl.p : "", tpl.p ? (int)(tpl.len < 12000 ? tpl.len : 12000) : 0);
-  puts("}");
-  fflush(stdout);
-
+  cl_stdio_binary();
+  cl_chat *c = cl_chat_open(argc, (const char *const *)argv, emit_stdout, NULL, err, sizeof err);
+  if (!c) { fputs("{\"ev\":\"error\",\"msg\":\"", stdout); for (const char *p = err; *p; p++) { if (*p == '"' || *p == '\\') fputc('\\', stdout); if ((unsigned char)*p >= 0x20) fputc(*p, stdout); } fputs("\"}\n", stdout); fflush(stdout); return 1; }
+  cl_chat_set_poll(c, ib_cancelled, NULL);
   char *line;
   while ((line = ib_line())) {
-    char *op = jstr(line, "op", NULL);
-    if (!op) { ev_error("every line needs an \"op\""); free(line); continue; }
-    if (!strcmp(op, "reset")) {
-      cl_fwd_reset(&f); nhist = 0; have_logits = 0;
-      puts("{\"ev\":\"reset\"}"); fflush(stdout);
-    } else if (!strcmp(op, "append")) {
-      size_t len = 0;
-      char *text = jstr(line, "text", &len);
-      if (!text) { ev_error("append needs \"text\""); goto next; }
-      int cap = (int)len + 8;
-      int32_t *ids = malloc((size_t)cap * sizeof *ids);
-      int n = 0;
-      if (f.pos == 0 && cl_tok_add_bos(tok) && cl_tok_bos(tok) >= 0) ids[n++] = cl_tok_bos(tok);
-      int k = cl_tok_encode(tok, text, len, 1, ids + n, cap - n);
-      if (k < 0) { ev_error("could not tokenize that text"); free(ids); free(text); goto next; }
-      n += k;
-      if (f.pos + n + 1 > ctx) {
-        printf("{\"ev\":\"error\",\"msg\":\"the conversation does not fit in the context window\",\"code\":\"context\",\"pos\":%d,\"need\":%d,\"nCtx\":%d}\n", f.pos, n, ctx);
-        fflush(stdout); free(ids); free(text); goto next;
-      }
-      double t0 = now_s();
-      int fed = 0, cancelled = 0;
-      while (fed < n) {
-        int nb = n - fed < CL_PF_B ? n - fed : CL_PF_B;
-        if (cl_fwd_prefill(&f, ids + fed, nb, fed + nb == n ? logits : NULL, err, sizeof err)) { ev_error(err); have_logits = 0; cancelled = 1; break; }
-        for (int i = 0; i < nb; i++) hist[nhist++] = ids[fed + i];
-        fed += nb;
-        if (n > 16) {
-          printf("{\"ev\":\"progress\",\"done\":%d,\"total\":%d}\n", fed, n); fflush(stdout);
-          if (fed < n && ib_cancelled()) { cancelled = 1; break; }
-        }
-      }
-      have_logits = !cancelled && fed > 0;
-      printf("{\"ev\":\"appended\",\"tokens\":%d,\"requested\":%d,\"pos\":%d,\"seconds\":%.3f,\"cancelled\":%s}\n", fed, n, f.pos, now_s() - t0, cancelled ? "true" : "false");
-      fflush(stdout);
-      free(ids); free(text);
-    } else if (!strcmp(op, "generate")) {
-      if (!have_logits) { ev_error("nothing to continue from: append the prompt first"); goto next; }
-      int maxn = (int)jnum(line, "max", 512), top_k = (int)jnum(line, "topK", 40);
-      double temp = jnum(line, "temp", 0.7), top_p = jnum(line, "topP", 0.95), rep = jnum(line, "repeat", 1.0);
-      double seed = jnum(line, "seed", -1);
-      if (seed >= 0) rng_s = (uint64_t)seed * 0x9E3779B97F4A7C15ull + 88172645463325252ull;
-      unsigned char pend[8]; int np = 0;
-      double t0 = now_s(), tfirst = 0;
-      int gen = 0, desync = 0;
-      int32_t *gids = malloc((size_t)(maxn > 0 ? maxn : 1) * sizeof *gids);
-      const char *finish = "length";
-      cl_xs_stats s0 = f.xs ? cl_xs_get_stats(f.xs) : (cl_xs_stats){0};
-      for (;;) {
-        int b = sample_token(logits, f.n_vocab, temp, top_k, top_p, rep, hist + (nhist > 64 ? nhist - 64 : 0), nhist > 64 ? 64 : nhist);
-        if (cl_tok_is_eog(tok, b)) { finish = "stop"; break; }
-        char piece[256];
-        int pl = cl_tok_piece(tok, b, piece, sizeof piece);
-        unsigned char tmp[272];
-        memcpy(tmp, pend, (size_t)np); memcpy(tmp + np, piece, (size_t)pl);
-        int total = np + pl, whole = utf8_complete(tmp, total);
-        if (whole > 0) { fputs("{\"ev\":\"t\",\"s\":", stdout); json_str((const char *)tmp, whole); puts("}"); fflush(stdout); }
-        np = total - whole; memcpy(pend, tmp + whole, (size_t)np);
-        if (gen < maxn) gids[gen] = b;
-        gen++;
-        if (!tfirst) tfirst = now_s();
-        if (f.pos + 1 >= ctx) { finish = "context"; desync = 1; break; }
-        if (cl_fwd_step(&f, b, logits, NULL, err, sizeof err)) { ev_error(err); finish = "error"; desync = 1; have_logits = 0; break; }
-        hist[nhist++] = b;
-        if (gen >= maxn) { finish = "length"; break; }
-        if (ib_cancelled()) { finish = "cancel"; break; }
-      }
-      if (np > 0) { fputs("{\"ev\":\"t\",\"s\":", stdout); json_str((const char *)pend, np); puts("}"); }
-      double secs = now_s() - t0;
-      double dec = tfirst && gen > 1 ? now_s() - tfirst : 0;
-      printf("{\"ev\":\"done\",\"finish\":\"%s\",\"tokens\":%d,\"seconds\":%.3f,\"tokensPerSecond\":%.3f,\"pos\":%d,\"desync\":%s", finish, gen, secs, dec > 0 ? (gen - 1) / dec : (secs > 0 ? gen / secs : 0.0), f.pos, desync ? "true" : "false");
-      printf(",\"ids\":[");
-      for (int i = 0; i < gen && i < maxn; i++) printf("%s%d", i ? "," : "", gids[i]);
-      putchar(']');
-      free(gids);
-      if (f.xs) {
-        cl_xs_stats s1 = cl_xs_get_stats(f.xs);
-        uint64_t acc = s1.accesses - s0.accesses, hit = s1.hits - s0.hits;
-        printf(",\"cache\":{\"hitRate\":%.4f,\"gbRead\":%.4f}", acc ? (double)hit / (double)acc : 0.0, (double)((s1.demand_bytes + s1.prefetch_bytes) - (s0.demand_bytes + s0.prefetch_bytes)) / 1e9);
-      }
-      puts("}"); fflush(stdout);
-    } else if (!strcmp(op, "cancel")) {
-      /* nothing is running; a cancel that arrives late is ignored */
-    } else if (!strcmp(op, "quit")) {
-      free(op); free(line); break;
-    } else ev_error("unknown op");
-next:
-    free(op); free(line);
+    int quit = cl_chat_run(c, line);
+    free(line);
+    if (quit) break;
   }
-  cl_fwd_close(&f);
+  cl_chat_close(c);
   return 0;
 }
 
