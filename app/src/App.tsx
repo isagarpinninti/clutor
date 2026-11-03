@@ -8,6 +8,9 @@ import { Composer } from "./components/Composer";
 import { JobsDialog } from "./components/JobsDialog";
 import type { JobAction } from "./components/JobStrip";
 import { MessageView } from "./components/MessageView";
+import { CodeView } from "./components/CodeView";
+import { McpDialog } from "./components/McpDialog";
+import { loadServers, McpManager, saveServers, type McpServerConfig } from "./agent/mcp";
 import { ModelDialog } from "./components/ModelDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
@@ -22,7 +25,14 @@ export function App() {
   const [conversations, setConversations] = useState<Conversation[]>(() => { const c = loadConversations(); return c.length ? c : [newConversation()]; });
   const [activeId, setActiveId] = useState<string>(() => conversations[0]?.id ?? "");
   const [system, setSystem] = useState<SystemInfo>();
-  const [dialog, setDialog] = useState<"models" | "settings" | "jobs" | null>(null);
+  const [dialog, setDialog] = useState<"models" | "settings" | "jobs" | "mcp" | null>(null);
+  const [lastModel, setLastModel] = useState<ModelInfo>();
+  const [mode, setMode] = useState<"chat" | "code">(() => { try { return localStorage.getItem("clutor.mode") === "code" ? "code" : "chat"; } catch { return "chat"; } });
+  const [servers, setServers] = useState<McpServerConfig[]>(loadServers);
+  const [, bump] = useState(0);
+  const mcp = useMemo(() => new McpManager(bridge.host, () => bump((n) => n + 1)), []);
+  useEffect(() => { saveServers(servers); mcp.sync(servers); }, [servers, mcp]);
+  useEffect(() => { try { localStorage.setItem("clutor.mode", mode); } catch { /* storage unavailable */ } }, [mode]);
   const [notice, setNotice] = useState<string>();
   const [sidebar, setSidebar] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -53,9 +63,10 @@ export function App() {
   // First start: learn about this machine, and load the model used last time.
   useEffect(() => {
     void bridge.system().then(setSystem);
+    // The model is not loaded until you ask: pinning several GB at launch stalls the whole computer.
     void bridge.listModels().then((models) => {
       const last = models.find((m) => m.path === settings.lastModel) ?? (models.length === 1 ? models[0] : undefined);
-      if (last) void load(last, settings);
+      if (last) setLastModel(last);
       else if (models.length > 1) setDialog("models");
     });
   }, []);
@@ -94,7 +105,7 @@ export function App() {
   };
   const jobAction = (id: string, a: JobAction): void => { if (a === "pause") queue.pause(id); else if (a === "resume") queue.resume(id); else if (a === "cancel") queue.cancel(id); else queue.retry(id); };
 
-  const pickModel = (m: ModelInfo): void => { setSettings((s) => ({ ...s, lastModel: m.path })); void load(m, settings); };
+  const pickModel = (m: ModelInfo): void => { setSettings((s) => ({ ...s, lastModel: m.path })); void load(m, settings, system?.ramBytes); };
 
   const send = async (text: string): Promise<void> => {
     const s = session.current;
@@ -129,7 +140,7 @@ export function App() {
   useEffect(() => { if (!conversations.some((c) => c.id === activeId) && conversations[0]) setActiveId(conversations[0].id); }, [conversations, activeId]);
 
   const ready = state.status === "ready";
-  const badge = state.status === "loading" ? "Loading model…" : ready ? `${state.model?.name} · ${state.ready?.locked ? "pinned in memory" : "Clutor engine"}` : state.status === "error" ? "Model failed to load" : "Choose a model";
+  const badge = state.status === "loading" ? "Loading model…" : ready ? `${state.model?.name} · ${state.ready?.locked ? "pinned in memory" : state.unpinned ? "not pinned: large model" : "Clutor engine"}` : state.status === "error" ? "Model failed to load" : "Choose a model";
   const lastAssistant = active?.messages[active.messages.length - 1];
 
   return (
@@ -138,10 +149,15 @@ export function App() {
       <main className="main">
         <header className="topbar">
           <button type="button" className="icon-btn menu" onClick={() => setSidebar(true)} aria-label="Open conversations"><MenuIcon /></button>
-          <h1 className="title">{active?.title}</h1>
+          <div className="seg" role="tablist" aria-label="Mode">
+            <button type="button" role="tab" aria-selected={mode === "chat"} className={mode === "chat" ? "on" : ""} onClick={() => setMode("chat")}>Chat</button>
+            <button type="button" role="tab" aria-selected={mode === "code"} className={mode === "code" ? "on" : ""} onClick={() => setMode("code")}>Code</button>
+          </div>
+          <h1 className="title">{mode === "chat" ? active?.title : ""}</h1>
           <button type="button" className={`model-pill ${state.status}`} onClick={() => setDialog("models")}>{state.status === "loading" ? <Spark size={16} /> : <ChipIcon />}<span>{badge}</span></button>
           <button type="button" className="icon-btn" onClick={onNew} aria-label="New chat"><PlusIcon /></button>
         </header>
+        {mode === "code" ? <CodeView ready={ready} modelName={state.model?.name ?? "model"} session={() => session.current} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} onMcp={() => setDialog("mcp")} /> : <>
         <div className="scroll" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           {active && active.messages.length > 0 ? (
             <div className="thread">
@@ -152,14 +168,17 @@ export function App() {
               <div className="mark"><Logo size={64} /></div>
               {state.status === "loading" ? <div className="loading-wait"><Thinking label="Loading your model" /></div> : <h2>{ready ? "What can I help with?" : "Welcome to Clutor"}</h2>}
               <p>{state.status === "loading" ? "Mapping the weights into memory. A large model can take a while the first time." : ready ? "Everything stays on this device." : state.status === "error" ? state.error : "Pick a model to start. Clutor runs it on your own hardware, with its own engine."}</p>
-              {!ready && state.status !== "loading" ? <button type="button" className="btn" onClick={() => setDialog("models")}>Choose a model</button> : null}
+              {!ready && state.status !== "loading" && lastModel ? <button type="button" className="btn" onClick={() => pickModel(lastModel)}>Load {lastModel.name}</button> : null}
+              {!ready && state.status !== "loading" ? <button type="button" className={lastModel ? "btn ghost" : "btn"} onClick={() => setDialog("models")}>Choose a model</button> : null}
             </div>
           )}
         </div>
         <Composer busy={busy} disabled={!ready} placeholder={ready ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} onSend={(t) => void send(t)} onBackground={sendBackground} notice={notice} onStop={stop} />
+        </>}
       </main>
       {dialog === "models" ? <ModelDialog system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
+      {dialog === "mcp" ? <McpDialog servers={servers} manager={mcp} onChange={setServers} onClose={() => setDialog(null)} /> : null}
       {dialog === "settings" ? <SettingsDialog settings={settings} onChange={setSettings} onClose={() => setDialog(null)} /> : null}
     </div>
   );

@@ -44,3 +44,8 @@ export function fmtBytes(n: number): string {
   if (n >= 2 ** 20) return `${(n / 2 ** 20).toFixed(0)} MB`;
   return `${Math.round(n / 1024)} KB`;
 }
+
+/** Whether to pin the model in memory. Pinning makes a model that fits much faster, but reading and pinning several GB at once stalls the whole computer, so a model over 40% of RAM is not pinned. */
+export function shouldPin(wanted: boolean, modelBytes: number, ramBytes: number | undefined): boolean {
+  return wanted && (ramBytes === undefined || ramBytes <= 0 || modelBytes <= ramBytes * 0.4);
+}

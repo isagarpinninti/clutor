@@ -1,5 +1,5 @@
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
-import type { Bridge, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
+import type { AgentHost, Bridge, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
 /** A browser preview with no engine: models, downloads and replies are simulated so the interface can be developed and tested without the native shell. */
 
@@ -12,21 +12,33 @@ const REPLY = [
   "Open the app on your computer or phone to chat with a real model on Clutor's engine.",
 ].join("");
 
+const SCRIPT = [
+  '{"tool":"read_file","args":{"path":"src/greet.js"}}',
+  '{"tool":"edit_file","args":{"path":"src/greet.js","old_text":"Hello, ${name}","new_text":"Hello, ${name}!"}}',
+  '{"tool":"run_command","args":{"command":"npm test"}}',
+  '{"tool":"finish","args":{"summary":"Added the exclamation mark to the greeting. The tests pass."}}',
+];
+
 class MockTransport implements Transport {
   readonly queue = new EventQueue();
   private cancelled = false;
+  private fed = "";
   send(op: Record<string, unknown>): void {
     const emit = (e: Ev): void => this.queue.push(e);
     if (op["op"] === "cancel") { this.cancelled = true; return; }
-    if (op["op"] === "reset") { setTimeout(() => emit({ ev: "reset" }), 5); return; }
+    if (op["op"] === "reset") { this.fed = ""; setTimeout(() => emit({ ev: "reset" }), 5); return; }
     if (op["op"] === "append") {
+      this.fed += String(op["text"] ?? "");
       const n = Math.max(1, Math.round(String(op["text"] ?? "").length / 4));
       setTimeout(() => { emit({ ev: "progress", done: n, total: n }); emit({ ev: "appended", tokens: n, requested: n, pos: n, seconds: 0.05, cancelled: false }); }, 80);
       return;
     }
     if (op["op"] === "generate") {
       this.cancelled = false;
-      const pieces = REPLY.match(/\S+\s*|\s+/g) ?? [];
+      // The agent talks in JSON; the preview plays a fixed script so the agent screens can be developed without a model.
+      const agent = this.fed.includes("Reply with exactly one JSON object");
+      const reply = agent ? (SCRIPT[Math.min(this.fed.split("Result of ").length - 1, SCRIPT.length - 1)] as string) : REPLY;
+      const pieces = reply.match(/\S+\s*|\s+/g) ?? [];
       let i = 0;
       const tick = (): void => {
         if (this.cancelled || i >= pieces.length) {
@@ -55,8 +67,27 @@ const CATALOG: CatalogItem[] = [
   { id: "granite-3.0-3b-a800m-q4_k_m", name: "Granite 3.0 3B-A800M", bytes: 2_060_000_000, description: "Mixture of experts: 3B parameters, 0.8B active per token." },
 ];
 
+const DEMO: Record<string, string> = {
+  "README.md": "# Demo project\n\nA tiny project for trying the Code tab in the browser preview.\n",
+  "package.json": '{ "name": "demo", "scripts": { "test": "node --test" } }\n',
+  "src/greet.js": "export function greet(name) {\n  return `Hello, ${name}`;\n}\n",
+};
+const demoFiles = new Map(Object.entries(DEMO));
+
+const mockHost: AgentHost = {
+  async pickFolder() { return "/preview/demo-project"; },
+  async list() { return [...demoFiles.keys()].filter((k) => !k.startsWith(".clutor")).sort(); },
+  async read(_r, p) { return demoFiles.get(p) ?? null; },
+  async write(_r, p, c) { if (c === null) demoFiles.delete(p); else demoFiles.set(p, c); },
+  async run(_r, overlay) { await new Promise((r) => setTimeout(r, 400)); return { exit_code: 0, output: `preview: pretended to run the tests with ${overlay.length} changed file(s)\n# pass 1`, timed_out: false, duration_ms: 400 }; },
+  async mcpStart() { throw new Error("MCP servers run in the desktop app, not in the browser preview"); },
+  async mcpSend() { /* none */ },
+  async mcpStop() { /* none */ },
+};
+
 export const mockBridge: Bridge = {
   native: false,
+  host: mockHost,
   async system(): Promise<SystemInfo> { return { os: "preview", arch: "browser", ramBytes: 16 * 2 ** 30, cores: 8, modelsDir: "~/.clutor/models" }; },
   async listModels() { return MODELS; },
   async catalog() { return CATALOG; },

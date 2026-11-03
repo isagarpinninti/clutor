@@ -173,3 +173,13 @@ describe("JobQueue", () => {
     expect(q.list()).toHaveLength(0);
   });
 });
+
+import { shouldPin } from "./store";
+describe("shouldPin", () => {
+  it("pins models that are comfortable for the machine and skips large ones", () => {
+    expect(shouldPin(true, 5.6e9, 16e9)).toBe(true);
+    expect(shouldPin(true, 8e9, 16e9)).toBe(false);
+    expect(shouldPin(false, 1e9, 16e9)).toBe(false);
+    expect(shouldPin(true, 5e9, undefined)).toBe(true);
+  });
+});

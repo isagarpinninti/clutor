@@ -1,0 +1,348 @@
+//! What the coding agent needs from the machine: read and write files inside one project folder, run an approved command in a scratch copy of it, and talk to MCP
+//! servers over their standard input and output. Every path the web view sends is checked again here, so a confused or hostile model cannot reach outside the folder.
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, State};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, Command};
+use tokio::sync::Mutex;
+
+const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "dist", "build", ".clutor", ".venv", "venv", "__pycache__", ".next", ".gradle", ".idea", ".DS_Store"];
+const MAX_FILES: usize = 5000;
+const MAX_FILE_BYTES: u64 = 1024 * 1024;
+
+fn root_of(root: &str) -> Result<PathBuf, String> {
+    let p = PathBuf::from(root).canonicalize().map_err(|e| format!("cannot open the project folder: {e}"))?;
+    if !p.is_dir() { return Err("the project path is not a folder".into()); }
+    Ok(p)
+}
+
+/// A relative path that stays inside `root`: no absolute paths, no `..`, and no symbolic link that leads out.
+pub fn jail(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    if rel.is_empty() || rel.contains('\0') { return Err("empty or invalid path".into()); }
+    let r = Path::new(rel);
+    if r.is_absolute() { return Err("absolute paths are not allowed".into()); }
+    for c in r.components() {
+        match c {
+            Component::Normal(_) | Component::CurDir => {}
+            _ => return Err("the path leaves the project".into()),
+        }
+    }
+    let full = root.join(r);
+    // The nearest existing ancestor must still be inside the root once symbolic links are resolved.
+    let mut probe = full.as_path();
+    loop {
+        if probe.exists() { break; }
+        probe = probe.parent().ok_or("invalid path")?;
+    }
+    let real = probe.canonicalize().map_err(|e| e.to_string())?;
+    if !real.starts_with(root) { return Err("the path leads outside the project".into()); }
+    Ok(full)
+}
+
+fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut entries: Vec<_> = rd.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        if out.len() >= MAX_FILES { return; }
+        let name = e.file_name().to_string_lossy().to_string();
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_symlink() { continue; }
+        let path = e.path();
+        if ft.is_dir() {
+            if SKIP_DIRS.contains(&name.as_str()) { continue; }
+            walk(root, &path, out);
+        } else if ft.is_file() {
+            if SKIP_DIRS.contains(&name.as_str()) { continue; }
+            if e.metadata().map(|m| m.len() > MAX_FILE_BYTES * 4).unwrap_or(true) { continue; }
+            if let Ok(rel) = path.strip_prefix(root) {
+                out.push(rel.components().map(|c| c.as_os_str().to_string_lossy().to_string()).collect::<Vec<_>>().join("/"));
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn project_list(root: String) -> Result<Vec<String>, String> {
+    let root = root_of(&root)?;
+    let mut out = Vec::new();
+    walk(&root, &root, &mut out);
+    Ok(out)
+}
+
+/// The file's text, or None when it does not exist. Binary and very large files are an error the agent can read.
+#[tauri::command]
+pub fn project_read(root: String, path: String) -> Result<Option<String>, String> {
+    let root = root_of(&root)?;
+    let full = jail(&root, &path)?;
+    let meta = match std::fs::metadata(&full) { Ok(m) => m, Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None), Err(e) => return Err(e.to_string()) };
+    if !meta.is_file() { return Err("not a file".into()); }
+    if meta.len() > MAX_FILE_BYTES { return Err(format!("{path} is larger than {} KB", MAX_FILE_BYTES / 1024)); }
+    let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
+    String::from_utf8(bytes).map(Some).map_err(|_| format!("{path} is not a text file"))
+}
+
+/// Writes the file atomically (a temporary file in the same folder, then a rename), or deletes it when `content` is None.
+#[tauri::command]
+pub fn project_write(root: String, path: String, content: Option<String>) -> Result<(), String> {
+    let root = root_of(&root)?;
+    let full = jail(&root, &path)?;
+    match content {
+        None => match std::fs::remove_file(&full) { Ok(()) => Ok(()), Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()), Err(e) => Err(e.to_string()) },
+        Some(text) => {
+            if let Some(dir) = full.parent() { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }
+            let tmp = full.with_extension(format!("clutor-{}.tmp", std::process::id()));
+            std::fs::write(&tmp, text.as_bytes()).map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, &full).map_err(|e| { let _ = std::fs::remove_file(&tmp); e.to_string() })
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct RunResult { exit_code: Option<i32>, output: String, timed_out: bool, duration_ms: u64 }
+
+#[derive(Deserialize)]
+pub struct Overlay { path: String, content: Option<String> }
+
+fn copy_project(root: &Path, dest: &Path) -> Result<(), String> {
+    let mut files = Vec::new();
+    walk(root, root, &mut files);
+    let mut total = 0u64;
+    for rel in files {
+        let src = root.join(&rel);
+        total += std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+        if total > 200_000_000 { return Err("the project is larger than 200 MB, too big to copy for a test run".into()); }
+        let to = dest.join(&rel);
+        if let Some(d) = to.parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; }
+        std::fs::copy(&src, &to).map_err(|e| e.to_string())?;
+    }
+    // Dependencies are linked, not copied.
+    let nm = root.join("node_modules");
+    if nm.is_dir() {
+        #[cfg(unix)]
+        let _ = std::os::unix::fs::symlink(&nm, dest.join("node_modules"));
+        #[cfg(windows)]
+        let _ = std::os::windows::fs::symlink_dir(&nm, dest.join("node_modules"));
+    }
+    Ok(())
+}
+
+fn scratch_dir() -> Result<PathBuf, String> {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let d = std::env::temp_dir().join(format!("clutor-run-{}-{stamp}", std::process::id()));
+    std::fs::create_dir_all(d.join(".home")).map_err(|e| e.to_string())?;
+    d.canonicalize().map_err(|e| e.to_string())
+}
+
+#[cfg(unix)]
+fn kill_group(child: &Child) {
+    if let Some(pid) = child.id() { unsafe { libc::kill(-(pid as i32), libc::SIGKILL); } }
+}
+#[cfg(not(unix))]
+fn kill_group(_child: &Child) {}
+
+/// Runs the steps (already checked by the command policy in the web view) in a scratch copy of the project that includes the agent's unapplied changes, with a stripped
+/// environment and a time limit. The copy is deleted afterwards. This isolates the project and the environment, not the machine.
+#[tauri::command]
+pub async fn project_run(root: String, overlay: Vec<Overlay>, steps: Vec<Vec<String>>, timeout_ms: u64) -> Result<RunResult, String> {
+    let root = root_of(&root)?;
+    let dir = scratch_dir()?;
+    let started = Instant::now();
+    let result = run_in(&root, &dir, overlay, steps, timeout_ms).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    result.map(|(code, output, timed_out)| RunResult { exit_code: code, output, timed_out, duration_ms: started.elapsed().as_millis() as u64 })
+}
+
+async fn run_in(root: &Path, dir: &Path, overlay: Vec<Overlay>, steps: Vec<Vec<String>>, timeout_ms: u64) -> Result<(Option<i32>, String, bool), String> {
+    copy_project(root, dir)?;
+    for o in overlay {
+        let dest = jail(dir, &o.path)?;
+        match o.content {
+            None => { let _ = std::fs::remove_file(&dest); }
+            Some(t) => { if let Some(d) = dest.parent() { std::fs::create_dir_all(d).map_err(|e| e.to_string())?; } std::fs::write(&dest, t).map_err(|e| e.to_string())?; }
+        }
+    }
+    let mut left = Duration::from_millis(timeout_ms.max(1000));
+    let mut output = String::new();
+    for step in steps {
+        let Some(program) = step.first() else { continue };
+        #[cfg(windows)]
+        if step.iter().any(|a| a.chars().any(|c| "&|<>^%\"!`".contains(c))) { return Ok((None, "an argument contains a character that is not allowed on Windows".into(), false)); }
+        let mut cmd = Command::new(program);
+        cmd.args(&step[1..]).current_dir(dir).env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", dir.join(".home")).env("TMPDIR", dir).env("CI", "1").env("NO_COLOR", "1").env("FORCE_COLOR", "0").env("LANG", "C.UTF-8").env("NODE_ENV", "test")
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        #[cfg(windows)]
+        for k in ["SystemRoot", "ComSpec", "PATHEXT", "TEMP", "TMP"] { if let Ok(v) = std::env::var(k) { cmd.env(k, v); } }
+        #[cfg(unix)]
+        cmd.process_group(0);
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000);   // no console window
+        let mut child = match cmd.spawn() { Ok(c) => c, Err(e) => return Ok((None, format!("{output}could not start {program}: {e}"), false)) };
+        let mut so = child.stdout.take().ok_or("no stdout")?;
+        let mut se = child.stderr.take().ok_or("no stderr")?;
+        let t0 = Instant::now();
+        let read = async {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            let _ = tokio::join!(so.read_to_end(&mut a), se.read_to_end(&mut b));
+            a.extend_from_slice(&b);
+            a
+        };
+        let waited = tokio::time::timeout(left, async { let bytes = read.await; let st = child.wait().await; (bytes, st) }).await;
+        left = left.saturating_sub(t0.elapsed());
+        match waited {
+            Ok((bytes, st)) => {
+                let mut text = String::from_utf8_lossy(&bytes).to_string();
+                if text.len() > 200_000 { text.truncate(text.floor_char_boundary(200_000)); text.push_str("\n[output cut off]"); }
+                if !output.is_empty() { output.push('\n'); }
+                output.push_str(&text);
+                let code = st.map_err(|e| e.to_string())?.code();
+                if code != Some(0) { return Ok((code, output, false)); }
+            }
+            Err(_) => { kill_group(&child); let _ = child.kill().await; return Ok((None, output, true)); }
+        }
+    }
+    Ok((Some(0), output, false))
+}
+
+// ---- MCP servers over stdio -----------------------------------------------------------------------------------------------------------------------------------
+
+struct McpProc { child: Child, stdin: ChildStdin }
+
+#[derive(Default)]
+pub struct McpState(Arc<Mutex<HashMap<String, McpProc>>>);
+
+#[derive(Serialize, Clone)]
+struct McpLine { id: String, line: String }
+#[derive(Serialize, Clone)]
+struct McpExit { id: String, code: Option<i32> }
+
+/// Starts an MCP server the user configured. Its environment is inherited (npx and uvx need it) plus what the configuration adds; its messages arrive as `mcp-line` events.
+#[tauri::command]
+pub async fn mcp_start(app: AppHandle, state: State<'_, McpState>, id: String, command: String, args: Vec<String>, env: HashMap<String, String>, cwd: Option<String>) -> Result<(), String> {
+    let mut procs = state.0.lock().await;
+    if procs.contains_key(&id) { return Err("that server is already running".into()); }
+    let mut cmd = Command::new(&command);
+    cmd.args(&args).envs(&env).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    if let Some(c) = cwd { cmd.current_dir(c); }
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let mut child = cmd.spawn().map_err(|e| format!("could not start {command}: {e}"))?;
+    let stdin = child.stdin.take().ok_or("no stdin")?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let stderr = child.stderr.take().ok_or("no stderr")?;
+    let (a1, i1) = (app.clone(), id.clone());
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await { let _ = a1.emit("mcp-line", McpLine { id: i1.clone(), line }); }
+        let _ = a1.emit("mcp-exit", McpExit { id: i1, code: None });
+    });
+    let (a2, i2) = (app.clone(), id.clone());
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await { let _ = a2.emit("mcp-log", McpLine { id: i2.clone(), line }); }
+    });
+    procs.insert(id, McpProc { child, stdin });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mcp_send(state: State<'_, McpState>, id: String, line: String) -> Result<(), String> {
+    let mut procs = state.0.lock().await;
+    let p = procs.get_mut(&id).ok_or("that server is not running")?;
+    p.stdin.write_all(line.as_bytes()).await.map_err(|e| e.to_string())?;
+    p.stdin.write_all(b"\n").await.map_err(|e| e.to_string())?;
+    p.stdin.flush().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn mcp_stop(state: State<'_, McpState>, id: String) -> Result<(), String> {
+    let removed = state.0.lock().await.remove(&id);
+    if let Some(mut p) = removed { drop(p.stdin); let _ = p.child.kill().await; }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("clutor-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn jail_refuses_escapes() {
+        let root = temp("jail");
+        assert!(jail(&root, "a/b.txt").is_ok());
+        assert!(jail(&root, "../x").is_err());
+        assert!(jail(&root, "a/../../x").is_err());
+        assert!(jail(&root, "/etc/passwd").is_err());
+        assert!(jail(&root, "").is_err());
+        #[cfg(unix)]
+        {
+            let outside = temp("outside");
+            std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+            assert!(jail(&root, "link/secret").is_err());
+        }
+    }
+
+    #[test]
+    fn write_read_delete_roundtrip() {
+        let root = temp("rw");
+        let r = root.to_string_lossy().to_string();
+        assert_eq!(project_read(r.clone(), "src/a.txt".into()).unwrap(), None);
+        project_write(r.clone(), "src/a.txt".into(), Some("hello".into())).unwrap();
+        assert_eq!(project_read(r.clone(), "src/a.txt".into()).unwrap().as_deref(), Some("hello"));
+        assert!(project_list(r.clone()).unwrap().contains(&"src/a.txt".to_string()));
+        project_write(r.clone(), "src/a.txt".into(), None).unwrap();
+        assert_eq!(project_read(r, "src/a.txt".into()).unwrap(), None);
+    }
+
+    #[test]
+    fn list_skips_dependency_folders() {
+        let root = temp("list");
+        std::fs::create_dir_all(root.join("node_modules/x")).unwrap();
+        std::fs::write(root.join("node_modules/x/i.js"), "x").unwrap();
+        std::fs::write(root.join("main.rs"), "fn main(){}").unwrap();
+        assert_eq!(project_list(root.to_string_lossy().to_string()).unwrap(), vec!["main.rs".to_string()]);
+    }
+
+    #[test]
+    fn binary_files_are_reported_not_returned() {
+        let root = temp("bin");
+        std::fs::write(root.join("b.bin"), [0xff, 0xfe, 0x00]).unwrap();
+        assert!(project_read(root.to_string_lossy().to_string(), "b.bin".into()).unwrap_err().contains("not a text file"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_sees_unapplied_changes_and_leaves_the_project_alone() {
+        let root = temp("run");
+        std::fs::write(root.join("a.txt"), "old").unwrap();
+        let r = project_run(root.to_string_lossy().to_string(), vec![Overlay { path: "a.txt".into(), content: Some("new".into()) }], vec![vec!["cat".into(), "a.txt".into()]], 10_000).await.unwrap();
+        assert_eq!(r.exit_code, Some(0));
+        assert_eq!(r.output.trim(), "new");
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "old");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_stops_at_the_time_limit_and_strips_the_environment() {
+        let root = temp("limit");
+        std::env::set_var("CLUTOR_TEST_SECRET", "s3cret");
+        let r = project_run(root.to_string_lossy().to_string(), vec![], vec![vec!["sleep".into(), "30".into()]], 1000).await.unwrap();
+        assert!(r.timed_out);
+        let e = project_run(root.to_string_lossy().to_string(), vec![], vec![vec!["env".into()]], 5000).await.unwrap();
+        assert!(!e.output.contains("s3cret"));
+    }
+}

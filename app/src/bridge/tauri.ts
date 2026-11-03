@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
-import type { Bridge, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
+import { open } from "@tauri-apps/plugin-dialog";
+import type { AgentHost, Bridge, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
 /** The engine runs inside this process (src-tauri links it); its events arrive as Tauri events and its operations go out as commands. */
 class TauriTransport implements Transport {
@@ -25,8 +26,27 @@ class TauriTransport implements Transport {
   failure(): string { return this.lastError; }
 }
 
+const host: AgentHost = {
+  async pickFolder() { const r = await open({ directory: true, multiple: false, title: "Choose a project folder" }); return typeof r === "string" ? r : null; },
+  list: (root) => invoke<string[]>("project_list", { root }),
+  read: (root, path) => invoke<string | null>("project_read", { root, path }),
+  write: (root, path, content) => invoke("project_write", { root, path, content }),
+  run: (root, overlay, steps, timeoutMs) => invoke("project_run", { root, overlay, steps, timeoutMs }),
+  async mcpStart(id, l, onLine, onExit, onLog) {
+    const un = [
+      await listen<{ id: string; line: string }>("mcp-line", (e) => { if (e.payload.id === id) onLine(e.payload.line); }),
+      await listen<{ id: string; line: string }>("mcp-log", (e) => { if (e.payload.id === id) onLog(e.payload.line); }),
+      await listen<{ id: string }>("mcp-exit", (e) => { if (e.payload.id === id) { un.forEach((f) => f()); onExit(); } }),
+    ];
+    try { await invoke("mcp_start", { id, command: l.command, args: l.args, env: l.env, cwd: l.cwd ?? null }); } catch (e) { un.forEach((f) => f()); throw e; }
+  },
+  mcpSend: (id, line) => invoke("mcp_send", { id, line }),
+  mcpStop: (id) => invoke("mcp_stop", { id }),
+};
+
 export const tauriBridge: Bridge = {
   native: true,
+  host,
   system: () => invoke<SystemInfo>("system_info"),
   listModels: () => invoke<ModelInfo[]>("list_models"),
   catalog: () => invoke<CatalogItem[]>("model_catalog"),

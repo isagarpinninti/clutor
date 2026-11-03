@@ -8,7 +8,7 @@ import { type ShadowWorkspace, WorkspaceError } from "./workspace";
  * act on; it never throws out of the loop.
  */
 
-export type ToolName = "list_files" | "read_file" | "search" | "write_file" | "edit_file" | "delete_file" | "repo_map" | "run_command" | "finish";
+export type ToolName = "list_files" | "read_file" | "search" | "write_file" | "edit_file" | "delete_file" | "repo_map" | "run_command" | "use_tool" | "finish";
 
 interface Field { type: "string" | "integer" | "boolean"; description: string; required?: boolean; min?: number; max?: number; maxLength?: number }
 interface ToolSpec { name: ToolName; description: string; fields: Record<string, Field> }
@@ -26,6 +26,7 @@ export const TOOLS: ToolSpec[] = [
   { name: "delete_file", description: "Delete a file.", fields: { path: S("File path relative to the project.", { required: true, maxLength: 1024 }) } },
   { name: "repo_map", description: "Show the project tree and the main symbols of each source file.", fields: {} },
   { name: "run_command", description: "Run a command in a scratch copy of the project that includes your changes (for example the tests). Only a short list of programs is allowed, there is no shell, and the user may be asked to approve it.", fields: { command: S("The command line, for example `npm test`.", { required: true, maxLength: 1000 }) } },
+  { name: "use_tool", description: "Call a tool from a connected external server (listed in the instructions, if any). server and tool are the names shown there; arguments is a JSON object, written as a string.", fields: { server: S("The server name.", { required: true, maxLength: 100 }), tool: S("The tool name.", { required: true, maxLength: 200 }), arguments: S("The tool's arguments as a JSON object string, for example {\"query\": \"x\"}. Use {} for none.", { maxLength: 50_000 }) } },
   { name: "finish", description: "Call this when the task is done, or when you cannot continue. Summarise what you changed and anything the user must know.", fields: { summary: S("What was done, and what was not.", { required: true, maxLength: 8000 }) } },
 ];
 
@@ -96,6 +97,12 @@ export interface ToolContext {
   runCommand?: (plan: Extract<CommandPlan, { ok: true }>, command: string) => Promise<CommandResult>;
   /** Asked before any command that runs project code or uses the network. Absent: such commands are refused. */
   approve?: (info: { command: string; network: boolean }) => Promise<boolean>;
+  /** Tools of connected external servers (MCP). Absent: `use_tool` reports that none are connected. */
+  external?: {
+    /** True when the tool only reads (so it may run without asking). Unknown tools count as not read-only. */
+    readOnly(server: string, tool: string): boolean;
+    call(server: string, tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; output: string }>;
+  };
   maxOutputChars?: number;
 }
 
@@ -171,6 +178,20 @@ export async function executeTool(ctx: ToolContext, name: ToolName, a: Record<st
         const r = await ctx.runCommand(plan, command);
         const header = r.timedOut ? "timed out" : `exit code ${r.exitCode}`;
         return { ok: r.exitCode === 0 && !r.timedOut, output: `${header}\n${clip(r.output, max)}`, command: { command, exitCode: r.exitCode, approved: true } };
+      }
+      case "use_tool": {
+        const server = a["server"] as string, tool = a["tool"] as string;
+        if (!ctx.external) return { ok: false, output: "no external servers are connected" };
+        let args: unknown = {};
+        const raw = (a["arguments"] as string | undefined)?.trim();
+        if (raw) { try { args = JSON.parse(raw); } catch { return { ok: false, output: "arguments is not valid JSON" }; } }
+        if (args === null || typeof args !== "object" || Array.isArray(args)) return { ok: false, output: "arguments must be a JSON object" };
+        if (!ctx.external.readOnly(server, tool)) {
+          const yes = (await ctx.approve?.({ command: `${server}/${tool} ${JSON.stringify(args).slice(0, 300)}`, network: true })) === true;
+          if (!yes) return { ok: false, output: "the user did not approve this tool call; continue without it, or explain what you need" };
+        }
+        const r = await ctx.external.call(server, tool, args as Record<string, unknown>);
+        return { ok: r.ok, output: clip(r.output, max) };
       }
       case "finish":
         return { ok: true, output: "done", finished: a["summary"] as string };

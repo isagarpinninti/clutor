@@ -13,7 +13,7 @@
     "noEmit": true,
     "types": ["vite/client"],
     "baseUrl": ".",
-    "paths": { "@engine/*": ["../packages/cli/src/tui/*"] }
+    "paths": { "@engine/*": ["../packages/cli/src/tui/*"], "@core/*": ["../packages/core/src/*"] }
   },
   "include": ["src", "vite.config.ts"]
 }
