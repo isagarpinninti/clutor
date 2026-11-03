@@ -32,3 +32,7 @@ export const ChatIcon = () => I(<path d="M5 6.5c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2v
 export const CodeIcon = () => I(<path d="m9 8-4 4 4 4M15 8l4 4-4 4M13.2 6.5l-2.4 11" />);
 export const MoreIcon = () => I(<path d="M6.5 12h.01M12 12h.01M17.5 12h.01" strokeWidth="2.6" />);
 export const LaptopIcon = () => I(<><rect x="5" y="6" width="14" height="9.5" rx="1.8" /><path d="M3.5 18.5h17" /></>);
+export const PaletteIcon = () => I(<><path d="M12 4.5c-4.4 0-8 3.2-8 7.2 0 3.3 2.6 5.8 5.6 5.8h1.3c.8 0 1.3.6 1.3 1.3 0 .6.4 1 1 1 4 0 6.8-3.1 6.8-7C20 7.6 16.4 4.5 12 4.5Z" /><path d="M8.5 11h.01M11.5 8.5h.01M15 9.5h.01" strokeWidth="2.4" /></>);
+export const BellIcon = () => I(<><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.2 1.5H5.3z" /><path d="M10 20.5c.4.7 1.1 1 2 1s1.6-.3 2-1" /></>);
+export const ShieldIcon = () => I(<path d="M12 3.8 5.5 6.3v5c0 4 2.7 7 6.5 8.9 3.8-1.9 6.5-4.9 6.5-8.9v-5z" />);
+export const PlugIcon = () => I(<><path d="M9 4.5v4M15 4.5v4M7 8.5h10v3.2a5 5 0 0 1-10 0z" /><path d="M12 16.7v3" /></>);

@@ -24,10 +24,17 @@ export interface Settings {
   permission: "ask" | "auto" | "plan";
   /** Most steps one agent task may take. */
   maxSteps: number;
+  textSize: "small" | "medium" | "large";
+  notifyJobs: boolean;
+  notifyAgent: boolean;
+  /** Normal keeps the agent's steps closed; Verbose opens each to show its output. */
+  transcript: "normal" | "verbose";
+  /** Suggestion chips on the chat home screen. */
+  suggestions: boolean;
 }
 
 export const DEFAULT_SYSTEM = "You are a helpful assistant running on the user's own device through Clutor. Answer directly and concisely. Use Markdown only where it helps.";
-export const DEFAULT_SETTINGS: Settings = { temperature: 0.7, thinking: false, showReasoning: false, system: DEFAULT_SYSTEM, ctx: 4096, jobTokens: 1024, lock: true, browse: true, permission: "ask", maxSteps: 20 };
+export const DEFAULT_SETTINGS: Settings = { temperature: 0.7, thinking: false, showReasoning: false, system: DEFAULT_SYSTEM, ctx: 4096, jobTokens: 1024, lock: true, browse: true, permission: "ask", maxSteps: 20, textSize: "medium", notifyJobs: true, notifyAgent: true, transcript: "normal", suggestions: true };
 
 const CONV = "clutor.conversations.v1";
 const SET = "clutor.settings.v1";

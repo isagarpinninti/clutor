@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { bridge, type SystemInfo } from "../bridge";
 import type { McpManager, McpServerConfig } from "../agent/mcp";
-import { DEFAULT_SYSTEM, fmtBytes, type Settings } from "../store";
+import { DEFAULT_SYSTEM, DEFAULT_SETTINGS, fmtBytes, type Settings } from "../store";
 import { McpPanel } from "./McpDialog";
-import { CloseIcon } from "./icons";
+import { UsagePanel, type UsageData } from "./UsageDialog";
+import { BellIcon, ChatIcon, ChevronIcon, ChipIcon, CloseIcon, CodeIcon, GaugeIcon, GlobeIcon, LaptopIcon, PaletteIcon, PlugIcon, SearchIcon, ShieldIcon } from "./icons";
+
+export type Section = "usage" | "appearance" | "notifications" | "privacy" | "models" | "chat" | "web" | "connectors" | "code" | "about";
 
 interface Props {
   settings: Settings;
@@ -13,103 +16,166 @@ interface Props {
   servers: McpServerConfig[];
   manager: McpManager;
   onServers: (s: McpServerConfig[]) => void;
+  usage: UsageData;
   onModels: () => void;
+  onDeleteChats: () => void;
+  onDeleteSessions: () => void;
   onClose: () => void;
   start?: Section;
 }
 
-export type Section = "general" | "models" | "chat" | "agent" | "web" | "tools" | "about";
-const NAV: Array<{ id: Section; label: string }> = [
-  { id: "general", label: "General" }, { id: "models", label: "Models" }, { id: "chat", label: "Chat" },
-  { id: "agent", label: "Agent" }, { id: "web", label: "Web" }, { id: "tools", label: "Tools" }, { id: "about", label: "About" },
+const GROUPS: Array<Array<{ id: Section; label: string; icon: ReactNode; words: string }>> = [
+  [{ id: "usage", label: "Usage", icon: <GaugeIcon />, words: "context tokens speed memory" }],
+  [
+    { id: "appearance", label: "Appearance", icon: <PaletteIcon />, words: "theme dark text size font" },
+    { id: "notifications", label: "Notifications", icon: <BellIcon />, words: "alerts finished job task" },
+    { id: "privacy", label: "Privacy", icon: <ShieldIcon />, words: "delete data local history" },
+  ],
+  [
+    { id: "models", label: "Models", icon: <ChipIcon />, words: "folder gguf context memory pin load" },
+    { id: "chat", label: "Chat", icon: <ChatIcon />, words: "creativity temperature instructions thinking suggestions background" },
+    { id: "web", label: "Web", icon: <GlobeIcon />, words: "browse search duckduckgo internet" },
+    { id: "connectors", label: "Connectors", icon: <PlugIcon />, words: "mcp tools servers" },
+    { id: "code", label: "Code", icon: <CodeIcon />, words: "agent permissions steps transcript verbose" },
+  ],
+  [{ id: "about", label: "Desktop app", icon: <LaptopIcon />, words: "about version licence reset" }],
 ];
 
-function Row({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
-  return <div className="srow"><div className="srow-text"><b>{title}</b>{hint ? <small>{hint}</small> : null}</div><div className="srow-ctl">{children}</div></div>;
+function Row({ title, hint, children, tag }: { title: string; hint?: ReactNode; children?: ReactNode; tag?: string }) {
+  return (
+    <div className="srow">
+      <div className="srow-text"><b>{title}{tag ? <span className="tag">{tag}</span> : null}</b>{hint ? <small>{hint}</small> : null}</div>
+      <div className="srow-ctl">{children}</div>
+    </div>
+  );
 }
+const Sub = ({ children }: { children: ReactNode }) => <h4 className="ssub">{children}</h4>;
 function Switch({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
   return <button type="button" role="switch" aria-checked={on} aria-label={label} className={`switch${on ? " on" : ""}`} onClick={() => onChange(!on)}><i /></button>;
 }
+function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: Array<{ id: T; label: string }>; onChange: (v: T) => void; label: string }) {
+  return <div className="segmented" role="radiogroup" aria-label={label}>{options.map((o) => <button type="button" role="radio" aria-checked={o.id === value} key={o.id} className={o.id === value ? "on" : ""} onClick={() => onChange(o.id)}>{o.label}</button>)}</div>;
+}
+function Select<T extends string | number>({ value, options, onChange, label }: { value: T; options: Array<{ id: T; label: string }>; onChange: (v: T) => void; label: string }) {
+  return (
+    <span className="select"><select aria-label={label} value={String(value)} onChange={(e) => { const o = options.find((x) => String(x.id) === e.target.value); if (o) onChange(o.id); }}>{options.map((o) => <option key={String(o.id)} value={String(o.id)}>{o.label}</option>)}</select><ChevronIcon /></span>
+  );
+}
+/** A destructive button that asks once more before it acts. */
+function Confirm({ label, onConfirm }: { label: string; onConfirm: () => void }) {
+  const [sure, setSure] = useState(false);
+  return sure
+    ? <><button type="button" className="btn small danger" onClick={() => { setSure(false); onConfirm(); }}>Yes, delete</button><button type="button" className="btn small ghost" onClick={() => setSure(false)}>Cancel</button></>
+    : <button type="button" className="btn small danger" onClick={() => setSure(true)}>{label}</button>;
+}
 
-export function SettingsDialog({ settings, onChange, system, modelName, servers, manager, onServers, onModels, onClose, start = "general" }: Props) {
+export function SettingsDialog({ settings, onChange, system, modelName, servers, manager, onServers, usage, onModels, onDeleteChats, onDeleteSessions, onClose, start = "usage" }: Props) {
   const [sec, setSec] = useState<Section>(start);
+  const [q, setQ] = useState("");
   const set = <K extends keyof Settings>(k: K, v: Settings[K]): void => onChange({ ...settings, [k]: v });
   const chooseFolder = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) set("modelsDir", p); };
   const clearFolder = (): void => { const { modelsDir: _d, ...rest } = settings; void _d; onChange(rest as Settings); };
+  const needle = q.trim().toLowerCase();
+  const groups = useMemo(() => GROUPS.map((g) => g.filter((i) => !needle || `${i.label} ${i.words}`.toLowerCase().includes(needle))).filter((g) => g.length), [needle]);
+  const current = GROUPS.flat().find((i) => i.id === sec);
 
   return (
     <div className="overlay" onClick={onClose} role="presentation">
       <div className="dialog settings" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Settings">
-        <nav className="snav" aria-label="Settings sections">
-          <h2>Settings</h2>
-          {NAV.map((n) => <button type="button" key={n.id} className={n.id === sec ? "on" : ""} aria-current={n.id === sec} onClick={() => setSec(n.id)}>{n.label}</button>)}
-        </nav>
-        <div className="spane">
-          <button type="button" className="icon-btn sclose" onClick={onClose} aria-label="Close"><CloseIcon /></button>
-          <h3 className="stitle">{NAV.find((n) => n.id === sec)?.label}</h3>
+        <header className="shead"><h2>Settings</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
+        <div className="sbody">
+          <nav className="snav" aria-label="Settings sections">
+            <label className="ssearch"><SearchIcon /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" aria-label="Search settings" /></label>
+            {groups.map((g, gi) => (
+              <div className="sgroup" key={gi}>
+                {g.map((n) => <button type="button" key={n.id} className={n.id === sec ? "on" : ""} aria-current={n.id === sec} onClick={() => setSec(n.id)}>{n.icon}<span>{n.label}</span></button>)}
+              </div>
+            ))}
+            {groups.length === 0 ? <p className="empty-hint">No matching settings.</p> : null}
+          </nav>
+          <div className="spane">
+            <h3 className="stitle">{current?.label}</h3>
 
-          {sec === "general" ? (
-            <>
-              <Row title="Appearance" hint="Clutor is dark only."><span className="badge">Dark</span></Row>
-              <Row title="Everything stays on this device" hint="Conversations, sessions and settings are stored locally. Nothing is sent anywhere unless you turn on Browse or run a tool that uses the network."><span /></Row>
-              <Row title="Keep the model in memory" hint="Much faster when other apps are open. Models over 40% of your RAM are never pinned."><Switch on={settings.lock} onChange={(v) => set("lock", v)} label="Keep the model in memory" /></Row>
-            </>
-          ) : null}
+            {sec === "usage" ? <UsagePanel {...usage} /> : null}
 
-          {sec === "models" ? (
-            <>
-              <Row title="Models folder" hint={settings.modelsDir ?? `Not chosen. Looking in the app's own folder${system ? ` (${system.modelsDir})` : ""}.`}>
-                <button type="button" className="btn small ghost" onClick={() => void chooseFolder()}>{settings.modelsDir ? "Change…" : "Choose…"}</button>
-                {settings.modelsDir ? <button type="button" className="btn small ghost" onClick={clearFolder}>Clear</button> : null}
-              </Row>
-              <Row title="Model" hint={settings.model ? `${settings.model.name} · ${fmtBytes(settings.model.bytes)}. It is selected again each time you open the app and loads when you first use it.` : "None chosen yet."}>
-                <button type="button" className="btn small ghost" onClick={() => { onClose(); onModels(); }}>{modelName ? "Change…" : "Choose…"}</button>
-              </Row>
-              <Row title="Conversation length" hint="How much the model can keep in mind. Applies the next time a model loads.">
-                <select value={settings.ctx} onChange={(e) => set("ctx", Number(e.target.value))}>{[2048, 4096, 8192, 16384].map((n) => <option key={n} value={n}>{n.toLocaleString()} tokens</option>)}</select>
-              </Row>
-            </>
-          ) : null}
+            {sec === "appearance" ? (
+              <>
+                <Row title="Theme" hint="Clutor is dark only."><span className="badge">Dark</span></Row>
+                <Row title="Text size" hint="Scales the whole interface."><Segmented label="Text size" value={settings.textSize} options={[{ id: "small", label: "Small" }, { id: "medium", label: "Medium" }, { id: "large", label: "Large" }]} onChange={(v) => set("textSize", v)} /></Row>
+                <Row title="Suggestions on the chat home screen" hint="A few starter prompts under the message box."><Switch on={settings.suggestions} onChange={(v) => set("suggestions", v)} label="Suggestions" /></Row>
+              </>
+            ) : null}
 
-          {sec === "chat" ? (
-            <>
-              <Row title="Creativity" hint={`${settings.temperature.toFixed(1)}. Lower is more precise, higher more varied.`}><input type="range" min={0} max={1.5} step={0.1} value={settings.temperature} onChange={(e) => set("temperature", Number(e.target.value))} /></Row>
-              <Row title="Think first" hint="Let thinking models reason before answering. Slower, often better."><Switch on={settings.thinking} onChange={(v) => set("thinking", v)} label="Think first" /></Row>
-              <Row title="Show the thought process" hint="Open the reasoning by default."><Switch on={settings.showReasoning} onChange={(v) => set("showReasoning", v)} label="Show the thought process" /></Row>
-              <Row title="Longest background answer"><select value={settings.jobTokens} onChange={(e) => set("jobTokens", Number(e.target.value))}>{[512, 1024, 2048, 4096].map((n) => <option key={n} value={n}>{n.toLocaleString()} tokens</option>)}</select></Row>
-              <div className="sblock"><b>Instructions</b><textarea rows={5} value={settings.system} onChange={(e) => set("system", e.target.value)} /><button type="button" className="link" onClick={() => set("system", DEFAULT_SYSTEM)}>Reset to default</button></div>
-            </>
-          ) : null}
+            {sec === "notifications" ? (
+              <>
+                <Row title="Background jobs" hint="Tell me when an answer is ready or a job fails, if the window is not in front or it took a while."><Switch on={settings.notifyJobs} onChange={(v) => set("notifyJobs", v)} label="Background job notifications" /></Row>
+                <Row title="Agent tasks" hint="Tell me when a task finishes while the window is not in front."><Switch on={settings.notifyAgent} onChange={(v) => set("notifyAgent", v)} label="Agent task notifications" /></Row>
+              </>
+            ) : null}
 
-          {sec === "agent" ? (
-            <>
-              <Row title="Permissions" hint="What the agent may do without asking.">
-                <select value={settings.permission} onChange={(e) => set("permission", e.target.value as Settings["permission"])}>
-                  <option value="ask">Ask first</option><option value="auto">Auto-run checks</option><option value="plan">Plan only</option>
-                </select>
-              </Row>
-              <Row title="Most steps per task" hint="The agent stops after this many tool calls."><select value={settings.maxSteps} onChange={(e) => set("maxSteps", Number(e.target.value))}>{[10, 20, 40, 80].map((n) => <option key={n} value={n}>{n}</option>)}</select></Row>
-              <Row title="Changes are always shown first" hint="The agent works on a private copy. Nothing reaches your folder until you apply it, and every apply can be undone."><span /></Row>
-            </>
-          ) : null}
+            {sec === "privacy" ? (
+              <>
+                <Row title="Everything stays on this device" hint="Conversations, sessions and settings are stored locally. Nothing is sent anywhere unless Browse is on or a tool you added uses the network."><span /></Row>
+                <Sub>Your data</Sub>
+                <Row title="Delete all conversations" hint="Removes every chat and its background jobs from this device."><Confirm label="Delete…" onConfirm={onDeleteChats} /></Row>
+                <Row title="Delete all coding sessions" hint="Removes the session list and transcripts. Files in your projects, and the checkpoints kept inside them, are not touched."><Confirm label="Delete…" onConfirm={onDeleteSessions} /></Row>
+              </>
+            ) : null}
 
-          {sec === "web" ? (
-            <>
-              <Row title="Browse the web in chat" hint="Look questions up first and answer with sources. Greetings and one-word replies are not searched."><Switch on={settings.browse} onChange={(v) => set("browse", v)} label="Browse the web in chat" /></Row>
-              <Row title="Search service" hint="Your question is sent to DuckDuckGo, and the pages it finds are fetched from the internet. Addresses on your own network are never opened."><span className="badge">DuckDuckGo</span></Row>
-              <Row title="The agent" hint="In Code mode the agent can search and read pages too, after asking once per task."><span /></Row>
-            </>
-          ) : null}
+            {sec === "models" ? (
+              <>
+                <Row title="Models folder" hint={settings.modelsDir ?? `Not chosen. Looking in the app's own folder${system ? ` (${system.modelsDir})` : ""}.`}>
+                  <button type="button" className="btn small ghost" onClick={() => void chooseFolder()}>{settings.modelsDir ? "Change…" : "Choose…"}</button>
+                  {settings.modelsDir ? <button type="button" className="btn small ghost" onClick={clearFolder}>Clear</button> : null}
+                </Row>
+                <Row title="Model" hint={settings.model ? `${settings.model.name} · ${fmtBytes(settings.model.bytes)}. Selected again each time you open the app; it loads when you first use it.` : "None chosen yet."}>
+                  <button type="button" className="btn small ghost" onClick={() => { onClose(); onModels(); }}>{modelName ? "Change…" : "Choose…"}</button>
+                </Row>
+                <Row title="Conversation length" hint="How much the model can keep in mind. Applies the next time a model loads."><Select label="Conversation length" value={settings.ctx} options={[2048, 4096, 8192, 16384].map((n) => ({ id: n, label: `${n.toLocaleString()} tokens` }))} onChange={(v) => set("ctx", v)} /></Row>
+                <Row title="Keep the model in memory" hint="Much faster when other apps are open. Models over 40% of your RAM are never pinned."><Switch on={settings.lock} onChange={(v) => set("lock", v)} label="Keep the model in memory" /></Row>
+              </>
+            ) : null}
 
-          {sec === "tools" ? <div className="stools"><McpPanel servers={servers} manager={manager} onChange={onServers} /></div> : null}
+            {sec === "chat" ? (
+              <>
+                <Row title="Creativity" hint={`${settings.temperature.toFixed(1)}. Lower is more precise, higher more varied.`}><input type="range" min={0} max={1.5} step={0.1} value={settings.temperature} onChange={(e) => set("temperature", Number(e.target.value))} aria-label="Creativity" /></Row>
+                <Row title="Think first" hint="Let thinking models reason before answering. Slower, often better."><Switch on={settings.thinking} onChange={(v) => set("thinking", v)} label="Think first" /></Row>
+                <Row title="Show the thought process" hint="Open the reasoning by default."><Switch on={settings.showReasoning} onChange={(v) => set("showReasoning", v)} label="Show the thought process" /></Row>
+                <Row title="Longest background answer"><Select label="Longest background answer" value={settings.jobTokens} options={[512, 1024, 2048, 4096].map((n) => ({ id: n, label: `${n.toLocaleString()} tokens` }))} onChange={(v) => set("jobTokens", v)} /></Row>
+                <div className="sblock"><b>Instructions</b><textarea rows={5} value={settings.system} onChange={(e) => set("system", e.target.value)} /><button type="button" className="link" onClick={() => set("system", DEFAULT_SYSTEM)}>Reset to default</button></div>
+              </>
+            ) : null}
 
-          {sec === "about" ? (
-            <>
-              <Row title="Clutor" hint="Run large language models on your own machine, with honest numbers."><span className="badge">0.4.0</span></Row>
-              <Row title="This computer" hint={system ? `${system.os} ${system.arch} · ${fmtBytes(system.ramBytes)} memory · ${system.cores} cores` : "Unknown"}><span /></Row>
-              <Row title="Source and licence" hint="MIT licensed."><button type="button" className="btn small ghost" onClick={() => void bridge.web.openExternal("https://github.com/isagarpinninti/clutor")}>Open on GitHub</button></Row>
-            </>
-          ) : null}
+            {sec === "web" ? (
+              <>
+                <Row title="Browse the web in chat" tag="Sends your question out" hint="Look questions up first and answer with sources. Greetings and one-word replies are not searched."><Switch on={settings.browse} onChange={(v) => set("browse", v)} label="Browse the web in chat" /></Row>
+                <Row title="Search service" hint="Your question is sent to DuckDuckGo and the pages it finds are fetched from the internet. Addresses on your own network are never opened."><span className="badge">DuckDuckGo</span></Row>
+                <Row title="The agent" hint="In Code mode the agent can search and read pages too, after asking once per task."><span /></Row>
+              </>
+            ) : null}
+
+            {sec === "connectors" ? <div className="stools"><McpPanel servers={servers} manager={manager} onChange={onServers} /></div> : null}
+
+            {sec === "code" ? (
+              <>
+                <Row title="Permissions" hint="What the agent may do without asking."><Select label="Permissions" value={settings.permission} options={[{ id: "ask", label: "Ask first" }, { id: "auto", label: "Auto-run checks" }, { id: "plan", label: "Plan only" }]} onChange={(v) => set("permission", v)} /></Row>
+                <Row title="Default transcript view" hint="How much detail the agent's steps show."><Segmented label="Transcript view" value={settings.transcript} options={[{ id: "normal", label: "Normal" }, { id: "verbose", label: "Verbose" }]} onChange={(v) => set("transcript", v)} /></Row>
+                <Row title="Most steps per task" hint="The agent stops after this many tool calls."><Select label="Most steps" value={settings.maxSteps} options={[10, 20, 40, 80].map((n) => ({ id: n, label: String(n) }))} onChange={(v) => set("maxSteps", v)} /></Row>
+                <Sub>Changes</Sub>
+                <Row title="Changes are always shown first" hint="The agent works on a private copy. Nothing reaches your folder until you apply it, and every apply can be undone."><span /></Row>
+              </>
+            ) : null}
+
+            {sec === "about" ? (
+              <>
+                <Row title="Clutor" hint="Run large language models on your own machine, with honest numbers."><span className="badge">0.4.0</span></Row>
+                <Row title="This computer" hint={system ? `${system.os} ${system.arch} · ${fmtBytes(system.ramBytes)} memory · ${system.cores} cores` : "Unknown"}><span /></Row>
+                <Row title="Source and licence" hint="MIT licensed."><button type="button" className="btn small ghost" onClick={() => void bridge.web.openExternal("https://github.com/isagarpinninti/clutor")}>Open on GitHub</button></Row>
+                <Sub>Reset</Sub>
+                <Row title="Restore default settings" hint="Your conversations, sessions and the model folder are kept."><button type="button" className="btn small ghost" onClick={() => onChange({ ...DEFAULT_SETTINGS, ...(settings.model ? { model: settings.model } : {}), ...(settings.modelsDir ? { modelsDir: settings.modelsDir } : {}) })}>Restore</button></Row>
+              </>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>

@@ -56,7 +56,7 @@ export function App() {
   const [panel, setPanel] = useState(false);
   const [panelTab, setPanelTab] = useState<PanelTab>("overview");
   const [renaming, setRenaming] = useState(false);
-  const [settingsAt, setSettingsAt] = useState<"general" | "tools">("general");
+  const [settingsAt, setSettingsAt] = useState<"usage" | "connectors">("usage");
   const togglePanel = (t: PanelTab): void => { if (panel && panelTab === t) setPanel(false); else { setPanelTab(t); setPanel(true); } };
   useEffect(() => { saveSessions(codeSessions); }, [codeSessions]);
   useEffect(() => { try { localStorage.setItem("clutor.codeSession", codeId); } catch { /* storage unavailable */ } }, [codeId]);
@@ -65,6 +65,7 @@ export function App() {
   const createSession = useCallback((root: string): CodeSession => { const s = newSession(root); setCodeSessions((all) => [s, ...all]); setCodeId(s.id); setSidebar(false); return s; }, []);
   const newCodeSession = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) createSession(p); };
   const deleteSession = (id: string): void => { setCodeSessions((all) => all.filter((s) => s.id !== id)); if (id === codeId) setCodeId(""); };
+  useEffect(() => { try { (document.documentElement.style as CSSStyleDeclaration & { zoom: string }).zoom = ({ small: "0.92", medium: "1", large: "1.1" } as const)[settings.textSize]; } catch { /* unsupported */ } }, [settings.textSize]);
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("clutor.sidebar") === "off"; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem("clutor.sidebar", collapsed ? "off" : "on"); } catch { /* storage unavailable */ } }, [collapsed]);
   const [agentUsage, setAgentUsage] = useState({ runs: 0, steps: 0, tokens: 0 });
@@ -77,10 +78,13 @@ export function App() {
   const { state, session, load } = useEngine();
 
   // ---- background jobs: the queue lives for the life of the app; its changes are written into the conversation message each job answers ----
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const syncJob = useRef<(j: Job) => void>(() => undefined);
   const queue = useMemo(() => new JobQueue(localJobStore, {
     onUpdate: (j) => syncJob.current(j),
     onFinish: (j) => {
+      if (!settingsRef.current.notifyJobs) return;
       if (j.status === "done" && (!document.hasFocus() || j.elapsedMs > 20_000)) void bridge.notify("Your answer is ready", j.title);
       else if (j.status === "failed") void bridge.notify("A background job failed", `${j.title}: ${j.error ?? "unknown error"}`);
     },
@@ -206,7 +210,7 @@ export function App() {
 
   return (
     <div className={`app${collapsed ? " nav-collapsed" : ""}`}>
-      <Sidebar ramLabel={system ? `Local · ${Math.round(system.ramBytes / 2 ** 30)} GB` : "Local"} onMode={setMode} conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setSettingsAt("general"); setDialog("settings"); setSidebar(false); }} mode={mode} codeSessions={codeSessions} codeId={codeId} onSelectCode={(id) => { setCodeId(id); setSidebar(false); }} onNewCode={() => void newCodeSession()} onDeleteCode={deleteSession} onJobs={() => { setDialog("jobs"); setSidebar(false); }} onUsage={() => { setDialog("usage"); setSidebar(false); }} onCollapse={() => setCollapsed(true)} collapsed={collapsed} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
+      <Sidebar ramLabel={system ? `Local · ${Math.round(system.ramBytes / 2 ** 30)} GB` : "Local"} onMode={setMode} conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setSettingsAt("usage"); setDialog("settings"); setSidebar(false); }} mode={mode} codeSessions={codeSessions} codeId={codeId} onSelectCode={(id) => { setCodeId(id); setSidebar(false); }} onNewCode={() => void newCodeSession()} onDeleteCode={deleteSession} onJobs={() => { setDialog("jobs"); setSidebar(false); }} onUsage={() => { setDialog("usage"); setSidebar(false); }} onCollapse={() => setCollapsed(true)} collapsed={collapsed} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
       <main className="main">
         <header className="topbar">
           <button type="button" className={`icon-btn side-open tip${collapsed ? " always" : ""}`} data-tip="Show sidebar" onClick={() => { setSidebar(true); setCollapsed(false); }} aria-label="Show sidebar"><SidebarIcon /></button>
@@ -238,12 +242,12 @@ export function App() {
             </div>
           ) : null}
           <PlusMenu label="More" className="icon-btn" align="right" icon={<MoreIcon />} items={[
-            { id: "settings", label: "Settings", onSelect: () => { setSettingsAt("general"); setDialog("settings"); } },
+            { id: "settings", label: "Settings", onSelect: () => { setSettingsAt("usage"); setDialog("settings"); } },
             { id: "usage", label: "Usage", onSelect: () => setDialog("usage") },
-            { id: "tools", label: "Connectors", hint: "Tool servers for the agent", onSelect: () => { setSettingsAt("tools"); setDialog("settings"); } },
+            { id: "tools", label: "Connectors", hint: "Tool servers for the agent", onSelect: () => { setSettingsAt("connectors"); setDialog("settings"); } },
           ]} />
         </header>
-        {mode === "code" ? <CodeView active={codeActive} onChange={changeSession} onCreate={createSession} ready={ready || !!lastModel} modelName={state.model?.name ?? lastModel?.name ?? "model"} engine={ensureModel} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => { setSettingsAt("tools"); setDialog("settings"); }} overviewProps={{ system, modelName: state.model?.name ?? lastModel?.name ?? "No model", pinned: note, contextMax: state.ready?.nCtx ?? settings.ctx, permission: ({ ask: "Ask first", auto: "Auto-run checks", plan: "Plan only" } as const)[settings.permission], mcp, onManageTools: () => { setSettingsAt("tools"); setDialog("settings"); } }} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} panel={panel} onPanel={setPanel} tab={panelTab} onTab={setPanelTab} perm={settings.permission} onPerm={(p) => setSettings((s) => ({ ...s, permission: p }))} maxSteps={settings.maxSteps} /> : <>
+        {mode === "code" ? <CodeView active={codeActive} onChange={changeSession} onCreate={createSession} ready={ready || !!lastModel} modelName={state.model?.name ?? lastModel?.name ?? "model"} engine={ensureModel} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => { setSettingsAt("connectors"); setDialog("settings"); }} overviewProps={{ system, modelName: state.model?.name ?? lastModel?.name ?? "No model", pinned: note, contextMax: state.ready?.nCtx ?? settings.ctx, permission: ({ ask: "Ask first", auto: "Auto-run checks", plan: "Plan only" } as const)[settings.permission], mcp, onManageTools: () => { setSettingsAt("connectors"); setDialog("settings"); } }} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} panel={panel} onPanel={setPanel} tab={panelTab} onTab={setPanelTab} perm={settings.permission} onPerm={(p) => setSettings((s) => ({ ...s, permission: p }))} maxSteps={settings.maxSteps} verbose={settings.transcript === "verbose"} notifyAgent={settings.notifyAgent} /> : <>
         <div className="scroll" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           {active && active.messages.length > 0 ? (
             <div className="thread">
@@ -256,7 +260,7 @@ export function App() {
                 <h2>{greeting()}</h2>
                 {composer(true)}
                 <div className="suggest">
-                  {SUGGESTIONS.map((s) => <button type="button" key={s.label} className="suggestion" onClick={() => setPrefill((p) => ({ text: s.text, n: (p?.n ?? 0) + 1 }))}>{s.label}</button>)}
+                  {settings.suggestions ? SUGGESTIONS.map((s) => <button type="button" key={s.label} className="suggestion" onClick={() => setPrefill((p) => ({ text: s.text, n: (p?.n ?? 0) + 1 }))}>{s.label}</button>) : null}
                 </div>
               </div>
             ) : (
@@ -277,7 +281,7 @@ export function App() {
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
       {dialog === "usage" ? <UsageDialog state={state} ramBytes={system?.ramBytes} usage={usage} agent={agentUsage} jobs={{ active: activeJobs, done: jobList.filter((j) => j.status === "done").length }} onClose={() => setDialog(null)} /> : null}
       {dialog === "mcp" ? <McpDialog servers={servers} manager={mcp} onChange={setServers} onClose={() => setDialog(null)} /> : null}
-      {dialog === "settings" ? <SettingsDialog start={settingsAt} settings={settings} onChange={setSettings} system={system} modelName={state.model?.name ?? lastModel?.name} servers={servers} manager={mcp} onServers={setServers} onModels={() => setDialog("models")} onClose={() => setDialog(null)} /> : null}
+      {dialog === "settings" ? <SettingsDialog start={settingsAt} settings={settings} onChange={setSettings} system={system} modelName={state.model?.name ?? lastModel?.name} servers={servers} manager={mcp} onServers={setServers} usage={{ state, ramBytes: system?.ramBytes, usage, agent: agentUsage, jobs: { active: activeJobs, done: jobList.filter((j) => j.status === "done").length } }} onModels={() => setDialog("models")} onDeleteChats={() => { for (const j of queue.list()) queue.remove(j.id); const c = newConversation(); setConversations([c]); setActiveId(c.id); }} onDeleteSessions={() => { setCodeSessions([]); setCodeId(""); }} onClose={() => setDialog(null)} /> : null}
     </div>
   );
 }

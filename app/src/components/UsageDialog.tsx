@@ -3,23 +3,21 @@ import { fmtBytes } from "../store";
 import { contextPercent, type ChatUsage } from "../usage";
 import { CloseIcon } from "./icons";
 
-interface Props {
+export interface UsageData {
   state: EngineState;
   ramBytes: number | undefined;
   usage: ChatUsage;
   agent: { runs: number; steps: number; tokens: number };
   jobs: { active: number; done: number };
-  onClose: () => void;
 }
+interface Props extends UsageData { onClose: () => void }
 
 const n = (v: number): string => v.toLocaleString();
 
-export function UsageDialog({ state, ramBytes, usage, agent, jobs, onClose }: Props) {
+export function UsagePanel({ state, ramBytes, usage, agent, jobs }: UsageData) {
   const pct = contextPercent(usage);
   return (
-    <div className="overlay" onClick={onClose} role="presentation">
-      <div className="dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Usage">
-        <header><h2>Usage</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
+    <>
         <p className="lead">Everything runs on this device, so there is no cost and no quota. These are the numbers the engine measured.</p>
 
         <section className="panel">
@@ -46,6 +44,16 @@ export function UsageDialog({ state, ramBytes, usage, agent, jobs, onClose }: Pr
           {state.loadMs ? <div className="kv"><span>Load time</span><b>{(state.loadMs / 1000).toFixed(1)} s</b></div> : null}
           <div className="kv"><span>Background jobs</span><b>{jobs.active} active · {jobs.done} finished</b></div>
         </section>
+    </>
+  );
+}
+
+export function UsageDialog({ onClose, ...data }: Props) {
+  return (
+    <div className="overlay" onClick={onClose} role="presentation">
+      <div className="dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Usage">
+        <header><h2>Usage</h2><button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><CloseIcon /></button></header>
+        <div className="dbody"><UsagePanel {...data} /></div>
       </div>
     </div>
   );

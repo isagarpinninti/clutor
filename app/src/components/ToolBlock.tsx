@@ -5,8 +5,8 @@ import { Spark } from "./Thinking";
 import { CheckIcon, CloseIcon } from "./icons";
 
 /** One step of the agent: a line saying what it did, which opens to show the output or the change it made. */
-export function ToolBlock({ block, onOpenFile }: { block: Extract<Block, { kind: "tool" }>; onOpenFile?: (path: string) => void }) {
-  const [open, setOpen] = useState(false);
+export function ToolBlock({ block, onOpenFile, verbose }: { block: Extract<Block, { kind: "tool" }>; onOpenFile?: (path: string) => void; verbose?: boolean }) {
+  const [open, setOpen] = useState(verbose ?? false);
   const detail = block.patch ?? block.output;
   return (
     <div className={`tool ${block.status}`}>

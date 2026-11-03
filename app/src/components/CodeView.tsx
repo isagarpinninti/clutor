@@ -47,11 +47,13 @@ interface Props {
   perm: Permission;
   onPerm: (p: Permission) => void;
   maxSteps: number;
+  verbose: boolean;
+  notifyAgent: boolean;
 }
 
 const count = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-export function CodeView({ active, onChange, onCreate, ready, modelName, engine, mcp, hold, picker, onChooseModel, onMcp, onUsage, panel, onPanel, overviewProps, tab, onTab, perm, onPerm, maxSteps }: Props) {
+export function CodeView({ active, onChange, onCreate, ready, modelName, engine, mcp, hold, picker, onChooseModel, onMcp, onUsage, panel, onPanel, overviewProps, tab, onTab, perm, onPerm, maxSteps, verbose, notifyAgent }: Props) {
   const [task, setTask] = useState("");
   const [error, setError] = useState<string>();
   const [approval, setApproval] = useState<{ command: string; network: boolean; answer: (yes: boolean) => void }>();
@@ -97,6 +99,7 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
         ...(diffs.length ? { changes, diffs } : {}),
       }));
       if (diffs.length) { onTab("changes"); onPanel(true); }
+      if (notifyAgent && !document.hasFocus()) void bridge.notify(out.result.status === "finished" ? "Task finished" : "Task stopped", out.result.summary.slice(0, 120));
     } catch (e) {
       patchTurn(sid, turn.id, (t) => ({ ...t, status: "failed", error: e instanceof Error ? e.message : String(e) }));
     } finally {
@@ -146,7 +149,7 @@ export function CodeView({ active, onChange, onCreate, ready, modelName, engine,
                 <div className="turn-body">
                   {t.blocks.map((b) => b.kind === "text" ? <p key={b.id} className="turn-text">{b.text}</p>
                     : b.kind === "note" ? <p key={b.id} className={`turn-note${b.bad ? " bad" : ""}`}>{b.text}</p>
-                    : <ToolBlock key={b.id} block={b} onOpenFile={(p) => { setFocusFile(p); onTab("files"); onPanel(true); }} />)}
+                    : <ToolBlock key={b.id} block={b} verbose={verbose} onOpenFile={(p) => { setFocusFile(p); onTab("files"); onPanel(true); }} />)}
                   {t.status === "running" && !approval ? <div className="working"><Spark size={14} /><span>Working…</span></div> : null}
                   {t.summary ? <div className="turn-summary"><Markdown text={t.summary} /></div> : null}
                   {t.status === "interrupted" ? <p className="turn-note bad">The app was closed while this ran.</p> : null}
