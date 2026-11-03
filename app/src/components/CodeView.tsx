@@ -87,7 +87,7 @@ export function CodeView({ ready, modelName, session, mcp, hold, onChooseModel, 
     const release = await hold();
     try {
       const out = await runCodingTask({
-        host: bridge.host, root, session: s, modelName, task: task.trim(), mcp, signal: ac.signal,
+        host: bridge.host, web: bridge.web, root, session: s, modelName, task: task.trim(), mcp, signal: ac.signal,
         planOnly: perm === "plan",
         approve: (info) => perm === "plan" ? Promise.resolve(false) : perm === "auto" && !info.network ? Promise.resolve(true) : new Promise<boolean>((resolve) => setApproval({ ...info, answer: (yes) => { setApproval(undefined); resolve(yes); } })),
         onEvent: (e) => { const st = toStep(e); if (st) setSteps((all) => [...all, st]); },

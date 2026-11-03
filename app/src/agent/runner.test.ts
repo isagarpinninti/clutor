@@ -57,4 +57,16 @@ describe("runCodingTask", () => {
     const { result } = await runCodingTask({ host: host({}), root: "/p", modelName: "s", task: "x", approve: async () => true, onEvent: () => undefined, signal: ac.signal, session: scripted([]) });
     expect(result.status).toBe("aborted");
   });
+
+  it("lets the agent search the web only after one approval for the run", async () => {
+    const asked: string[] = [];
+    const web = { search: async () => [{ title: "T", url: "https://a.org/", snippet: "s" }], fetch: async () => { throw new Error("no"); }, openExternal: async () => undefined };
+    const { result } = await runCodingTask({
+      host: host({}), root: "/p", modelName: "s", task: "look up x", web, approve: async (i) => { asked.push(i.command); return true; }, onEvent: () => undefined,
+      session: scripted(['{"tool":"web_search","args":{"query":"x"}}', '{"tool":"web_search","args":{"query":"y"}}', '{"tool":"finish","args":{"summary":"done"}}']),
+    });
+    expect(result.status).toBe("finished");
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatch(/web/i);
+  });
 });

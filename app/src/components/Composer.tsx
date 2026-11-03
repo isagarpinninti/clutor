@@ -7,6 +7,8 @@ interface Props {
   placeholder: string;
   thinking: boolean;
   onThinking: (v: boolean) => void;
+  browse: boolean;
+  onBrowse: (v: boolean) => void;
   onSend: (text: string) => void;
   /** Runs the question as a background job: the reply keeps generating while you do other things. */
   onBackground: (text: string) => void;
@@ -16,7 +18,7 @@ interface Props {
   onStop: () => void;
 }
 
-export function Composer({ busy, disabled, placeholder, thinking, onThinking, onSend, onBackground, notice, onStop, picker }: Props) {
+export function Composer({ busy, disabled, placeholder, thinking, onThinking, browse, onBrowse, onSend, onBackground, notice, onStop, picker }: Props) {
   const [text, setText] = useState("");
   const area = useRef<HTMLTextAreaElement>(null);
   const touch = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
@@ -52,6 +54,7 @@ export function Composer({ busy, disabled, placeholder, thinking, onThinking, on
         <textarea ref={area} rows={1} value={text} placeholder={placeholder} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} disabled={disabled} enterKeyHint="send" aria-label="Message" />
         <div className="composer-row">
           {picker}
+          <button type="button" className={`chip${browse ? " on" : ""}`} onClick={() => onBrowse(!browse)} title="Look things up on the web before answering. Your message is sent to a search service." aria-pressed={browse}>Browse</button>
           <button type="button" className={`chip${thinking ? " on" : ""}`} onClick={() => onThinking(!thinking)} title="Let thinking models reason first (slower, often better)" aria-pressed={thinking}>Think</button>
           <span className="spacer" />
           <button type="button" className="icon-btn bg-btn" onClick={background} disabled={!text.trim() || disabled} title="Run in the background (Ctrl+Enter): the answer keeps generating while you do other things" aria-label="Run in the background"><ClockIcon /></button>

@@ -13,6 +13,7 @@ import { McpDialog } from "./components/McpDialog";
 import { loadServers, McpManager, saveServers, type McpServerConfig } from "./agent/mcp";
 import { ModelPicker } from "./components/ModelPicker";
 import { UsageDialog } from "./components/UsageDialog";
+import { gather, withWebContext, type Gathered } from "./web";
 import { chatUsage, contextPercent } from "./usage";
 import { ModelDialog } from "./components/ModelDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -125,12 +126,22 @@ export function App() {
     const ac = new AbortController();
     abort.current = ac;
     setBusy(true);
+    // Browse: look the question up first (this only uses the network, so a background job keeps running meanwhile).
+    let web: Gathered | undefined;
+    if (settings.browse) {
+      flash("Searching the web…");
+      try {
+        web = await gather(bridge.web, text);
+        if (!ac.signal.aborted) update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, sources: web?.sources ?? [] } : m)) }));
+        flash(web.sources.length ? `Read ${web.sources.length} source${web.sources.length === 1 ? "" : "s"}.` : "Nothing useful found; answering without the web.");
+      } catch (e) { flash(`The web lookup failed (${e instanceof Error ? e.message : String(e)}); answering without it.`); }
+    }
     // A background job on the engine steps aside for this message, and carries on afterwards.
     const jobWasRunning = queue.running !== undefined;
     const release = await queue.holdForChat();
     if (jobWasRunning) flash("A background job paused while you chat; it carries on afterwards.");
     await streamReply(s, history, settings, ac.signal, (u) =>
-      update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, content: u.content, ...(u.reasoning ? { reasoning: u.reasoning } : {}), ...(u.stats ? { stats: u.stats } : {}), ...(u.error ? { error: u.error } : {}), ...(u.interrupted ? { interrupted: true } : {}) } : m)) })));
+      update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, content: u.content, ...(u.reasoning ? { reasoning: u.reasoning } : {}), ...(u.stats ? { stats: u.stats } : {}), ...(u.error ? { error: u.error } : {}), ...(u.interrupted ? { interrupted: true } : {}) } : m)) })), web ? (m) => withWebContext(m, web as Gathered) : undefined);
     abort.current = null;
     release();
     setBusy(false);
@@ -187,7 +198,7 @@ export function App() {
             </div>
           )}
         </div>
-        <Composer busy={busy} disabled={!ready} placeholder={ready ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} onSend={(t) => void send(t)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} />
+        <Composer busy={busy} disabled={!ready} placeholder={ready ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t) => void send(t)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} />
         </>}
       </main>
       {dialog === "models" ? <ModelDialog system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}

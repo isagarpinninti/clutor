@@ -40,3 +40,15 @@ describe("use_tool (external servers)", () => {
     expect((await executeTool({ ws: ws(), external }, "use_tool", { server: "s", tool: "t", arguments: "{oops" })).ok).toBe(false);
   });
 });
+
+describe("web tools", () => {
+  it("report when the web is not available", async () => {
+    expect((await executeTool({ ws: ws() }, "web_search", { query: "x" })).output).toMatch(/not available/);
+    expect(validateToolCall("fetch_url", {}).ok).toBe(false);
+  });
+  it("call the web adapter", async () => {
+    const web = { search: async (q: string) => ({ ok: true, output: `hits for ${q}` }), fetch: async (u: string) => ({ ok: true, output: `page ${u}` }) };
+    expect((await executeTool({ ws: ws(), web }, "web_search", { query: "moe" })).output).toBe("hits for moe");
+    expect((await executeTool({ ws: ws(), web }, "fetch_url", { url: "https://a.b/" })).output).toBe("page https://a.b/");
+  });
+});

@@ -39,6 +39,7 @@ Clutor is a local AI workbench built around its own inference engine. It has thr
 - Streams replies from the model you load, on Clutor's own engine
 - **Background jobs**: hand a slow question to a big model and come back to the answer; jobs survive a restart and resume where they stopped
 - Think mode for reasoning models, with the thought process collapsible
+- **Browse**: look a question up on the web first; the answer comes with numbered sources
 - Model picker under the message box, context ring in the top bar
 
 </td><td width="50%">
@@ -48,6 +49,7 @@ Clutor is a local AI workbench built around its own inference engine. It has thr
 - The agent edits a **private copy**, can run your tests there (asking first), then shows an exact diff
 - **Apply** is refused if a file changed in the meantime; every apply keeps a checkpoint, so **Undo** works
 - Permission modes: *Ask first*, *Auto-run checks*, *Plan only*
+- **Web tools** for the agent (search and read pages), asked once per run
 - **MCP client**: add stdio MCP servers for extra tools; the agent asks before calling any tool the server does not mark read-only
 
 </td></tr>

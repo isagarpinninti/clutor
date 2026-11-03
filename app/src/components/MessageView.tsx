@@ -4,6 +4,7 @@ import { Markdown } from "./Markdown";
 import { CopyIcon } from "./icons";
 import { Logo } from "./Logo";
 import { Thinking } from "./Thinking";
+import { bridge } from "../bridge";
 import type { Job } from "../jobs";
 import { JobStrip, type JobAction } from "./JobStrip";
 
@@ -24,6 +25,11 @@ export function MessageView({ msg, streaming, showReasoning, job, position, onJo
         ) : null}
         {job && onJobAction ? <JobStrip job={job} position={position ?? 0} onAction={onJobAction} /> : null}
         {msg.content ? <Markdown text={msg.content} /> : (streaming || job?.status === "running") && !msg.reasoning ? <Thinking /> : null}
+        {msg.sources?.length ? (
+          <div className="sources" aria-label="Sources">
+            {msg.sources.map((s, i) => <button type="button" key={s.url} className="source" title={s.url} onClick={() => void bridge.web.openExternal(s.url)}><i>{i + 1}</i><span>{s.title || s.url}</span></button>)}
+          </div>
+        ) : null}
         {msg.error ? <div className="error">{msg.error}</div> : null}
         {!streaming && (s || msg.interrupted) ? (
           <div className="meta">

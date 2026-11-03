@@ -1,5 +1,6 @@
 export interface MsgStats { tokens: number; tps?: number; promptTokens?: number; ms: number; cache?: { hitRate: number; gbRead: number } }
-export interface Msg { id: string; role: "user" | "assistant"; content: string; jobId?: string; reasoning?: string; stats?: MsgStats; error?: string; interrupted?: boolean }
+export interface Source { title: string; url: string }
+export interface Msg { id: string; role: "user" | "assistant"; content: string; sources?: Source[]; jobId?: string; reasoning?: string; stats?: MsgStats; error?: string; interrupted?: boolean }
 export interface Conversation { id: string; title: string; updated: number; messages: Msg[] }
 
 export interface Settings {
@@ -11,11 +12,13 @@ export interface Settings {
   /** The longest answer a background job may write, in tokens. */
   jobTokens: number;
   lock: boolean;
+  /** Chat looks things up on the web before answering. */
+  browse: boolean;
   lastModel?: string;
 }
 
 export const DEFAULT_SYSTEM = "You are a helpful assistant running on the user's own device through Clutor. Answer directly and concisely. Use Markdown only where it helps.";
-export const DEFAULT_SETTINGS: Settings = { temperature: 0.7, thinking: false, showReasoning: false, system: DEFAULT_SYSTEM, ctx: 4096, jobTokens: 1024, lock: true };
+export const DEFAULT_SETTINGS: Settings = { temperature: 0.7, thinking: false, showReasoning: false, system: DEFAULT_SYSTEM, ctx: 4096, jobTokens: 1024, lock: true, browse: false };
 
 const CONV = "clutor.conversations.v1";
 const SET = "clutor.settings.v1";

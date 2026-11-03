@@ -4,6 +4,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ## Unreleased
 
+- App: **browsing**. Chat has a Browse switch: the question is searched (DuckDuckGo's plain-HTML page, no key), the top pages are read as text, bounded to about 1,800 characters each, and given to the model with their sources, which appear as numbered chips under the reply. The Code agent gets `web_search` and `fetch_url` tools, behind a single approval per run (refused in Plan only). Web text is marked untrusted. The Rust side refuses any address that is loopback, private, link-local or otherwise on the local network, checks every redirect hop, pins the connection to the checked address, allows only http and https, caps size at 2 MB, and does not open binary files. Search relies on a page layout the service can change; when results cannot be read the app says so.
+
 - App: a **Code** mode. The agent runs in the app on the loaded model, reads a project folder you pick, edits a private copy, can run tests there after asking, and shows a diff to apply or discard. Applying checks nothing changed meanwhile and keeps a checkpoint, so it can be undone. Backed by Rust commands with a path jail (symlink and `..` escapes refused) and a scratch-copy command runner with a stripped environment and time limit.
 - App: an **MCP client** (stdio servers). Servers are added in the Tools dialog; their tools reach the agent through a new `use_tool` core tool, and the agent asks before calling any tool the server does not mark read-only. HTTP transport is not done yet.
 - Core: `use_tool` tool and `external` option on `runAgent`.

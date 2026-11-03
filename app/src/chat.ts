@@ -13,8 +13,8 @@ export function toChatMessages(history: Msg[], settings: Pick<Settings, "system"
 }
 
 /** Streams the model's reply to a conversation, reporting the text so far (at most once per frame) and the measured numbers at the end. */
-export async function streamReply(session: EngineSession, history: Msg[], settings: Settings, signal: AbortSignal, onUpdate: (u: ReplyUpdate) => void): Promise<void> {
-  const messages = toChatMessages(history, settings);
+export async function streamReply(session: EngineSession, history: Msg[], settings: Settings, signal: AbortSignal, onUpdate: (u: ReplyUpdate) => void, shape: (m: ChatMessage[]) => ChatMessage[] = (m) => m): Promise<void> {
+  const messages = shape(toChatMessages(history, settings));
   let content = "", reasoning = "", stats: MsgStats | undefined, interrupted = false, error: string | undefined;
   let pending = false;
   const t0 = performance.now();

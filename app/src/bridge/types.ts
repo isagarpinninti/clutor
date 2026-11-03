@@ -8,6 +8,11 @@ export interface DownloadProgress { id: string; done: number; total: number; sta
 /** A running engine: the events and operations of `clutor-engine chat`, and the first (ready) event. */
 export interface OpenEngine { transport: Transport; ready: NativeReady }
 
+export interface SearchHit { title: string; url: string; snippet: string }
+export interface WebPage { url: string; title: string; text: string; truncated: boolean; status: number }
+/** Web access, done by the shell: addresses on this computer or its network are refused there. */
+export interface WebApi { search(query: string): Promise<SearchHit[]>; fetch(url: string): Promise<WebPage>; openExternal(url: string): Promise<void> }
+
 export interface RunOutcome { exit_code: number | null; output: string; timed_out: boolean; duration_ms: number }
 export interface McpLaunch { command: string; args: string[]; env: Record<string, string>; cwd?: string }
 
@@ -30,6 +35,7 @@ export interface AgentHost {
 export interface Bridge {
   readonly native: boolean;
   readonly host: AgentHost;
+  readonly web: WebApi;
   system(): Promise<SystemInfo>;
   listModels(): Promise<ModelInfo[]>;
   catalog(): Promise<CatalogItem[]>;

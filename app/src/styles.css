@@ -387,3 +387,10 @@ body, .app { -webkit-font-smoothing: antialiased; }
 .dialog .actions { margin-top: 14px; justify-content: flex-end; }
 .dialog .form .btn { align-self: flex-start; }
 :focus-visible { outline: 2px solid rgba(255,255,255,.55); outline-offset: 2px; border-radius: 8px; }
+
+/* sources under a web-assisted reply */
+.sources { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.source { display: inline-flex; align-items: center; gap: 7px; max-width: 260px; background: #0e0e0e; border: 1px solid #1c1c1c; color: var(--muted); border-radius: 999px; padding: 3px 10px 3px 4px; font-size: 12px; transition: background .12s, color .12s; }
+.source:hover { background: #151515; color: var(--text); }
+.source i { font-style: normal; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: #1b1b1b; color: var(--text); font-size: 11px; }
+.source span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

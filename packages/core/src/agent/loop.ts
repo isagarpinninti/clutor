@@ -40,6 +40,8 @@ export interface AgentOptions {
   runCommand?: ToolContext["runCommand"];
   /** Tools of connected MCP servers, reachable through the `use_tool` tool. */
   external?: ToolContext["external"];
+  /** Web search and page reading. */
+  web?: ToolContext["web"];
   approve?: ToolContext["approve"];
   signal?: AbortSignal;
   onEvent?: (e: AgentEvent) => void;
@@ -118,7 +120,7 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
   const maxRetries = o.maxVerifyRetries ?? 3;
   const limit = o.contextChars ?? 60_000;
   const json = o.llm.toolMode === "json";
-  const ctx: ToolContext = { ws: o.ws, ...(o.runCommand ? { runCommand: o.runCommand } : {}), ...(o.approve ? { approve: o.approve } : {}), ...(o.external ? { external: o.external } : {}) };
+  const ctx: ToolContext = { ws: o.ws, ...(o.runCommand ? { runCommand: o.runCommand } : {}), ...(o.approve ? { approve: o.approve } : {}), ...(o.external ? { external: o.external } : {}), ...(o.web ? { web: o.web } : {}) };
 
   const head: ChatMessage[] = [
     { role: "system", content: [SYSTEM_PROMPT, o.environmentHints === false ? "" : await workspaceHints(o.ws), o.systemExtra ?? "", json ? jsonProtocolPrompt() : ""].filter(Boolean).join("\n\n") },

@@ -1,12 +1,14 @@
 mod engine;
 mod models;
 mod project;
+mod web;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(engine::EngineState::default())
         .manage(project::McpState::default())
         .invoke_handler(tauri::generate_handler![
@@ -25,6 +27,8 @@ pub fn run() {
             project::mcp_start,
             project::mcp_send,
             project::mcp_stop,
+            web::web_fetch,
+            web::web_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clutor");

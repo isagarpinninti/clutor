@@ -1,5 +1,5 @@
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
-import type { AgentHost, Bridge, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
+import type { AgentHost, Bridge, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
 /** A browser preview with no engine: models, downloads and replies are simulated so the interface can be developed and tested without the native shell. */
 
@@ -85,9 +85,25 @@ const mockHost: AgentHost = {
   async mcpStop() { /* none */ },
 };
 
+const mockWeb: WebApi = {
+  async search(q) {
+    await new Promise((r) => setTimeout(r, 300));
+    return [
+      { title: `About ${q}`, url: "https://example.org/about", snippet: "A short description from the preview search." },
+      { title: `${q}: a guide`, url: "https://example.com/guide", snippet: "Another preview result." },
+    ];
+  },
+  async fetch(url) {
+    await new Promise((r) => setTimeout(r, 300));
+    return { url, title: "Preview page", text: "This is a pretend page, shown by the browser preview. In the app, real pages are read as text.", truncated: false, status: 200 };
+  },
+  async openExternal(url) { window.open(url, "_blank", "noopener"); },
+};
+
 export const mockBridge: Bridge = {
   native: false,
   host: mockHost,
+  web: mockWeb,
   async system(): Promise<SystemInfo> { return { os: "preview", arch: "browser", ramBytes: 16 * 2 ** 30, cores: 8, modelsDir: "~/.clutor/models" }; },
   async listModels() { return MODELS; },
   async catalog() { return CATALOG; },

@@ -3,7 +3,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { AgentHost, Bridge, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import type { AgentHost, Bridge, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
 /** The engine runs inside this process (src-tauri links it); its events arrive as Tauri events and its operations go out as commands. */
 class TauriTransport implements Transport {
@@ -44,9 +45,16 @@ const host: AgentHost = {
   mcpStop: (id) => invoke("mcp_stop", { id }),
 };
 
+const web: WebApi = {
+  search: (query) => invoke("web_search", { query }),
+  fetch: (url) => invoke("web_fetch", { url }),
+  openExternal: (url) => (/^https?:\/\//.test(url) ? openUrl(url) : Promise.reject(new Error("only web addresses can be opened"))),
+};
+
 export const tauriBridge: Bridge = {
   native: true,
   host,
+  web,
   system: () => invoke<SystemInfo>("system_info"),
   listModels: () => invoke<ModelInfo[]>("list_models"),
   catalog: () => invoke<CatalogItem[]>("model_catalog"),
