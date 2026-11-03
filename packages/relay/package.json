@@ -1,0 +1,14 @@
+{
+  "name": "@clutor/relay",
+  "version": "0.1.0",
+  "description": "A small relay you host yourself, so the Clutor phone app can reach your computer from anywhere. It forwards encrypted bytes between the two and cannot read them.",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "author": { "name": "Sagar Pinninti", "url": "https://github.com/isagarpinninti" },
+  "main": "./src/server.mjs",
+  "bin": { "clutor-relay": "./src/bin.mjs" },
+  "engines": { "node": ">=20" },
+  "scripts": { "start": "node src/bin.mjs", "test": "node --test test/relay.test.mjs" },
+  "dependencies": { "ws": "^8.18.0" }
+}

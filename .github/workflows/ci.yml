@@ -37,6 +37,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+      - run: npm test -w @clutor/relay
       - run: npm run smoke
       - run: npm run bench
         if: matrix.node == 22 && matrix.os == 'ubuntu-latest'
