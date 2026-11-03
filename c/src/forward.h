@@ -66,6 +66,10 @@ typedef struct {
   float *conv_state, *ssm_st;  /* per recurrent layer: the last (conv - 1) inputs of the causal convolution, and one state matrix per head */
   float *qg, *qkv, *zbuf, *ab, *cvo;   /* qwen35 scratch */
   cl_xq xq_ss;
+  /* qwen35 prompt processing: scratch for up to CL_PF_B tokens at once (the weights are streamed once per batch, not once per token) */
+  float *pf_x, *pf_xn, *pf_qkv, *pf_z, *pf_ab, *pf_qg, *pf_k, *pf_v, *pf_att, *pf_hd, *pf_hg, *pf_hu;
+  cl_xq *pf_xqe, *pf_xqq, *pf_xqss, *pf_xqff;
+  int locked;              /* the mapped weights are pinned in memory */
   int pos;                 /* tokens already in the KV cache */
 } cl_fwd;
 
@@ -76,6 +80,7 @@ typedef struct { int *experts; float *weights; float *logits; /* optional: n_lay
 /* Streaming options. cache_bytes == 0 keeps the whole file mapped (fast, but resident memory grows with the model); otherwise experts are read
  * on demand into a cache of that many bytes and the rest of the model stays on disk. */
 typedef struct { uint64_t cache_bytes; int stage_slots, io_threads, os_bypass, prefetch;
+  int lock;         /* pin the mapped weights in memory (mlock), so other programs' memory is compressed or swapped out instead of the model being evicted: what GPU runtimes get by wiring their buffers. Mapped (non-streaming) models only */
   cl_smart smart;   /* SMART-ROUTE: needs streaming (cache_bytes > 0), since it asks the cache what is in memory */
   int prefetch_n;   /* how many of the previous token's experts per layer to read early (best-ranked first); 0 = all that were used */ cl_policy policy; } cl_fwd_opts;
 int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen);
@@ -83,4 +88,8 @@ void cl_fwd_close(cl_fwd *f);
 void cl_fwd_reset(cl_fwd *f);
 /* Runs one token at position f->pos (then advances it). Writes n_vocab logits. `route` may be NULL, else it must hold n_layer*n_used entries. */
 int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *err, size_t errlen);
+/* Feeds n tokens. `logits` (n_vocab floats, may be NULL) receives the distribution after the LAST one. A qwen35 model reads the tokens in batches of up to
+ * CL_PF_B, so a long prompt costs far fewer passes over the weights; every other architecture simply steps token by token. */
+#define CL_PF_B 32
+int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err, size_t errlen);
 #endif

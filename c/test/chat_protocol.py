@@ -52,6 +52,20 @@ a, text, d = c.say(prompt, max=12, temp=0)
 check(d["ids"] == expect and len(expect) > 0, "chat at temperature 0 matches generate token for token", f"{d['ids']} vs {expect}")
 check(d["finish"] in ("length", "stop") and d["tokens"] >= 1 and d["pos"] == a["pos"] + d["tokens"], "reports finish, tokens and position", d)
 
+# prompts that cross the batch boundary of prompt processing (32 tokens at a time) give the same tokens as feeding them one by one
+def ntok(t): return len(subprocess.run([ENGINE, "tokenize", MODEL, t], capture_output=True, text=True).stdout.split())
+for want in (31, 32, 33, 50):
+    t = ""
+    while ntok(t + "ab ") <= want: t += "ab "
+    f2 = tempfile.mktemp(suffix=".json")
+    subprocess.run([ENGINE, "generate", MODEL, t, "--n", "6", "--quiet", "--ids", f2], capture_output=True)
+    r2 = json.load(open(f2)); os.unlink(f2)
+    c.send(op="reset"); c.until({"reset"})
+    _, _, dd = c.say(t, max=6, temp=0)
+    check(dd["ids"] == r2["full_ids"][len(r2["prompt_ids"]):], "a prompt of ~%d tokens (batched prompt processing) gives the same tokens as one at a time" % ntok(t), (dd["ids"], r2["full_ids"][len(r2["prompt_ids"]):]))
+c.send(op="reset"); c.until({"reset"})
+a, text, d = c.say(prompt, max=12, temp=0)
+
 # the cache is kept: a second append only pays for its own tokens
 pos_before = d["pos"]
 c.send(op="append", text=" jumps"); a2 = c.until({"appended", "error"})[-1]

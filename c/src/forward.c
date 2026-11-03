@@ -104,6 +104,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   f->map = mmap(NULL, f->map_size, PROT_READ, MAP_PRIVATE, fd, 0);
   close(fd);
   if (f->map == MAP_FAILED) { f->map = NULL; snprintf(err, errlen, "cannot map %s", path); goto fail; }
+  if (opts && opts->lock && !opts->cache_bytes) f->locked = mlock(f->map, f->map_size) == 0;   /* reads the whole file in, so it can take seconds; failing just leaves the model evictable */
   if (cl_meta_parse(&f->meta, f->map, f->map_size, err, errlen)) goto fail;
   REQ_U("embedding_length", f->n_embd);
   REQ_U("attention.head_count", f->n_head);
@@ -222,6 +223,14 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
     const int CC = 2 * f->ssm_state * f->ssm_groups + f->ssm_state * f->ssm_heads;
     f->conv_state = calloc((size_t)f->n_rec * CC * (f->ssm_conv - 1), 4); f->ssm_st = calloc((size_t)f->n_rec * f->ssm_heads * f->ssm_state * f->ssm_state, 4);
     f->qg = calloc((size_t)2 * f->n_q, 4); f->qkv = calloc((size_t)CC, 4); f->cvo = calloc((size_t)CC, 4); f->zbuf = calloc((size_t)f->ssm_inner, 4); f->ab = calloc((size_t)2 * f->ssm_heads, 4);
+    { const size_t B = CL_PF_B, AS = (size_t)(f->ssm_inner > f->n_q ? f->ssm_inner : f->n_q);
+      f->pf_x = calloc(B * f->n_embd, 4); f->pf_xn = calloc(B * f->n_embd, 4); f->pf_qkv = calloc(B * CC, 4); f->pf_z = calloc(B * f->ssm_inner, 4); f->pf_ab = calloc(B * 2 * f->ssm_heads, 4);
+      f->pf_qg = calloc(B * 2 * f->n_q, 4); f->pf_k = calloc(B * f->n_kvw, 4); f->pf_v = calloc(B * f->n_kvw, 4); f->pf_att = calloc(B * AS, 4); f->pf_hd = calloc(B * f->n_embd, 4);
+      f->pf_hg = calloc(B * f->n_ff_exp, 4); f->pf_hu = calloc(B * f->n_ff_exp, 4);
+      f->pf_xqe = calloc(B, sizeof(cl_xq)); f->pf_xqq = calloc(B, sizeof(cl_xq)); f->pf_xqss = calloc(B, sizeof(cl_xq)); f->pf_xqff = calloc(B, sizeof(cl_xq));
+      int ok = f->pf_x && f->pf_xn && f->pf_qkv && f->pf_z && f->pf_ab && f->pf_qg && f->pf_k && f->pf_v && f->pf_att && f->pf_hd && f->pf_hg && f->pf_hu && f->pf_xqe && f->pf_xqq && f->pf_xqss && f->pf_xqff;
+      for (size_t i = 0; ok && i < B; i++) ok = cl_xq_init(&f->pf_xqe[i], f->n_embd) && cl_xq_init(&f->pf_xqq[i], f->n_q) && cl_xq_init(&f->pf_xqss[i], f->ssm_inner) && cl_xq_init(&f->pf_xqff[i], f->n_ff_exp);
+      if (!ok) { snprintf(err, errlen, "out of memory"); goto fail; } }
     if (!f->conv_state || !f->ssm_st || !f->qg || !f->qkv || !f->cvo || !f->zbuf || !f->ab || !cl_xq_init(&f->xq_ss, f->ssm_inner)) { snprintf(err, errlen, "out of memory"); goto fail; }
   }
   if (!f->kc || !f->vc || !f->x || !f->xn || !f->q || !f->k || !f->v || !f->att || !f->scores || !f->moe || !f->hg || !f->hu || !f->hd || !f->rl || !f->rlogit) { snprintf(err, errlen, "out of memory"); goto fail; }
@@ -262,8 +271,13 @@ fail:
 void cl_fwd_close(cl_fwd *f) {
   if (f->L) for (int l = 0; l < f->n_layer; l++) { free(f->L[l].attn_norm_f); free(f->L[l].ffn_norm_f); free(f->L[l].bq_f); free(f->L[l].bk_f); free(f->L[l].bv_f); free(f->L[l].qn_f); free(f->L[l].kn_f); free(f->L[l].router_f); free(f->L[l].ssm_a_f); free(f->L[l].ssm_dt_f); free(f->L[l].ssm_norm_f); free(f->L[l].conv_f); }
   free(f->L); free(f->out_norm_f); free(f->rope_factors); free(f->conv_state); free(f->ssm_st); free(f->qg); free(f->qkv); free(f->cvo); free(f->zbuf); free(f->ab);
-  if (f->hybrid) cl_xq_free(&f->xq_ss);
-  free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
+  if (f->hybrid) {
+    cl_xq_free(&f->xq_ss);
+    for (int i = 0; i < CL_PF_B; i++) { if (f->pf_xqe) cl_xq_free(&f->pf_xqe[i]); if (f->pf_xqq) cl_xq_free(&f->pf_xqq[i]); if (f->pf_xqss) cl_xq_free(&f->pf_xqss[i]); if (f->pf_xqff) cl_xq_free(&f->pf_xqff[i]); }
+    free(f->pf_xqe); free(f->pf_xqq); free(f->pf_xqss); free(f->pf_xqff);
+    free(f->pf_x); free(f->pf_xn); free(f->pf_qkv); free(f->pf_z); free(f->pf_ab); free(f->pf_qg); free(f->pf_k); free(f->pf_v); free(f->pf_att); free(f->pf_hd); free(f->pf_hg); free(f->pf_hu);
+  }
+  free(f->logits_buf); free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
   cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_q); cl_xq_free(&f->xq_ff);
   if (f->xq_ffk) for (int k = 0; k < f->n_used; k++) cl_xq_free(&f->xq_ffk[k]);
   free(f->xq_ffk);
@@ -308,7 +322,7 @@ static void rope_neox(float *v, int hd, int pos, float base, const float *ff) {
   }
 }
 
-static cl_mv mv(const cl_w *w, const float *xf, const cl_xq *xq, float *out) { cl_mv j = {w->type, w->p, w->rows, w->cols, xf, xq, out}; return j; }
+static cl_mv mv(const cl_w *w, const float *xf, const cl_xq *xq, float *out) { cl_mv j = {w->type, w->p, w->rows, w->cols, xf, xq, out, 1, 0, 0}; return j; }
 
 static int resident_cb(void *ctx, int expert) {
   struct { cl_xs *xs; int layer; } *c = ctx;
@@ -327,106 +341,124 @@ static void l2norm(float *x, int n, float eps) {
   for (int i = 0; i < n; i++) x[i] *= s;
 }
 
-/* One token through a qwen35 model. Layers 0, 1, 2, 4, 5, 6, ... are Gated DeltaNet layers: a causal depthwise convolution over the concatenated
- * query / key / value projections, then, for each value head, the delta rule on a (state x state) matrix that decays by exp(g), is corrected towards
- * the new value by beta, and is read out with the query. Every fourth layer is full attention whose query projection also produces an output gate
- * (sigmoid), with per-head QK RMS-norm and rotary embeddings on the first rope_dim dimensions of each head. Both end in a SwiGLU feed-forward. */
-static int step_q35(cl_fwd *f, float *logits, char *err, size_t errlen) {
-  const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos, KW = f->n_kvw, GROUP = H / KVH, FF = f->n_ff_exp;
+/* A product of one weight matrix with nb inputs at once: xf rows are `in` floats apart, results `rows` apart. */
+static cl_mv mvb(const cl_w *w, const float *xf, size_t in, const cl_xq *xq, float *out, int nb) { cl_mv j = {w->type, w->p, w->rows, w->cols, xf, xq, out, nb, in, (size_t)w->rows}; return j; }
+
+/* The sequential part of a Gated DeltaNet layer for ONE token (the state evolves token by token, so a batch walks through here in order): the causal
+ * convolution over the concatenated query / key / value projections, the delta rule on every value head's state matrix, and the gated RMS-norm. */
+static void deltanet_token(cl_fwd *f, const cl_fwd_layer *y, const float *qkv, const float *z, float *ab, float *out) {
   const int S = f->ssm_state, HK = f->ssm_groups, HV = f->ssm_heads, CK = f->ssm_conv, KEYD = S * HK, VALD = S * HV, CC = 2 * KEYD + VALD;
-  (void)err; (void)errlen;
+  float *beta = ab, *g = ab + HV;   /* g currently holds alpha; beta holds the raw beta */
+  for (int h = 0; h < HV; h++) { beta[h] = sigmoidf(beta[h]); g[h] = softplusf(g[h] + y->ssm_dt_f[h]) * y->ssm_a_f[h]; }
+  /* causal depthwise convolution (kernel CK, oldest tap first), then SiLU; the last CK - 1 inputs stay as the state */
+  float *cs = f->conv_state + (size_t)y->rec_idx * CC * (CK - 1), *cvo = f->cvo;
+  for (int c = 0; c < CC; c++) {
+    float *st = cs + (size_t)c * (CK - 1);
+    const float *w = y->conv_f + (size_t)c * CK;
+    float acc = 0;
+    for (int k = 0; k < CK - 1; k++) acc += st[k] * w[k];
+    acc += qkv[c] * w[CK - 1];
+    for (int k = 0; k + 1 < CK - 1; k++) st[k] = st[k + 1];
+    st[CK - 2] = qkv[c];
+    cvo[c] = siluf(acc);
+  }
+  float *q = cvo, *k = cvo + KEYD, *v = cvo + 2 * KEYD;
+  for (int gi = 0; gi < HK; gi++) { l2norm(q + gi * S, S, f->rms_eps); l2norm(k + gi * S, S, f->rms_eps); }
+  const float qscale = 1.0f / sqrtf((float)S);
+  float *st = f->ssm_st + (size_t)y->rec_idx * HV * S * S;
+  for (int h = 0; h < HV; h++) {
+    const int kh = h % HK;   /* the key heads are repeated across the value heads in tiles (ggml_repeat), not in pairs */
+    const float *kk = k + kh * S, *qq = q + kh * S, *vv = v + h * S;
+    float *sm = st + (size_t)h * S * S;
+    const float eg = expf(g[h]), bh = beta[h];
+    for (int j = 0; j < S; j++) {
+      float *sj = sm + (size_t)j * S;   /* sj[i]: key dimension i of value dimension j */
+      float sk = 0;
+      for (int i = 0; i < S; i++) { sj[i] *= eg; sk += sj[i] * kk[i]; }
+      const float d = (vv[j] - sk) * bh;
+      float o = 0;
+      for (int i = 0; i < S; i++) { sj[i] += kk[i] * d; o += sj[i] * qq[i]; }
+      out[h * S + j] = o * qscale;
+    }
+  }
+  for (int h = 0; h < HV; h++) {   /* gated RMS-norm: norm(out) * silu(z), per value head */
+    float *o = out + h * S;
+    rmsnorm(o, o, y->ssm_norm_f, S, f->rms_eps);
+    const float *zz = z + h * S;
+    for (int i = 0; i < S; i++) o[i] *= siluf(zz[i]);
+  }
+}
+
+/* The sequential part of a gated full-attention layer for ONE token at position pos: per-head QK-norm and rotary embeddings (qg holds query and gate per head, k / v the
+ * projections), the key/value cache, causal attention, and the sigmoid output gate. */
+static void attn_token(cl_fwd *f, const cl_fwd_layer *y, int pos, float *qg, float *k, const float *v, float *att) {
+  const int H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, KW = f->n_kvw, GROUP = H / KVH;
+  for (int h = 0; h < H; h++) { float *qh = qg + (size_t)h * 2 * hd; rmsnorm(qh, qh, y->qn_f, hd, f->rms_eps); rope_neox(qh, f->rope_dim, pos, f->rope_base, NULL); }
+  for (int h = 0; h < KVH; h++) { float *kh = k + (size_t)h * hd; rmsnorm(kh, kh, y->kn_f, hd, f->rms_eps); rope_neox(kh, f->rope_dim, pos, f->rope_base, NULL); }
+  float *kc = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW;
+  memcpy(kc, k, (size_t)KW * 4); memcpy(vc, v, (size_t)KW * 4);
+  for (int h = 0; h < H; h++) {
+    const float *qh = qg + (size_t)h * 2 * hd, *gate = qh + hd;
+    const int kvo = (h / GROUP) * hd;
+    float mx = -INFINITY;
+    for (int t = 0; t <= pos; t++) {
+      const float *kt = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
+      float sc = 0;
+      for (int i = 0; i < hd; i++) sc += qh[i] * kt[i];
+      f->scores[t] = sc * f->attn_scale;
+      if (f->scores[t] > mx) mx = f->scores[t];
+    }
+    float sum = 0;
+    for (int t = 0; t <= pos; t++) { f->scores[t] = expf(f->scores[t] - mx); sum += f->scores[t]; }
+    float *oh = att + h * hd;
+    memset(oh, 0, (size_t)hd * 4);
+    for (int t = 0; t <= pos; t++) {
+      const float *vt = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
+      const float p = f->scores[t] / sum;
+      for (int i = 0; i < hd; i++) oh[i] += p * vt[i];
+    }
+    for (int i = 0; i < hd; i++) oh[i] *= sigmoidf(gate[i]);
+  }
+}
+
+/* nb tokens (1 <= nb <= CL_PF_B) through a qwen35 model, layer by layer: every weight matrix is multiplied with all nb tokens in one pass over its rows, and only the
+ * parts that depend on the previous token (the convolution and delta-rule state, the attention over earlier positions) run one token at a time, in order. With nb == 1
+ * this is the ordinary one-token step. `logits` may be NULL when only the state is wanted. */
+static int run_q35(cl_fwd *f, const int *tok, int nb, float *logits) {
+  const int E = f->n_embd, KW = f->n_kvw, FF = f->n_ff_exp, pos0 = f->pos;
+  const int S = f->ssm_state, HK = f->ssm_groups, HV = f->ssm_heads, VALD = S * HV, CC = 2 * S * HK + S * HV, NQ = f->n_q;
+  const size_t AS = (size_t)(f->ssm_inner > NQ ? f->ssm_inner : NQ);
+  float *X = f->pf_x, *XN = f->pf_xn, *HD = f->pf_hd, *HG = f->pf_hg, *HU = f->pf_hu, *ATT = f->pf_att;
+  for (int b = 0; b < nb; b++) cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)tok[b] * cl_row_bytes(f->tok_embd.type, (uint64_t)E), X + (size_t)b * E, E);
   for (int l = 0; l < f->n_layer; l++) {
     cl_fwd_layer *y = &f->L[l];
-    rmsnorm(f->xn, f->x, y->attn_norm_f, E, f->rms_eps);
-    cl_xq_quantize(&f->xq_e, f->xn);
+    for (int b = 0; b < nb; b++) { rmsnorm(XN + (size_t)b * E, X + (size_t)b * E, y->attn_norm_f, E, f->rms_eps); cl_xq_quantize(&f->pf_xqe[b], XN + (size_t)b * E); }
     if (y->recurrent) {
-      float *beta = f->ab, *g = f->ab + HV;
-      { cl_mv j[4] = {mv(&y->attn_qkv, f->xn, &f->xq_e, f->qkv), mv(&y->attn_gate, f->xn, &f->xq_e, f->zbuf), mv(&y->ssm_beta, f->xn, &f->xq_e, beta), mv(&y->ssm_alpha, f->xn, &f->xq_e, g)}; cl_matvec_batch(j, 4); }
-      /* g currently holds alpha; beta holds the raw beta */
-      for (int h = 0; h < HV; h++) { beta[h] = sigmoidf(beta[h]); g[h] = softplusf(g[h] + y->ssm_dt_f[h]) * y->ssm_a_f[h]; }
-      /* causal depthwise convolution (kernel CK, oldest tap first), then SiLU; the last CK - 1 inputs stay as the state */
-      float *cs = f->conv_state + (size_t)y->rec_idx * CC * (CK - 1);
-      for (int c = 0; c < CC; c++) {
-        float *st = cs + (size_t)c * (CK - 1);
-        const float *w = y->conv_f + (size_t)c * CK;
-        float acc = 0;
-        for (int k = 0; k < CK - 1; k++) acc += st[k] * w[k];
-        acc += f->qkv[c] * w[CK - 1];
-        for (int k = 0; k + 1 < CK - 1; k++) st[k] = st[k + 1];
-        st[CK - 2] = f->qkv[c];
-        f->cvo[c] = siluf(acc);
-      }
-      float *q = f->cvo, *k = f->cvo + KEYD, *v = f->cvo + 2 * KEYD;
-      for (int gi = 0; gi < HK; gi++) { l2norm(q + gi * S, S, f->rms_eps); l2norm(k + gi * S, S, f->rms_eps); }
-      const float qscale = 1.0f / sqrtf((float)S);
-      float *st = f->ssm_st + (size_t)y->rec_idx * HV * S * S, *out = f->att;
-      for (int h = 0; h < HV; h++) {
-        const int kh = h % HK;   /* the key heads are repeated across the value heads in tiles (ggml_repeat), not in pairs */
-        const float *kk = k + kh * S, *qq = q + kh * S, *vv = v + h * S;
-        float *sm = st + (size_t)h * S * S;
-        const float eg = expf(g[h]), bh = beta[h];
-        for (int j = 0; j < S; j++) {
-          float *sj = sm + (size_t)j * S;   /* sj[i]: key dimension i of value dimension j */
-          float sk = 0;
-          for (int i = 0; i < S; i++) { sj[i] *= eg; sk += sj[i] * kk[i]; }
-          const float d = (vv[j] - sk) * bh;
-          float o = 0;
-          for (int i = 0; i < S; i++) { sj[i] += kk[i] * d; o += sj[i] * qq[i]; }
-          out[h * S + j] = o * qscale;
-        }
-      }
-      /* gated RMS-norm: norm(out) * silu(z), per value head */
-      for (int h = 0; h < HV; h++) {
-        float *o = out + h * S;
-        rmsnorm(o, o, y->ssm_norm_f, S, f->rms_eps);
-        const float *z = f->zbuf + h * S;
-        for (int i = 0; i < S; i++) o[i] *= siluf(z[i]);
-      }
-      cl_xq_quantize(&f->xq_ss, out);
-      { cl_mv j = mv(&y->ssm_out, out, &f->xq_ss, f->hd); cl_matvec_batch(&j, 1); }
+      { cl_mv j[4] = {mvb(&y->attn_qkv, XN, E, f->pf_xqe, f->pf_qkv, nb), mvb(&y->attn_gate, XN, E, f->pf_xqe, f->pf_z, nb), mvb(&y->ssm_beta, XN, E, f->pf_xqe, f->pf_ab, nb), mvb(&y->ssm_alpha, XN, E, f->pf_xqe, f->pf_ab + HV, nb)};
+        j[2].out_stride = j[3].out_stride = (size_t)2 * HV;   /* beta and alpha of a token sit side by side */
+        cl_matvec_batch(j, 4); }
+      for (int b = 0; b < nb; b++) deltanet_token(f, y, f->pf_qkv + (size_t)b * CC, f->pf_z + (size_t)b * VALD, f->pf_ab + (size_t)b * 2 * HV, ATT + (size_t)b * AS);
+      for (int b = 0; b < nb; b++) cl_xq_quantize(&f->pf_xqss[b], ATT + (size_t)b * AS);
+      { cl_mv j = mvb(&y->ssm_out, ATT, AS, f->pf_xqss, HD, nb); cl_matvec_batch(&j, 1); }
     } else {
-      { cl_mv j[3] = {mv(&y->wq, f->xn, &f->xq_e, f->qg), mv(&y->wk, f->xn, &f->xq_e, f->k), mv(&y->wv, f->xn, &f->xq_e, f->v)}; cl_matvec_batch(j, 3); }
-      for (int h = 0; h < H; h++) { float *qh = f->qg + (size_t)h * 2 * hd; rmsnorm(qh, qh, y->qn_f, hd, f->rms_eps); rope_neox(qh, f->rope_dim, pos, f->rope_base, NULL); }
-      for (int h = 0; h < KVH; h++) { float *kh = f->k + (size_t)h * hd; rmsnorm(kh, kh, y->kn_f, hd, f->rms_eps); rope_neox(kh, f->rope_dim, pos, f->rope_base, NULL); }
-      float *kc = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW;
-      memcpy(kc, f->k, (size_t)KW * 4); memcpy(vc, f->v, (size_t)KW * 4);
-      for (int h = 0; h < H; h++) {
-        const float *qh = f->qg + (size_t)h * 2 * hd, *gate = qh + hd;
-        const int kvo = (h / GROUP) * hd;
-        float mx = -INFINITY;
-        for (int t = 0; t <= pos; t++) {
-          const float *kt = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
-          float sc = 0;
-          for (int i = 0; i < hd; i++) sc += qh[i] * kt[i];
-          f->scores[t] = sc * f->attn_scale;
-          if (f->scores[t] > mx) mx = f->scores[t];
-        }
-        float sum = 0;
-        for (int t = 0; t <= pos; t++) { f->scores[t] = expf(f->scores[t] - mx); sum += f->scores[t]; }
-        float *oh = f->att + h * hd;
-        memset(oh, 0, (size_t)hd * 4);
-        for (int t = 0; t <= pos; t++) {
-          const float *vt = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
-          const float p = f->scores[t] / sum;
-          for (int i = 0; i < hd; i++) oh[i] += p * vt[i];
-        }
-        for (int i = 0; i < hd; i++) oh[i] *= sigmoidf(gate[i]);
-      }
-      cl_xq_quantize(&f->xq_q, f->att);
-      { cl_mv j = mv(&y->wo, f->att, &f->xq_q, f->hd); cl_matvec_batch(&j, 1); }
+      { cl_mv j[3] = {mvb(&y->wq, XN, E, f->pf_xqe, f->pf_qg, nb), mvb(&y->wk, XN, E, f->pf_xqe, f->pf_k, nb), mvb(&y->wv, XN, E, f->pf_xqe, f->pf_v, nb)}; cl_matvec_batch(j, 3); }
+      for (int b = 0; b < nb; b++) attn_token(f, y, pos0 + b, f->pf_qg + (size_t)b * 2 * NQ, f->pf_k + (size_t)b * KW, f->pf_v + (size_t)b * KW, ATT + (size_t)b * AS);
+      for (int b = 0; b < nb; b++) cl_xq_quantize(&f->pf_xqq[b], ATT + (size_t)b * AS);
+      { cl_mv j = mvb(&y->wo, ATT, AS, f->pf_xqq, HD, nb); cl_matvec_batch(&j, 1); }
     }
-    for (int i = 0; i < E; i++) f->x[i] += f->hd[i];
-    rmsnorm(f->xn, f->x, y->ffn_norm_f, E, f->rms_eps);   /* post_attention_norm */
-    cl_xq_quantize(&f->xq_e, f->xn);
-    { cl_mv j[2] = {mv(&y->gate, f->xn, &f->xq_e, f->hg), mv(&y->up, f->xn, &f->xq_e, f->hu)}; cl_matvec_batch(j, 2); }
-    for (int i = 0; i < FF; i++) f->hg[i] = siluf(f->hg[i]) * f->hu[i];
-    cl_xq_quantize(&f->xq_ff, f->hg);
-    { cl_mv j = mv(&y->down, f->hg, &f->xq_ff, f->hd); cl_matvec_batch(&j, 1); }
-    for (int i = 0; i < E; i++) f->x[i] += f->hd[i];
+    for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += HD[i];
+    for (int b = 0; b < nb; b++) { rmsnorm(XN + (size_t)b * E, X + (size_t)b * E, y->ffn_norm_f, E, f->rms_eps); cl_xq_quantize(&f->pf_xqe[b], XN + (size_t)b * E); }   /* post_attention_norm */
+    { cl_mv j[2] = {mvb(&y->gate, XN, E, f->pf_xqe, HG, nb), mvb(&y->up, XN, E, f->pf_xqe, HU, nb)}; cl_matvec_batch(j, 2); }
+    for (int b = 0; b < nb; b++) { float *hg = HG + (size_t)b * FF, *hu = HU + (size_t)b * FF; for (int i = 0; i < FF; i++) hg[i] = siluf(hg[i]) * hu[i]; cl_xq_quantize(&f->pf_xqff[b], hg); }
+    { cl_mv j = mvb(&y->down, HG, FF, f->pf_xqff, HD, nb); cl_matvec_batch(&j, 1); }
+    for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += HD[i];
   }
-  rmsnorm(f->xn, f->x, f->out_norm_f, E, f->rms_eps);
-  cl_xq_quantize(&f->xq_e, f->xn);
-  { cl_mv j = mv(&f->output, f->xn, &f->xq_e, logits); cl_matvec_batch(&j, 1); }
+  f->pos += nb;
+  if (logits) {
+    rmsnorm(f->xn, X + (size_t)(nb - 1) * E, f->out_norm_f, E, f->rms_eps);
+    cl_xq_quantize(&f->xq_e, f->xn);
+    cl_mv j = mv(&f->output, f->xn, &f->xq_e, logits); cl_matvec_batch(&j, 1);
+  }
   return 0;
 }
 
@@ -435,7 +467,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
   if (f->pos >= f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
   const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos, KW = f->n_kvw, GROUP = f->n_head / f->n_head_kv;
   cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)token * cl_row_bytes(f->tok_embd.type, (uint64_t)E), f->x, E);
-  if (f->hybrid) { if (step_q35(f, logits, err, errlen)) return 1; f->pos++; return 0; }
+  if (f->hybrid) { run_q35(f, &token, 1, logits); return 0; }
   if (f->embed_scale != 1.0f) for (int i = 0; i < E; i++) f->x[i] *= f->embed_scale;
   if (f->pred_sel) for (int i = 0; i < f->n_layer * f->n_used; i++) f->pred_sel[i] = -1;
   if (f->xs && f->prefetch) for (int k = 0; k < f->prefetch_n; k++) { cl_xs_prefetch(f->xs, 0, f->prev_sel[k]); f->pred_sel[k] = f->prev_sel[k]; }   /* layer 0, as the previous token chose it (nothing else is known yet) */
@@ -578,8 +610,8 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     const size_t FF = (size_t)f->n_ff_exp;
     for (int k = 0; k < f->n_used; k++) {
       const uint8_t *g = f->xs ? P[k] : y->gate.p + (size_t)sel[k] * y->gate_slab, *u = f->xs ? P[k] + y->gate_slab : y->up.p + (size_t)sel[k] * y->up_slab;
-      j[2 * k] = (cl_mv){y->gate.type, g, f->n_ff_exp, E, f->xn, &f->xq_e, f->hg + k * FF};
-      j[2 * k + 1] = (cl_mv){y->up.type, u, f->n_ff_exp, E, f->xn, &f->xq_e, f->hu + k * FF};
+      j[2 * k] = (cl_mv){y->gate.type, g, f->n_ff_exp, E, f->xn, &f->xq_e, f->hg + k * FF, 1, 0, 0};
+      j[2 * k + 1] = (cl_mv){y->up.type, u, f->n_ff_exp, E, f->xn, &f->xq_e, f->hu + k * FF, 1, 0, 0};
     }
     cl_matvec_batch(j, 2 * f->n_used);
     for (int k = 0; k < f->n_used; k++) {
@@ -587,7 +619,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
       for (size_t i = 0; i < FF; i++) hg[i] = hg[i] / (1.0f + expf(-hg[i])) * hu[i];   /* silu(gate) * up */
       cl_xq_quantize(&f->xq_ffk[k], hg);
       const uint8_t *d = f->xs ? P[k] + y->gate_slab + y->up_slab : y->down.p + (size_t)sel[k] * y->down_slab;
-      j[k] = (cl_mv){y->down.type, d, E, f->n_ff_exp, hg, &f->xq_ffk[k], f->hd + (size_t)k * E};
+      j[k] = (cl_mv){y->down.type, d, E, f->n_ff_exp, hg, &f->xq_ffk[k], f->hd + (size_t)k * E, 1, 0, 0};
     }
     cl_matvec_batch(j, f->n_used);
     for (int k = 0; k < f->n_used; k++) {
@@ -603,5 +635,19 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
   { cl_mv j = mv(&f->output, f->xn, &f->xq_e, logits); cl_matvec_batch(&j, 1); }
   if (f->logit_scale != 1.0f) for (int i = 0; i < f->n_vocab; i++) logits[i] /= f->logit_scale;
   f->pos++;
+  return 0;
+}
+
+int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err, size_t errlen) {
+  if (n < 1) { snprintf(err, errlen, "nothing to feed"); return 1; }
+  if (f->pos + n > f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
+  for (int i = 0; i < n; i++) if (tokens[i] < 0 || tokens[i] >= f->n_vocab) { snprintf(err, errlen, "token %d is outside the vocabulary", tokens[i]); return 1; }
+  if (!f->hybrid) {
+    if (!f->logits_buf) f->logits_buf = malloc((size_t)f->n_vocab * 4);
+    if (!f->logits_buf) { snprintf(err, errlen, "out of memory"); return 1; }
+    for (int i = 0; i < n; i++) if (cl_fwd_step(f, tokens[i], i == n - 1 && logits ? logits : f->logits_buf, NULL, err, errlen)) return 1;
+    return 0;
+  }
+  for (int i = 0; i < n; i += CL_PF_B) { int nb = n - i < CL_PF_B ? n - i : CL_PF_B; run_q35(f, tokens + i, nb, i + nb == n ? logits : NULL); }
   return 0;
 }

@@ -23,7 +23,7 @@ static void usage(void) {
        "  tokenize <model.gguf> TEXT [--no-special]    Print the token ids of TEXT (byte-level BPE built from the model's own tables)\n"
        "  logits <model.gguf> PROMPT [--top N] [--ctx N] [--trace FILE]   Run the REAL forward pass over PROMPT and print the next-token logprobs (olmoe models); --trace writes the router's choices\n"
        "  generate <model.gguf> PROMPT [--n N] [--trace FILE] [--quiet] [--cache-mb N --prefetch off|prev|ahead (off) --prefetch-n N --policy lru|wtinylfu|adaptive --io-threads N --no-os-cache]   Greedy decoding with the real forward pass; --trace records the router's scores for every token; --cache-mb N streams the experts from disk through an N MiB cache instead of mapping the whole file\n"
-       "  chat <model.gguf> [--ctx N] [--cache-mb N ...]   A long-lived session over stdin/stdout, one JSON object per line: {\"op\":\"append\",\"text\":...} feeds text into the conversation (the KV cache is kept between calls), {\"op\":\"generate\",\"max\":N,\"temp\":T} streams the reply as {\"ev\":\"t\",\"s\":piece} lines and ends with {\"ev\":\"done\",...}, {\"op\":\"cancel\"} stops it, {\"op\":\"reset\"} forgets the conversation\n"
+       "  chat <model.gguf> [--ctx N] [--cache-mb N | --lock ...]   A long-lived session over stdin/stdout, one JSON object per line: {\"op\":\"append\",\"text\":...} feeds text into the conversation (the KV cache is kept between calls), {\"op\":\"generate\",\"max\":N,\"temp\":T} streams the reply as {\"ev\":\"t\",\"s\":piece} lines and ends with {\"ev\":\"done\",...}, {\"op\":\"cancel\"} stops it, {\"op\":\"reset\"} forgets the conversation\n"
        "  quality <model.gguf> TEXTFILE --cache-mb N [--smart J,M,TAU] [--max-tokens N]   Teacher-forced perplexity, KL divergence and top-1 agreement of a streamed (optionally SMART-ROUTE) run against exact routing\n"
        "  stream <model.gguf> [options]    Stream experts from disk through the cache for N tokens of routing (synthetic, or the real router with --trace FILE) and report what was measured\n"
        "\n"
@@ -253,6 +253,7 @@ static cl_fwd_opts fwd_opts(int argc, char **argv) {
   o.stage_slots = (int)num(argc, argv, "--stage", 0);
   o.prefetch_n = (int)num(argc, argv, "--prefetch-n", 0);
   o.os_bypass = flag(argc, argv, "--no-os-cache");
+  o.lock = flag(argc, argv, "--lock");
   const char *sm = arg(argc, argv, "--smart");
   if (sm && strcmp(sm, "off")) {
     int J, M; double tau;
@@ -646,7 +647,7 @@ static int cmd_chat(int argc, char **argv) {
   int nhist = 0, have_logits = 0;
   cl_str tpl = {0};
   cl_meta_str(&meta, "tokenizer.chat_template", &tpl);
-  printf("{\"ev\":\"ready\",\"arch\":\"%s\",\"name\":\"%s\",\"nCtx\":%d,\"nVocab\":%d,\"nLayer\":%d,\"threads\":%d,\"streaming\":%s,\"addBos\":%s,\"template\":", f.arch, f.model.name, ctx, f.n_vocab, f.n_layer, cl_get_threads(), f.xs ? "true" : "false", cl_tok_add_bos(tok) ? "true" : "false");
+  printf("{\"ev\":\"ready\",\"arch\":\"%s\",\"name\":\"%s\",\"nCtx\":%d,\"nVocab\":%d,\"nLayer\":%d,\"threads\":%d,\"streaming\":%s,\"locked\":%s,\"addBos\":%s,\"template\":", f.arch, f.model.name, ctx, f.n_vocab, f.n_layer, cl_get_threads(), f.xs ? "true" : "false", f.locked ? "true" : "false", cl_tok_add_bos(tok) ? "true" : "false");
   json_str(tpl.p ? tpl.p : "", tpl.p ? (int)(tpl.len < 12000 ? tpl.len : 12000) : 0);
   puts("}");
   fflush(stdout);
@@ -675,12 +676,14 @@ static int cmd_chat(int argc, char **argv) {
       }
       double t0 = now_s();
       int fed = 0, cancelled = 0;
-      for (; fed < n; fed++) {
-        if (cl_fwd_step(&f, ids[fed], logits, NULL, err, sizeof err)) { ev_error(err); have_logits = 0; cancelled = 1; break; }
-        hist[nhist++] = ids[fed];
-        if (n > 16 && (fed % 8 == 7 || fed + 1 == n)) {
-          printf("{\"ev\":\"progress\",\"done\":%d,\"total\":%d}\n", fed + 1, n); fflush(stdout);
-          if (fed + 1 < n && ib_cancelled()) { fed++; cancelled = 1; break; }
+      while (fed < n) {
+        int nb = n - fed < CL_PF_B ? n - fed : CL_PF_B;
+        if (cl_fwd_prefill(&f, ids + fed, nb, fed + nb == n ? logits : NULL, err, sizeof err)) { ev_error(err); have_logits = 0; cancelled = 1; break; }
+        for (int i = 0; i < nb; i++) hist[nhist++] = ids[fed + i];
+        fed += nb;
+        if (n > 16) {
+          printf("{\"ev\":\"progress\",\"done\":%d,\"total\":%d}\n", fed, n); fflush(stdout);
+          if (fed < n && ib_cancelled()) { cancelled = 1; break; }
         }
       }
       have_logits = !cancelled && fed > 0;

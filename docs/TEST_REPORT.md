@@ -98,7 +98,7 @@ llama.cpp `llama-server -ngl 0` (CPU) against `clutor-engine`, same file (5.23 G
 | Golden test (tiny generated `qwen35` with Q4_K, Q5_K and Q6_K weights, partial rotary, 3 recurrent layers and 1 attention layer; independent pure-Python reference) | float math agrees to 5e-5 in logprob on every seed tried; the 8-bit path agrees to 5e-5 on the default seed on NEON, NEON without dot product and portable C. On other seeds and on a differently compiled build (the sanitizer build) it drifts on some prompts by up to 0.13 (mean up to 0.035): a rounding flip at one quantization point, carried by the recurrent state, which the double-precision reference does not make identically. So for this architecture the 8-bit path is checked with wider limits (mean 0.08, max 0.3) and the float path, strict at 1e-3, is the logic check |
 | Chat protocol (`make chat-test`) | passes, including `reset` (which must zero the recurrent state) and cancel |
 
-What this does not show: the logprob gaps (about 0.1) are not zero, and the exact cause is not isolated. After adding a `Q5_K` integer kernel, which made the first layer's projection match llama.cpp to 4e-8, the end-to-end gaps did not shrink, so they are not (only) from that. Candidates not ruled out: llama.cpp's f16 KV cache against this engine's f32, its chunked delta-rule algorithm for batched prompts, and accumulated 8-bit rounding differences over 32 layers. Per-layer hidden states drift away from llama.cpp's by a few percent of the largest shown value by layer 3 and stay there; judged as numerical noise, not proven. Speed: about 2 tok/s warm (0.47 s/token, one run, memory free) and 0.1 tok/s when the machine was under heavy memory pressure (compressor holding about 11 GiB): this model is memory-bound and there is no batched prompt processing.
+What this does not show: the logprob gaps (about 0.1) are not zero, and the exact cause is not isolated. After adding a `Q5_K` integer kernel, which made the first layer's projection match llama.cpp to 4e-8, the end-to-end gaps did not shrink, so they are not (only) from that. Candidates not ruled out: llama.cpp's f16 KV cache against this engine's f32, its chunked delta-rule algorithm for batched prompts, and accumulated 8-bit rounding differences over 32 layers. Per-layer hidden states drift away from llama.cpp's by a few percent of the largest shown value by layer 3 and stay there; judged as numerical noise, not proven. Speed is in section 4b.
 
 ## 4. Speed and memory (earlier; one run per setting, about 30% run-to-run spread)
 
@@ -113,6 +113,20 @@ OLMoE, 100-token job: this engine 9.6-9.9 s with the file in RAM against Colibri
 | 8 GiB | 2.56-3.03 | 0.33-0.39 | 81.7% | 0.20 | 5.7-8.1 GiB |
 
 So a model 1.08 times the size of RAM generates 2-3 tokens per second with a 3-8 GiB resident footprint. The runs improved a little from the first to the third at every setting (for example 0.46 to 0.37 s/token at 4 GiB), which I did not explain; it may be thermal or dense-weight page-cache warming, so treat the spread as the noise. **The llama.cpp comparison was not completed**: the benchmark was stopped at the user's request while llama.cpp was loading the file, so there is no measured speed ratio against llama.cpp memory-mapping, and no claim of one is made here.
+
+## 4b. Speed of the 9B model on a 16 GiB M2 Air, and what moved it (measured 2026-11-03; one run per setting, browsers and other apps open throughout)
+
+The machine was under memory pressure the whole time (the system compressor held 8-11 GiB of other programs' memory), which is a normal state for a laptop and matters more than any kernel.
+
+| Change | Decode | Prompt processing | Note |
+|---|---|---|---|
+| Starting point (memory-mapped, one token per pass) | 0.13 tok/s (7.35 s/token) | the same per token | the 5.2 GiB file was evicted and re-read from the SSD on every token; the profile showed 159 of 206 s in the weight products and 35 s in the output layer, 0.7 s in the DeltaNet recurrence |
+| Weights pinned in memory (`--lock`, `mlock`) | 6.3 tok/s (0.16 s/token) | 8.2 tok/s | the 40-fold step: the operating system now compresses or swaps other programs instead of the model. This is what a GPU runtime gets by wiring its buffers |
+| + vectorized 5- and 6-bit weight unpacking, one horizontal add per block instead of per 16 elements | 5.5 -> 8.0 tok/s | 8.6 -> 18.3 tok/s | integer arithmetic is exact in any order: golden tests, 41,811 unit checks and greedy text unchanged |
+| + prompts read in batches of 32 tokens, each weight block unpacked once for the whole batch | | (included above) | the same tokens as feeding one at a time, checked on prompts of 31 to 50 tokens |
+| + scale/min unpacking with word operations | 8.3 tok/s | 19.0 tok/s | checked equal to the old unpacking on 400,000 random values |
+
+Decode now streams about 43 GB/s of weights, which is close to what this chip's memory delivers, so further CPU gains on decode are bounded. llama.cpp with Metal on the same machine measured 13.4 tok/s on this model in the earlier test (a different quantization pass, not re-run now), so the CPU engine is at roughly 60% of that. Prompt processing at 19 tok/s is compute-bound and could still gain from 2x2 int8 matrix instructions (i8mm), which are not used. In the terminal chat: first reply 4 s including a 63-token prompt, second turn 1 s.
 
 ## 5. Bugs the testing found (all fixed)
 

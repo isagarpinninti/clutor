@@ -9,7 +9,7 @@ import type { ChatMessage, StreamEvent } from "./stream";
  * renders the chat template and sends only the text the engine has not seen, so a turn costs its new tokens, not the whole history.
  */
 
-export interface NativeReady { arch: string; name: string; nCtx: number; nVocab: number; nLayer: number; threads: number; streaming: boolean; addBos: boolean; template: string }
+export interface NativeReady { arch: string; name: string; nCtx: number; nVocab: number; nLayer: number; threads: number; streaming: boolean; locked?: boolean; addBos: boolean; template: string }
 
 interface Ev { ev: string; [k: string]: unknown }
 
