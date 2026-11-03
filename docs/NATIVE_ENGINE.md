@@ -177,3 +177,18 @@ Setup: OLMoE-1B-7B Q4_K_M, a fresh cold copy of the file, `F_NOCACHE` reads, 256
 - **The predictor is good:** 82% of the experts it picks are chosen, against 37% for the previous-token guess, and the hit rate rises from 15% to 84%.
 - **It does not make this run faster.** The run is bandwidth-bound (the compute thread waits on the disk about 88% of the time at roughly 1.5 GB/s), so time is bytes read divided by bandwidth. Starting reads earlier cannot beat that, and the 18% of wrong guesses add about 17% more bytes. Time with `ahead` equals time with no prefetch; `prev` is slower because most of what it fetches is unused.
 - **So prefetch stays off by default.** Prediction should help where the run is latency-bound or compute-bound (a faster disk or a heavier model); that is untested here. The only levers that cut time on this machine are the ones that cut bytes: a larger cache, a better eviction policy, smart-route, and lower-bit experts.
+
+## Chat mode (`clutor-engine chat`)
+
+The terminal UI talks to the engine through a long-lived process, one JSON object per line on stdin and stdout.
+
+| In | Effect |
+|---|---|
+| `{"op":"append","text":"..."}` | Tokenize the text (control tokens such as `<|im_start|>` are parsed) and feed it into the conversation. A BOS token is added first when the model wants one and the conversation is empty. Long prompts report `progress`. |
+| `{"op":"generate","max":N,"temp":T,"topK":K,"topP":P,"repeat":R,"seed":S}` | Sample and stream the reply as `{"ev":"t","s":piece}` lines (a character split across tokens is held back until whole), then `{"ev":"done","finish":"stop\|length\|cancel\|context\|error","tokens":N,"tokensPerSecond":X,"pos":P,"ids":[...]}`, plus cache hit rate and GB read when experts are streamed. |
+| `{"op":"cancel"}` | Stops a prompt or a reply at the next token. |
+| `{"op":"reset"}` | Forgets the conversation. |
+
+The KV cache is kept between calls, so a turn costs its new tokens. The UI keeps the text the cache holds and sends only the remainder when the next conversation extends it; otherwise it resets. At temperature 0 the tokens are exactly those `generate` produces (`make chat-test` checks this on all five architectures, and that cancel, reset, a refused over-long append, seeded sampling and escaped JSON inside the text all behave). Decode speed is reported without the prompt's share; the prompt's own speed is reported separately.
+
+Not done: `repeat` penalty and the sampler are simple (no min-p, no Mirostat); nothing constrains decoding to a grammar, which llama-server's JSON-schema mode does for the coding agent.
