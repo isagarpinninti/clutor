@@ -23,3 +23,4 @@ export const GaugeIcon = () => I(<><path d="M4.5 17.5a7.5 7.5 0 1 1 15 0" /><pat
 export const ChevronIcon = () => <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="m2.2 3.9 2.8 2.8 2.8-2.8" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 export const CheckIcon = () => I(<path d="m5.5 12.5 4.2 4.2 8.8-9.4" />);
 export const CloseIcon = () => I(<path d="m6.5 6.5 11 11M17.5 6.5l-11 11" />);
+export const PanelIcon = () => I(<><rect x="3.5" y="4.5" width="17" height="15" rx="3.5" /><path d="M14.5 4.5v15" /></>);

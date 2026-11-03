@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ClockIcon, SendIcon, StopIcon } from "./icons";
+import { PlusMenu } from "./PlusMenu";
+import { CloseIcon, SendIcon, StopIcon } from "./icons";
 
 interface Props {
   busy: boolean;
@@ -53,11 +54,15 @@ export function Composer({ busy, disabled, placeholder, thinking, onThinking, br
       <div className={`composer${disabled ? " is-disabled" : ""}`}>
         <textarea ref={area} rows={1} value={text} placeholder={placeholder} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} disabled={disabled} enterKeyHint="send" aria-label="Message" />
         <div className="composer-row">
-          {picker}
-          <button type="button" className={`chip${browse ? " on" : ""}`} onClick={() => onBrowse(!browse)} title="Look things up on the web before answering. Your message is sent to a search service." aria-pressed={browse}>Browse</button>
-          <button type="button" className={`chip${thinking ? " on" : ""}`} onClick={() => onThinking(!thinking)} title="Let thinking models reason first (slower, often better)" aria-pressed={thinking}>Think</button>
+          <PlusMenu items={[
+            { id: "think", label: "Think first", hint: "Let thinking models reason before answering (slower, often better)", checked: thinking, onSelect: () => onThinking(!thinking) },
+            { id: "browse", label: "Browse the web", hint: "Look things up first; your message goes to a search service", checked: browse, onSelect: () => onBrowse(!browse) },
+            { id: "bg", label: "Run in the background", hint: "Keeps generating while you do other things (Ctrl+Enter)", disabled: !text.trim() || disabled, onSelect: background },
+          ]} />
+          {thinking ? <button type="button" className="pill" onClick={() => onThinking(false)} title="Turn off">Think <CloseIcon /></button> : null}
+          {browse ? <button type="button" className="pill" onClick={() => onBrowse(false)} title="Turn off">Browse <CloseIcon /></button> : null}
           <span className="spacer" />
-          <button type="button" className="icon-btn bg-btn" onClick={background} disabled={!text.trim() || disabled} title="Run in the background (Ctrl+Enter): the answer keeps generating while you do other things" aria-label="Run in the background"><ClockIcon /></button>
+          {picker}
           {busy
             ? <button type="button" className="round stop" onClick={onStop} aria-label="Stop"><StopIcon /></button>
             : <button type="button" className="round send" onClick={send} disabled={!text.trim() || disabled} aria-label="Send"><SendIcon /></button>}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ModelInfo, type SystemInfo } from "./bridge";
 import { streamReply, toChatMessages } from "./chat";
-import { GearIcon, SidebarIcon } from "./components/icons";
+import { GearIcon, PanelIcon, SidebarIcon } from "./components/icons";
 import { Logo } from "./components/Logo";
 import { Thinking } from "./components/Thinking";
 import { Composer } from "./components/Composer";
@@ -17,12 +17,15 @@ import { gather, withWebContext, type Gathered } from "./web";
 import { chatUsage, contextPercent } from "./usage";
 import { ModelDialog } from "./components/ModelDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { folderName, loadSessions, newSession, saveSessions, type CodeSession } from "./agent/sessions";
 import { Sidebar } from "./components/Sidebar";
 import { useEngine } from "./engine";
 import { isActive, JobQueue, localJobStore, uid as jobUid, type Job } from "./jobs";
 import { loadConversations, loadSettings, saveConversations, saveSettings, titleFrom, uid, type Conversation, type Msg, type Settings } from "./store";
 
 const newConversation = (): Conversation => ({ id: uid(), title: "New chat", updated: Date.now(), messages: [] });
+
+const FolderMini = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3.5 7.5c0-1.1.9-2 2-2h3.2c.5 0 1 .2 1.4.6l1 1.1c.3.3.8.5 1.3.5h5.1c1.1 0 2 .9 2 2v7.8c0 1.1-.9 2-2 2h-12c-1.1 0-2-.9-2-2z" /></svg>;
 
 export function App() {
   const [settings, setSettings] = useState<Settings>(loadSettings);
@@ -37,6 +40,16 @@ export function App() {
   const mcp = useMemo(() => new McpManager(bridge.host, () => bump((n) => n + 1)), []);
   useEffect(() => { saveServers(servers); mcp.sync(servers); }, [servers, mcp]);
   useEffect(() => { try { localStorage.setItem("clutor.mode", mode); } catch { /* storage unavailable */ } }, [mode]);
+  const [codeSessions, setCodeSessions] = useState<CodeSession[]>(loadSessions);
+  const [codeId, setCodeId] = useState<string>(() => { try { return localStorage.getItem("clutor.codeSession") ?? ""; } catch { return ""; } });
+  const [panel, setPanel] = useState(false);
+  useEffect(() => { saveSessions(codeSessions); }, [codeSessions]);
+  useEffect(() => { try { localStorage.setItem("clutor.codeSession", codeId); } catch { /* storage unavailable */ } }, [codeId]);
+  const codeActive = codeSessions.find((s) => s.id === codeId);
+  const changeSession = useCallback((id: string, f: (s: CodeSession) => CodeSession) => setCodeSessions((all) => all.map((s) => (s.id === id ? f(s) : s))), []);
+  const createSession = useCallback((root: string): CodeSession => { const s = newSession(root); setCodeSessions((all) => [s, ...all]); setCodeId(s.id); setSidebar(false); return s; }, []);
+  const newCodeSession = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) createSession(p); };
+  const deleteSession = (id: string): void => { setCodeSessions((all) => all.filter((s) => s.id !== id)); if (id === codeId) setCodeId(""); };
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("clutor.sidebar") === "off"; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem("clutor.sidebar", collapsed ? "off" : "on"); } catch { /* storage unavailable */ } }, [collapsed]);
   const [agentUsage, setAgentUsage] = useState({ runs: 0, steps: 0, tokens: 0 });
@@ -165,7 +178,7 @@ export function App() {
 
   return (
     <div className={`app${collapsed ? " nav-collapsed" : ""}`}>
-      <Sidebar conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setDialog("settings"); setSidebar(false); }} onJobs={() => { setDialog("jobs"); setSidebar(false); }} onUsage={() => { setDialog("usage"); setSidebar(false); }} onCollapse={() => setCollapsed(true)} collapsed={collapsed} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
+      <Sidebar conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setDialog("settings"); setSidebar(false); }} mode={mode} codeSessions={codeSessions} codeId={codeId} onSelectCode={(id) => { setCodeId(id); setSidebar(false); }} onNewCode={() => void newCodeSession()} onDeleteCode={deleteSession} onJobs={() => { setDialog("jobs"); setSidebar(false); }} onUsage={() => { setDialog("usage"); setSidebar(false); }} onCollapse={() => setCollapsed(true)} collapsed={collapsed} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
       <main className="main">
         <header className="topbar">
           <button type="button" className={`icon-btn side-open${collapsed ? " always" : ""}`} onClick={() => { setSidebar(true); setCollapsed(false); }} aria-label="Show sidebar" title="Show sidebar"><SidebarIcon /></button>
@@ -173,16 +186,18 @@ export function App() {
             <button type="button" role="tab" aria-selected={mode === "chat"} className={mode === "chat" ? "on" : ""} onClick={() => setMode("chat")}>Chat</button>
             <button type="button" role="tab" aria-selected={mode === "code"} className={mode === "code" ? "on" : ""} onClick={() => setMode("code")}>Code</button>
           </div>
-          <h1 className="title">{mode === "chat" ? active?.title : "Agent"}</h1>
+          <h1 className="title">{mode === "chat" ? active?.title : codeActive?.title ?? "Code"}</h1>
+          {mode === "code" && codeActive ? <span className="project-chip" title={codeActive.root}><FolderMini />{folderName(codeActive.root)}</span> : null}
           {mode === "chat" && ready ? (
             <button type="button" className="ring-btn" onClick={() => setDialog("usage")} title={`Context ${pct}% full`} aria-label={`Context ${pct}% full. Open usage`}>
               <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5" className="ring-bg" /><circle cx="10" cy="10" r="7.5" className="ring-fg" strokeDasharray={`${(pct / 100) * 47.1} 47.1`} transform="rotate(-90 10 10)" /></svg>
               <span>{pct}%</span>
             </button>
           ) : null}
+          {mode === "code" && codeActive ? <button type="button" className={`icon-btn${panel ? " on" : ""}`} onClick={() => setPanel((p) => !p)} aria-label="Toggle changes panel" aria-pressed={panel} title="Changes and files"><PanelIcon /></button> : null}
           <button type="button" className="icon-btn" onClick={() => setDialog("settings")} aria-label="Settings" title="Settings"><GearIcon /></button>
         </header>
-        {mode === "code" ? <CodeView ready={ready} modelName={state.model?.name ?? "model"} session={() => session.current} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => setDialog("mcp")} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} /> : <>
+        {mode === "code" ? <CodeView active={codeActive} onChange={changeSession} onCreate={createSession} ready={ready} modelName={state.model?.name ?? "model"} engine={() => session.current} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => setDialog("mcp")} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} panel={panel} onPanel={setPanel} /> : <>
         <div className="scroll" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           {active && active.messages.length > 0 ? (
             <div className="thread">

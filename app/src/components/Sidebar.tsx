@@ -1,4 +1,5 @@
 import type { Conversation } from "../store";
+import { groupByProject, sessionDot, type CodeSession } from "../agent/sessions";
 import { useState } from "react";
 import { ClockIcon, GaugeIcon, GearIcon, PlusIcon, SearchIcon, SidebarIcon, TrashIcon } from "./icons";
 import { Logo } from "./Logo";
@@ -9,6 +10,12 @@ interface Props {
   open: boolean;
   onSelect: (id: string) => void;
   onNew: () => void;
+  mode: "chat" | "code";
+  codeSessions: CodeSession[];
+  codeId: string;
+  onSelectCode: (id: string) => void;
+  onNewCode: () => void;
+  onDeleteCode: (id: string) => void;
   onDelete: (id: string) => void;
   onSettings: () => void;
   onJobs: () => void;
@@ -30,8 +37,10 @@ function group(conversations: Conversation[]): Array<[string, Conversation[]]> {
   return buckets.filter(([, list]) => list.length > 0);
 }
 
-export function Sidebar({ conversations, activeId, open, onSelect, onNew, onDelete, onSettings, onJobs, onUsage, onCollapse, collapsed, activeJobs, onClose }: Props) {
+export function Sidebar({ conversations, activeId, open, onSelect, onNew, mode, codeSessions, codeId, onSelectCode, onNewCode, onDeleteCode, onDelete, onSettings, onJobs, onUsage, onCollapse, collapsed, activeJobs, onClose }: Props) {
   const [q, setQ] = useState("");
+  const needle = q.trim().toLowerCase();
+  const sessionsShown = needle ? codeSessions.filter((c) => c.title.toLowerCase().includes(needle) || c.root.toLowerCase().includes(needle)) : codeSessions;
   const shown = q.trim() ? conversations.filter((c) => c.title.toLowerCase().includes(q.trim().toLowerCase())) : conversations;
   return (
     <>
@@ -42,10 +51,26 @@ export function Sidebar({ conversations, activeId, open, onSelect, onNew, onDele
           <button type="button" className="icon-btn" onClick={onCollapse} aria-label="Hide sidebar" title="Hide sidebar"><SidebarIcon /></button>
         </div>
         <div className="side-nav">
-          <button type="button" className="side-btn strong" onClick={onNew}><PlusIcon /> New chat</button>
+          <button type="button" className="side-btn strong" onClick={mode === "code" ? onNewCode : onNew}><PlusIcon /> {mode === "code" ? "New session" : "New chat"}</button>
           <label className="search"><SearchIcon /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" aria-label="Search conversations" /></label>
         </div>
-        <nav className="history">
+        {mode === "code" ? (
+          <nav className="history">
+            {sessionsShown.length === 0 ? <p className="empty-hint">{q ? "Nothing matches." : "Sessions on your projects appear here."}</p> : null}
+            {groupByProject(sessionsShown).map((g) => (
+              <section key={g.root}>
+                <h3 title={g.root}>{g.name}</h3>
+                {g.sessions.map((c) => (
+                  <div key={c.id} className={`conv${c.id === codeId ? " active" : ""}`}>
+                    <button type="button" className="conv-main" onClick={() => onSelectCode(c.id)}><i className={`dot ${sessionDot(c)}`} aria-label={sessionDot(c)} />{c.title}</button>
+                    <button type="button" className="icon-btn conv-del" onClick={() => onDeleteCode(c.id)} aria-label={`Delete ${c.title}`}><TrashIcon /></button>
+                  </div>
+                ))}
+              </section>
+            ))}
+          </nav>
+        ) : null}
+        <nav className="history" hidden={mode === "code"}>
           {shown.length === 0 ? <p className="empty-hint">{q ? "Nothing matches." : "Your conversations stay on this device."}</p> : null}
           {group(shown).map(([label, list]) => (
             <section key={label}>

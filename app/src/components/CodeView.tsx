@@ -1,27 +1,18 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import type { AgentEvent, AgentResult } from "@core/agent/loop";
-import type { ShadowWorkspace } from "@core/agent/workspace";
 import { bridge } from "../bridge";
-import { applyChanges, ConflictError, listCheckpoints, undoCheckpoint } from "../agent/apply";
+import { applyChanges, ConflictError, undoCheckpoint } from "../agent/apply";
 import type { AgentSession } from "../agent/llm";
 import type { McpManager } from "../agent/mcp";
 import { runCodingTask } from "../agent/runner";
-import { FolderIcon, SendIcon, StopIcon } from "./icons";
+import { applyEvent, folderName, lastTurn, reviewable, type CodeSession, type Turn } from "../agent/sessions";
+import { titleFrom, uid } from "../store";
+import { Markdown } from "./Markdown";
 import { ModePicker, type ModeOption } from "./ModePicker";
+import { PlusMenu } from "./PlusMenu";
+import { SidePanel } from "./SidePanel";
 import { Spark } from "./Thinking";
-
-interface Props {
-  ready: boolean;
-  modelName: string;
-  session: () => AgentSession | null;
-  mcp: McpManager;
-  /** Takes the engine from background jobs for the length of a run; the returned function gives it back. */
-  hold: () => Promise<() => void>;
-  onChooseModel: () => void;
-  picker: ReactNode;
-  onMcp: () => void;
-  onUsage: (u: { steps: number; tokens: number }) => void;
-}
+import { ToolBlock } from "./ToolBlock";
+import { FolderIcon, SendIcon, StopIcon } from "./icons";
 
 export type Permission = "ask" | "auto" | "plan";
 const PERMISSIONS: ModeOption<Permission>[] = [
@@ -30,75 +21,77 @@ const PERMISSIONS: ModeOption<Permission>[] = [
   { id: "plan", label: "Plan only", hint: "Reads the project and writes a plan; changes nothing" },
 ];
 
-type Step = { kind: "thought" | "call" | "result" | "invalid" | "note"; text: string; ok?: boolean };
-type Phase = "idle" | "running" | "review" | "applied";
-
-const ROOT_KEY = "clutor.project.v1";
-const short = (v: unknown): string => { const s = typeof v === "string" ? v : JSON.stringify(v); return s.length > 90 ? `${s.slice(0, 89)}…` : s; };
-
-function toStep(e: AgentEvent): Step | null {
-  switch (e.type) {
-    case "thought": return { kind: "thought", text: e.text };
-    case "tool_call": return { kind: "call", text: `${e.name} ${Object.entries(e.args).filter(([k]) => k !== "content" && k !== "old_text" && k !== "new_text").map(([k, v]) => `${k}=${short(v)}`).join(" ")}`.trim() };
-    case "tool_result": return { kind: "result", ok: e.ok, text: e.output.length > 600 ? `${e.output.slice(0, 600)}…` : e.output };
-    case "invalid": return { kind: "invalid", text: e.error };
-    case "verify": return { kind: "note", text: `check \`${e.command}\`: ${e.ran ? (e.ok ? "passed" : "failed") : "not run"}` };
-    default: return null;
-  }
+interface Props {
+  /** The open session, or none. */
+  active: CodeSession | undefined;
+  onChange: (id: string, f: (s: CodeSession) => CodeSession) => void;
+  /** Starts a session on a folder and opens it. */
+  onCreate: (root: string) => CodeSession;
+  ready: boolean;
+  modelName: string;
+  engine: () => AgentSession | null;
+  mcp: McpManager;
+  /** Takes the engine from background jobs for the length of a run; the returned function gives it back. */
+  hold: () => Promise<() => void>;
+  picker: ReactNode;
+  onChooseModel: () => void;
+  onMcp: () => void;
+  onUsage: (u: { steps: number; tokens: number }) => void;
+  panel: boolean;
+  onPanel: (open: boolean) => void;
 }
 
-function Patch({ patch }: { patch: string }) {
-  return (
-    <pre className="patch">{patch.split("\n").map((l, i) => <div key={i} className={l.startsWith("+") && !l.startsWith("+++") ? "add" : l.startsWith("-") && !l.startsWith("---") ? "del" : l.startsWith("@@") ? "hunk" : ""}>{l || " "}</div>)}</pre>
-  );
-}
+const count = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
 
-export function CodeView({ ready, modelName, session, mcp, hold, onChooseModel, picker, onMcp, onUsage }: Props) {
-  const [root, setRoot] = useState<string>(() => { try { return localStorage.getItem(ROOT_KEY) ?? ""; } catch { return ""; } });
+export function CodeView({ active, onChange, onCreate, ready, modelName, engine, mcp, hold, picker, onChooseModel, onMcp, onUsage, panel, onPanel }: Props) {
   const [task, setTask] = useState("");
   const [perm, setPerm] = useState<Permission>(() => { try { const p = localStorage.getItem("clutor.perm"); return p === "auto" || p === "plan" ? p : "ask"; } catch { return "ask"; } });
   useEffect(() => { try { localStorage.setItem("clutor.perm", perm); } catch { /* storage unavailable */ } }, [perm]);
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [steps, setSteps] = useState<Step[]>([]);
-  const [result, setResult] = useState<AgentResult>();
   const [error, setError] = useState<string>();
   const [approval, setApproval] = useState<{ command: string; network: boolean; answer: (yes: boolean) => void }>();
-  const [checkpoint, setCheckpoint] = useState<{ id: string; title: string }>();
-  const [open, setOpen] = useState<Set<string>>(new Set());
-  const ws = useRef<ShadowWorkspace>();
+  const [focusFile, setFocusFile] = useState<string>();
+  const [applying, setApplying] = useState(false);
   const abort = useRef<AbortController>();
   const end = useRef<HTMLDivElement>(null);
+  const last = active ? lastTurn(active) : undefined;
+  const running = last?.status === "running";
+  const withChanges = active ? [...active.turns].reverse().find((t) => t.diffs?.length) : undefined;
 
-  useEffect(() => { try { if (root) localStorage.setItem(ROOT_KEY, root); } catch { /* storage unavailable */ } }, [root]);
-  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [steps, phase, approval]);
-  useEffect(() => {
-    if (!root) return;
-    void listCheckpoints(bridge.host, root).then((l) => { const last = l.find((c) => !c.undone); setCheckpoint(last ? { id: last.id, title: last.title } : undefined); }).catch(() => undefined);
-  }, [root]);
+  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [last?.blocks.length, last?.status, approval, active?.id]);
+  useEffect(() => { setError(undefined); setApproval(undefined); }, [active?.id]);
 
-  const pick = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) { setRoot(p); setPhase("idle"); setSteps([]); setResult(undefined); } };
+  const chooseFolder = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) onCreate(p); };
+
+  const patchTurn = (sid: string, tid: string, f: (t: Turn) => Turn): void => onChange(sid, (s) => ({ ...s, updated: Date.now(), turns: s.turns.map((t) => (t.id === tid ? f(t) : t)) }));
 
   const start = async (): Promise<void> => {
-    const s = session();
-    if (!s || !root || !task.trim() || phase === "running") return;
-    setPhase("running"); setSteps([]); setResult(undefined); setError(undefined);
+    const s = engine();
+    const text = task.trim();
+    if (!s || !active || !text || running) return;
+    const sid = active.id, root = active.root;
+    const turn: Turn = { id: uid(), task: text, created: Date.now(), status: "running", blocks: [] };
+    onChange(sid, (x) => ({ ...x, title: x.turns.length ? x.title : titleFrom(text), updated: Date.now(), turns: [...x.turns, turn] }));
+    setTask(""); setError(undefined);
     const ac = new AbortController();
     abort.current = ac;
     const release = await hold();
     try {
       const out = await runCodingTask({
-        host: bridge.host, web: bridge.web, root, session: s, modelName, task: task.trim(), mcp, signal: ac.signal,
-        planOnly: perm === "plan",
+        host: bridge.host, web: bridge.web, root, session: s, modelName, task: text, mcp, signal: ac.signal, planOnly: perm === "plan",
         approve: (info) => perm === "plan" ? Promise.resolve(false) : perm === "auto" && !info.network ? Promise.resolve(true) : new Promise<boolean>((resolve) => setApproval({ ...info, answer: (yes) => { setApproval(undefined); resolve(yes); } })),
-        onEvent: (e) => { const st = toStep(e); if (st) setSteps((all) => [...all, st]); },
+        onEvent: (e) => patchTurn(sid, turn.id, (t) => ({ ...t, blocks: applyEvent(t.blocks, e) })),
       });
-      ws.current = out.ws;
-      setResult(out.result);
+      const changes = perm === "plan" ? [] : await out.ws.changeSet();
+      const diffs = perm === "plan" ? [] : out.result.diffs.filter((d) => d.patch || d.status !== "modified");
       onUsage({ steps: out.result.steps, tokens: out.result.usage.completionTokens });
-      setPhase(perm !== "plan" && out.result.diffs.some((d) => d.patch || d.status !== "modified") ? "review" : "idle");
+      patchTurn(sid, turn.id, (t) => ({
+        ...t, status: out.result.status === "aborted" ? "stopped" : out.result.status === "error" ? "failed" : "done", summary: out.result.summary,
+        usage: { steps: out.result.steps, tokens: out.result.usage.completionTokens }, ...(out.result.error ? { error: out.result.error } : {}),
+        ...(diffs.length ? { changes, diffs } : {}),
+      }));
+      if (diffs.length) onPanel(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setPhase("idle");
+      patchTurn(sid, turn.id, (t) => ({ ...t, status: "failed", error: e instanceof Error ? e.message : String(e) }));
     } finally {
       setApproval((a) => { a?.answer(false); return undefined; });
       release();
@@ -106,100 +99,96 @@ export function CodeView({ ready, modelName, session, mcp, hold, onChooseModel, 
   };
 
   const apply = async (): Promise<void> => {
-    if (!ws.current || !result) return;
+    if (!active || !withChanges?.changes) return;
+    setApplying(true);
     try {
-      const id = await applyChanges(bridge.host, root, await ws.current.changeSet(), task.trim().slice(0, 80));
-      setCheckpoint({ id, title: task.trim().slice(0, 80) });
-      setPhase("applied");
+      const id = await applyChanges(bridge.host, active.root, withChanges.changes, withChanges.task.slice(0, 80));
+      patchTurn(active.id, withChanges.id, (t) => ({ ...t, applied: id }));
       setError(undefined);
     } catch (e) {
       setError(e instanceof ConflictError ? `Nothing was written. ${e.message}. Run the task again to start from the current files.` : e instanceof Error ? e.message : String(e));
-    }
+    } finally { setApplying(false); }
   };
-
   const undo = async (): Promise<void> => {
-    if (!checkpoint) return;
-    try { await undoCheckpoint(bridge.host, root, checkpoint.id); setCheckpoint(undefined); setPhase("idle"); setError(undefined); }
+    if (!active || !withChanges?.applied) return;
+    try { await undoCheckpoint(bridge.host, active.root, withChanges.applied); patchTurn(active.id, withChanges.id, (t) => { const { applied: _a, ...rest } = t; void _a; return { ...rest, discarded: true }; }); setError(undefined); }
     catch (e) { setError(e instanceof ConflictError ? `Not undone, because ${e.paths.join(", ")} changed after the apply.` : e instanceof Error ? e.message : String(e)); }
   };
+  const discard = (): void => { if (active && withChanges) patchTurn(active.id, withChanges.id, (t) => ({ ...t, discarded: true })); };
 
-  const running = phase === "running";
-  const diffs = perm === "plan" ? [] : result?.diffs ?? [];
+  if (!active) {
+    return (
+      <div className="scroll"><div className="welcome code-welcome">
+        <div className="folder-mark"><FolderIcon /></div>
+        <h2>Work on a project</h2>
+        <p>Pick a folder and describe a change. The agent edits a private copy, can run your tests there after asking, and shows you the diff to apply or discard.</p>
+        <button type="button" className="btn" onClick={() => void chooseFolder()}>Choose a project folder</button>
+      </div></div>
+    );
+  }
 
   return (
-    <>
-      <div className="scroll">
-        <div className="thread code">
-          <div className="project-bar">
-            <button type="button" className="row" onClick={() => void pick()}><FolderIcon /><span className="row-main"><b>{root ? root.split(/[\\/]/).filter(Boolean).pop() : "Choose a project folder"}</b><small>{root || "The agent can read this folder and propose changes. Nothing is written until you apply them."}</small></span></button>
-            <button type="button" className="btn small ghost" onClick={onMcp}>Tools{mcp.list().filter((c) => c.status === "ready").length ? ` · ${mcp.list().filter((c) => c.status === "ready").length}` : ""}</button>
-          </div>
-
-          {steps.length === 0 && phase === "idle" ? (
-            <p className="empty-hint">Describe a change. The agent reads the project, edits a private copy, can run your tests there (asking first), and then shows you the diff to apply or discard.{!ready ? " Load a model first." : ""}</p>
-          ) : null}
-
-          <ol className="timeline">
-            {steps.map((s, i) => (
-              <li key={i} className={`step ${s.kind}${s.ok === false ? " bad" : ""}`}>
-                {s.kind === "call" ? <code>{s.text}</code> : s.kind === "result" ? <pre>{s.text}</pre> : <span>{s.text}</span>}
-              </li>
-            ))}
-          </ol>
-
-          {running && !approval ? <div className="working"><Spark size={16} /><span>Working…</span></div> : null}
-
-          {approval ? (
-            <div className="approval" role="alertdialog" aria-label="Approval needed">
-              <b>{approval.network ? "Allow this to run, with network access?" : "Allow this to run?"}</b>
-              <code>{approval.command}</code>
-              <small>It runs in a scratch copy of the project, with a clean environment and a time limit. It can still read files your user can read.</small>
-              <div className="actions"><button type="button" className="btn small" onClick={() => approval.answer(true)}>Allow</button><button type="button" className="btn small ghost" onClick={() => approval.answer(false)}>Refuse</button></div>
-            </div>
-          ) : null}
-
-          {result && !running ? (
-            <div className={`summary ${result.status}`}>
-              <b>{result.status === "finished" ? "Done" : result.status === "aborted" ? "Stopped" : result.status === "max_steps" ? "Ran out of steps" : result.status === "stuck" ? "Got stuck" : "Failed"}</b>
-              <p>{result.summary}</p>
-              <small>{result.steps} steps · {result.toolCalls} tool calls{result.invalidReplies ? ` · ${result.invalidReplies} unusable replies` : ""}</small>
-            </div>
-          ) : null}
-
-          {diffs.length > 0 && !running ? (
-            <div className="changes">
-              <h3>{phase === "applied" ? "Applied" : "Proposed changes"} · {diffs.length} file{diffs.length === 1 ? "" : "s"}</h3>
-              {diffs.map((d) => (
-                <div key={d.path} className="filediff">
-                  <button type="button" className="filehead" onClick={() => setOpen((o) => { const n = new Set(o); if (n.has(d.path)) n.delete(d.path); else n.add(d.path); return n; })} aria-expanded={open.has(d.path) || diffs.length === 1}>
-                    <span className={`st ${d.status}`}>{d.status}</span><b>{d.path}</b><span className="counts"><i className="add">+{d.additions}</i> <i className="del">−{d.deletions}</i></span>
-                  </button>
-                  {open.has(d.path) || diffs.length === 1 ? <Patch patch={d.patch} /> : null}
+    <div className={`code-layout${panel ? " with-panel" : ""}`}>
+      <div className="code-main">
+        <div className="scroll">
+          <div className="thread code">
+            {active.turns.length === 0 ? <p className="empty-hint">{ready ? `Describe a change in ${folderName(active.root)}.` : "Load a model first, then describe a change."}</p> : null}
+            {active.turns.map((t) => (
+              <section key={t.id} className="turn">
+                <div className="msg user"><div className="prompt">{t.task}</div></div>
+                <div className="turn-body">
+                  {t.blocks.map((b) => b.kind === "text" ? <p key={b.id} className="turn-text">{b.text}</p>
+                    : b.kind === "note" ? <p key={b.id} className={`turn-note${b.bad ? " bad" : ""}`}>{b.text}</p>
+                    : <ToolBlock key={b.id} block={b} onOpenFile={(p) => { setFocusFile(p); onPanel(true); }} />)}
+                  {t.status === "running" && !approval ? <div className="working"><Spark size={14} /><span>Working…</span></div> : null}
+                  {t.summary ? <div className="turn-summary"><Markdown text={t.summary} /></div> : null}
+                  {t.status === "interrupted" ? <p className="turn-note bad">The app was closed while this ran.</p> : null}
+                  {t.status === "stopped" ? <p className="turn-note">Stopped.</p> : null}
+                  {t.status === "failed" ? <p className="turn-note bad">{t.error ?? "The task failed."}</p> : null}
+                  {t.diffs?.length ? (
+                    <button type="button" className="changes-card" onClick={() => onPanel(true)}>
+                      <b>{count(t.diffs.length, "file")} changed</b>
+                      <span className="counts"><i className="add">+{t.diffs.reduce((n, d) => n + d.additions, 0)}</i> <i className="del">−{t.diffs.reduce((n, d) => n + d.deletions, 0)}</i></span>
+                      <span className="card-state">{t.applied ? "Applied" : t.discarded ? "Discarded" : reviewable(t) ? "Review" : ""}</span>
+                    </button>
+                  ) : t.lost ? <p className="turn-note">The changes were too large to keep after a restart. Run the task again.</p> : null}
                 </div>
-              ))}
-              {phase === "review" ? <div className="actions"><button type="button" className="btn" onClick={() => void apply()}>Apply to folder</button><button type="button" className="btn ghost" onClick={() => { setPhase("idle"); setResult(undefined); }}>Discard</button></div> : null}
-            </div>
-          ) : null}
-
-          {checkpoint && !running ? <div className="undo"><span>Last applied: {checkpoint.title}</span><button type="button" className="btn small ghost" onClick={() => void undo()}>Undo</button></div> : null}
-          {error ? <div className="notice err" role="alert">{error}</div> : null}
-          <div ref={end} />
-        </div>
-      </div>
-      <div className="composer-wrap">
-        <div className={`composer${!ready || !root ? " is-disabled" : ""}`}>
-          <textarea rows={2} value={task} placeholder={!ready ? "Load a model to start" : !root ? "Choose a project folder first" : "What should change in this project?"} disabled={!ready || !root || running} aria-label="Task"
-            onChange={(e) => setTask(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void start(); } }} />
-          <div className="composer-row">
-            <ModePicker value={perm} options={PERMISSIONS} onChange={setPerm} label="Permissions" />
-            {picker}
-            {ready ? <span className="hint">{perm === "plan" ? "Nothing will be changed." : "Every change is shown to you first."}</span> : <button type="button" className="btn small ghost" onClick={onChooseModel}>Choose a model</button>}
-            <span className="spacer" />
-            {running ? <button type="button" className="send stop" onClick={() => abort.current?.abort()} aria-label="Stop"><StopIcon /></button>
-              : <button type="button" className="send" onClick={() => void start()} disabled={!ready || !root || !task.trim()} aria-label="Run"><SendIcon /></button>}
+              </section>
+            ))}
+            {approval ? (
+              <div className="approval" role="alertdialog" aria-label="Approval needed">
+                <b>{approval.network ? "Allow this, with network access?" : "Allow this to run?"}</b>
+                <code>{approval.command}</code>
+                <small>Commands run in a scratch copy of the project, with a clean environment and a time limit. They can still read files your user can read.</small>
+                <div className="actions"><button type="button" className="btn small" onClick={() => approval.answer(true)}>Allow</button><button type="button" className="btn small ghost" onClick={() => approval.answer(false)}>Refuse</button></div>
+              </div>
+            ) : null}
+            {error && !panel ? <div className="notice err" role="alert">{error}</div> : null}
+            <div ref={end} />
           </div>
         </div>
+        <div className="composer-wrap">
+          <div className={`composer${!ready ? " is-disabled" : ""}`}>
+            <textarea rows={2} value={task} placeholder={!ready ? "Load a model to start" : `What should change in ${folderName(active.root)}?`} disabled={!ready || running} aria-label="Task"
+              onChange={(e) => setTask(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void start(); } }} />
+            <div className="composer-row">
+              <PlusMenu items={[
+                { id: "folder", label: "Open another folder", hint: "Starts a new session on it", onSelect: () => void chooseFolder() },
+                { id: "tools", label: "Tools (MCP servers)", hint: "Extra tools for the agent", onSelect: onMcp },
+                { id: "panel", label: "Changes and files panel", checked: panel, onSelect: () => onPanel(!panel) },
+              ]} />
+              <ModePicker value={perm} options={PERMISSIONS} onChange={setPerm} label="Permissions" />
+              <span className="spacer" />
+              {picker}
+              {!ready ? <button type="button" className="btn small ghost" onClick={onChooseModel}>Choose a model</button> : null}
+              {running ? <button type="button" className="round stop" onClick={() => abort.current?.abort()} aria-label="Stop"><StopIcon /></button>
+                : <button type="button" className="round send" onClick={() => void start()} disabled={!ready || !task.trim()} aria-label="Run"><SendIcon /></button>}
+            </div>
+          </div>
+          <p className="fineprint">{perm === "plan" ? "Plan only: nothing will be changed." : "Every change is shown to you before it is written."}</p>
+        </div>
       </div>
-    </>
+      {panel ? <SidePanel host={bridge.host} root={active.root} turn={withChanges} focusFile={focusFile} onApply={() => void apply()} onDiscard={discard} onUndo={() => void undo()} onClose={() => onPanel(false)} busy={applying || running} error={error} /> : null}
+    </div>
   );
 }
