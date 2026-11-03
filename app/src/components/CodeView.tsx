@@ -7,6 +7,7 @@ import type { AgentSession } from "../agent/llm";
 import type { McpManager } from "../agent/mcp";
 import { runCodingTask } from "../agent/runner";
 import { FolderIcon, SendIcon, StopIcon } from "./icons";
+import { ModePicker, type ModeOption } from "./ModePicker";
 import { Spark } from "./Thinking";
 
 interface Props {
@@ -19,7 +20,15 @@ interface Props {
   onChooseModel: () => void;
   picker: ReactNode;
   onMcp: () => void;
+  onUsage: (u: { steps: number; tokens: number }) => void;
 }
+
+export type Permission = "ask" | "auto" | "plan";
+const PERMISSIONS: ModeOption<Permission>[] = [
+  { id: "ask", label: "Ask first", hint: "Asks before running anything" },
+  { id: "auto", label: "Auto-run checks", hint: "Runs tests without asking; still asks for network and tools" },
+  { id: "plan", label: "Plan only", hint: "Reads the project and writes a plan; changes nothing" },
+];
 
 type Step = { kind: "thought" | "call" | "result" | "invalid" | "note"; text: string; ok?: boolean };
 type Phase = "idle" | "running" | "review" | "applied";
@@ -44,9 +53,11 @@ function Patch({ patch }: { patch: string }) {
   );
 }
 
-export function CodeView({ ready, modelName, session, mcp, hold, onChooseModel, picker, onMcp }: Props) {
+export function CodeView({ ready, modelName, session, mcp, hold, onChooseModel, picker, onMcp, onUsage }: Props) {
   const [root, setRoot] = useState<string>(() => { try { return localStorage.getItem(ROOT_KEY) ?? ""; } catch { return ""; } });
   const [task, setTask] = useState("");
+  const [perm, setPerm] = useState<Permission>(() => { try { const p = localStorage.getItem("clutor.perm"); return p === "auto" || p === "plan" ? p : "ask"; } catch { return "ask"; } });
+  useEffect(() => { try { localStorage.setItem("clutor.perm", perm); } catch { /* storage unavailable */ } }, [perm]);
   const [phase, setPhase] = useState<Phase>("idle");
   const [steps, setSteps] = useState<Step[]>([]);
   const [result, setResult] = useState<AgentResult>();
@@ -77,12 +88,14 @@ export function CodeView({ ready, modelName, session, mcp, hold, onChooseModel, 
     try {
       const out = await runCodingTask({
         host: bridge.host, root, session: s, modelName, task: task.trim(), mcp, signal: ac.signal,
-        approve: (info) => new Promise<boolean>((resolve) => setApproval({ ...info, answer: (yes) => { setApproval(undefined); resolve(yes); } })),
+        planOnly: perm === "plan",
+        approve: (info) => perm === "plan" ? Promise.resolve(false) : perm === "auto" && !info.network ? Promise.resolve(true) : new Promise<boolean>((resolve) => setApproval({ ...info, answer: (yes) => { setApproval(undefined); resolve(yes); } })),
         onEvent: (e) => { const st = toStep(e); if (st) setSteps((all) => [...all, st]); },
       });
       ws.current = out.ws;
       setResult(out.result);
-      setPhase(out.result.diffs.some((d) => d.patch || d.status !== "modified") ? "review" : "idle");
+      onUsage({ steps: out.result.steps, tokens: out.result.usage.completionTokens });
+      setPhase(perm !== "plan" && out.result.diffs.some((d) => d.patch || d.status !== "modified") ? "review" : "idle");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setPhase("idle");
@@ -111,7 +124,7 @@ export function CodeView({ ready, modelName, session, mcp, hold, onChooseModel, 
   };
 
   const running = phase === "running";
-  const diffs = result?.diffs ?? [];
+  const diffs = perm === "plan" ? [] : result?.diffs ?? [];
 
   return (
     <>
@@ -178,8 +191,9 @@ export function CodeView({ ready, modelName, session, mcp, hold, onChooseModel, 
           <textarea rows={2} value={task} placeholder={!ready ? "Load a model to start" : !root ? "Choose a project folder first" : "What should change in this project?"} disabled={!ready || !root || running} aria-label="Task"
             onChange={(e) => setTask(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void start(); } }} />
           <div className="composer-row">
+            <ModePicker value={perm} options={PERMISSIONS} onChange={setPerm} label="Permissions" />
             {picker}
-            {ready ? <span className="hint">Every change is shown to you first.</span> : <button type="button" className="btn small ghost" onClick={onChooseModel}>Choose a model</button>}
+            {ready ? <span className="hint">{perm === "plan" ? "Nothing will be changed." : "Every change is shown to you first."}</span> : <button type="button" className="btn small ghost" onClick={onChooseModel}>Choose a model</button>}
             <span className="spacer" />
             {running ? <button type="button" className="send stop" onClick={() => abort.current?.abort()} aria-label="Stop"><StopIcon /></button>
               : <button type="button" className="send" onClick={() => void start()} disabled={!ready || !root || !task.trim()} aria-label="Run"><SendIcon /></button>}

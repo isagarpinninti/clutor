@@ -15,3 +15,8 @@ export const DownloadIcon = () => I(<><path d="M12 4v11" /><path d="m7 11 5 5 5-
 export const FolderIcon = () => I(<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />);
 export const SparkIcon = () => <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5 13.9 9l6.6 1.9-6.6 1.9L12 19.5l-1.9-6.7L3.5 10.9 10.1 9z" /></svg>;
 export const ClockIcon = () => I(<><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>);
+export const SidebarIcon = () => I(<><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M9 4v16" /></>);
+export const SearchIcon = () => I(<><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></>);
+export const GaugeIcon = () => I(<><path d="M4 18a8 8 0 1 1 16 0" /><path d="m12 18 4-5" /></>);
+export const ChevronIcon = () => <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="m2 4 3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+export const CheckIcon = () => I(<path d="m5 12 5 5 9-10" />);

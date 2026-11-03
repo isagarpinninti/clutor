@@ -1,5 +1,6 @@
 import type { Conversation } from "../store";
-import { ClockIcon, GearIcon, PlusIcon, TrashIcon } from "./icons";
+import { useState } from "react";
+import { ClockIcon, GaugeIcon, GearIcon, PlusIcon, SearchIcon, SidebarIcon, TrashIcon } from "./icons";
 import { Logo } from "./Logo";
 
 interface Props {
@@ -11,6 +12,9 @@ interface Props {
   onDelete: (id: string) => void;
   onSettings: () => void;
   onJobs: () => void;
+  onUsage: () => void;
+  onCollapse: () => void;
+  collapsed: boolean;
   activeJobs: number;
   onClose: () => void;
 }
@@ -26,16 +30,24 @@ function group(conversations: Conversation[]): Array<[string, Conversation[]]> {
   return buckets.filter(([, list]) => list.length > 0);
 }
 
-export function Sidebar({ conversations, activeId, open, onSelect, onNew, onDelete, onSettings, onJobs, activeJobs, onClose }: Props) {
+export function Sidebar({ conversations, activeId, open, onSelect, onNew, onDelete, onSettings, onJobs, onUsage, onCollapse, collapsed, activeJobs, onClose }: Props) {
+  const [q, setQ] = useState("");
+  const shown = q.trim() ? conversations.filter((c) => c.title.toLowerCase().includes(q.trim().toLowerCase())) : conversations;
   return (
     <>
       <div className={`scrim${open ? " show" : ""}`} onClick={onClose} aria-hidden="true" />
-      <aside className={`sidebar${open ? " open" : ""}`} aria-label="Conversations">
-        <div className="brand"><Logo size={26} /><span>Clutor</span></div>
-        <button type="button" className="new-chat" onClick={onNew}><PlusIcon /> New chat</button>
+      <aside className={`sidebar${open ? " open" : ""}${collapsed ? " collapsed" : ""}`} aria-label="Conversations">
+        <div className="side-top">
+          <div className="brand"><Logo size={22} /><span>Clutor</span></div>
+          <button type="button" className="icon-btn" onClick={onCollapse} aria-label="Hide sidebar" title="Hide sidebar"><SidebarIcon /></button>
+        </div>
+        <div className="side-nav">
+          <button type="button" className="side-btn strong" onClick={onNew}><PlusIcon /> New chat</button>
+          <label className="search"><SearchIcon /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search" aria-label="Search conversations" /></label>
+        </div>
         <nav className="history">
-          {conversations.length === 0 ? <p className="empty-hint">Your conversations stay on this device.</p> : null}
-          {group(conversations).map(([label, list]) => (
+          {shown.length === 0 ? <p className="empty-hint">{q ? "Nothing matches." : "Your conversations stay on this device."}</p> : null}
+          {group(shown).map(([label, list]) => (
             <section key={label}>
               <h3>{label}</h3>
               {list.map((c) => (
@@ -47,7 +59,11 @@ export function Sidebar({ conversations, activeId, open, onSelect, onNew, onDele
             </section>
           ))}
         </nav>
-        <div className="side-foot"><button type="button" className="side-btn" onClick={onJobs}><ClockIcon /> Background jobs{activeJobs > 0 ? <span className="count">{activeJobs}</span> : null}</button><button type="button" className="side-btn" onClick={onSettings}><GearIcon /> Settings</button></div>
+        <div className="side-foot">
+          <button type="button" className="side-btn" onClick={onJobs}><ClockIcon /> Background jobs{activeJobs > 0 ? <span className="count">{activeJobs}</span> : null}</button>
+          <button type="button" className="side-btn" onClick={onUsage}><GaugeIcon /> Usage</button>
+          <button type="button" className="side-btn" onClick={onSettings}><GearIcon /> Settings</button>
+        </div>
       </aside>
     </>
   );

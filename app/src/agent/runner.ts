@@ -14,6 +14,8 @@ export interface CodingTask {
   mcp?: McpManager;
   /** Asked before a command that runs project code or uses the network, and before an MCP tool that may change something. */
   approve: (info: { command: string; network: boolean }) => Promise<boolean>;
+  /** Investigate and propose a plan only: the agent is told not to change files, and whatever it changes is discarded. */
+  planOnly?: boolean;
   verifyCommand?: string;
   maxSteps?: number;
   signal?: AbortSignal;
@@ -33,7 +35,8 @@ export async function runCodingTask(t: CodingTask): Promise<{ result: AgentResul
       void command;
       return { exitCode: r.exit_code, output: r.output, timedOut: r.timed_out, durationMs: r.duration_ms };
     },
-    ...(external?.available() ? { external, systemExtra: external.describe() } : {}),
+    ...(external?.available() ? { external } : {}),
+    systemExtra: [t.planOnly ? "PLAN MODE: do not write, edit or delete any file. Read and search the project, then call finish with a clear step-by-step plan: which files to change and how." : "", external?.available() ? external.describe() : ""].filter(Boolean).join("\n\n"),
     ...(t.verifyCommand ? { verifyCommand: t.verifyCommand } : {}),
     ...(t.signal ? { signal: t.signal } : {}),
     onEvent: t.onEvent,

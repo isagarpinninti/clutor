@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ModelInfo, type SystemInfo } from "./bridge";
 import { streamReply, toChatMessages } from "./chat";
-import { MenuIcon, PlusIcon } from "./components/icons";
+import { GearIcon, SidebarIcon } from "./components/icons";
 import { Logo } from "./components/Logo";
 import { Thinking } from "./components/Thinking";
 import { Composer } from "./components/Composer";
@@ -12,6 +12,8 @@ import { CodeView } from "./components/CodeView";
 import { McpDialog } from "./components/McpDialog";
 import { loadServers, McpManager, saveServers, type McpServerConfig } from "./agent/mcp";
 import { ModelPicker } from "./components/ModelPicker";
+import { UsageDialog } from "./components/UsageDialog";
+import { chatUsage, contextPercent } from "./usage";
 import { ModelDialog } from "./components/ModelDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
@@ -26,7 +28,7 @@ export function App() {
   const [conversations, setConversations] = useState<Conversation[]>(() => { const c = loadConversations(); return c.length ? c : [newConversation()]; });
   const [activeId, setActiveId] = useState<string>(() => conversations[0]?.id ?? "");
   const [system, setSystem] = useState<SystemInfo>();
-  const [dialog, setDialog] = useState<"models" | "settings" | "jobs" | "mcp" | null>(null);
+  const [dialog, setDialog] = useState<"models" | "settings" | "jobs" | "mcp" | "usage" | null>(null);
   const [lastModel, setLastModel] = useState<ModelInfo>();
   const [mode, setMode] = useState<"chat" | "code">(() => { try { return localStorage.getItem("clutor.mode") === "code" ? "code" : "chat"; } catch { return "chat"; } });
   const [servers, setServers] = useState<McpServerConfig[]>(loadServers);
@@ -34,6 +36,9 @@ export function App() {
   const mcp = useMemo(() => new McpManager(bridge.host, () => bump((n) => n + 1)), []);
   useEffect(() => { saveServers(servers); mcp.sync(servers); }, [servers, mcp]);
   useEffect(() => { try { localStorage.setItem("clutor.mode", mode); } catch { /* storage unavailable */ } }, [mode]);
+  const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("clutor.sidebar") === "off"; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem("clutor.sidebar", collapsed ? "off" : "on"); } catch { /* storage unavailable */ } }, [collapsed]);
+  const [agentUsage, setAgentUsage] = useState({ runs: 0, steps: 0, tokens: 0 });
   const [notice, setNotice] = useState<string>();
   const [sidebar, setSidebar] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -143,22 +148,30 @@ export function App() {
   const ready = state.status === "ready";
   const note = state.ready?.locked ? "pinned" : state.unpinned ? "not pinned" : undefined;
   const picker = <ModelPicker current={state.model} status={state.status} note={note} onPick={pickModel} onMore={() => setDialog("models")} />;
+  const usage = chatUsage(active?.messages ?? [], state.ready?.nCtx ?? settings.ctx);
+  const pct = contextPercent(usage);
   const lastAssistant = active?.messages[active.messages.length - 1];
 
   return (
-    <div className="app">
-      <Sidebar conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setDialog("settings"); setSidebar(false); }} onJobs={() => { setDialog("jobs"); setSidebar(false); }} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
+    <div className={`app${collapsed ? " nav-collapsed" : ""}`}>
+      <Sidebar conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setDialog("settings"); setSidebar(false); }} onJobs={() => { setDialog("jobs"); setSidebar(false); }} onUsage={() => { setDialog("usage"); setSidebar(false); }} onCollapse={() => setCollapsed(true)} collapsed={collapsed} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
       <main className="main">
         <header className="topbar">
-          <button type="button" className="icon-btn menu" onClick={() => setSidebar(true)} aria-label="Open conversations"><MenuIcon /></button>
+          <button type="button" className={`icon-btn side-open${collapsed ? " always" : ""}`} onClick={() => { setSidebar(true); setCollapsed(false); }} aria-label="Show sidebar" title="Show sidebar"><SidebarIcon /></button>
           <div className="seg" role="tablist" aria-label="Mode">
             <button type="button" role="tab" aria-selected={mode === "chat"} className={mode === "chat" ? "on" : ""} onClick={() => setMode("chat")}>Chat</button>
             <button type="button" role="tab" aria-selected={mode === "code"} className={mode === "code" ? "on" : ""} onClick={() => setMode("code")}>Code</button>
           </div>
-          <h1 className="title">{mode === "chat" ? active?.title : ""}</h1>
-          <button type="button" className="icon-btn" onClick={onNew} aria-label="New chat"><PlusIcon /></button>
+          <h1 className="title">{mode === "chat" ? active?.title : "Agent"}</h1>
+          {mode === "chat" && ready ? (
+            <button type="button" className="ring-btn" onClick={() => setDialog("usage")} title={`Context ${pct}% full`} aria-label={`Context ${pct}% full. Open usage`}>
+              <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5" className="ring-bg" /><circle cx="10" cy="10" r="7.5" className="ring-fg" strokeDasharray={`${(pct / 100) * 47.1} 47.1`} transform="rotate(-90 10 10)" /></svg>
+              <span>{pct}%</span>
+            </button>
+          ) : null}
+          <button type="button" className="icon-btn" onClick={() => setDialog("settings")} aria-label="Settings" title="Settings"><GearIcon /></button>
         </header>
-        {mode === "code" ? <CodeView ready={ready} modelName={state.model?.name ?? "model"} session={() => session.current} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => setDialog("mcp")} /> : <>
+        {mode === "code" ? <CodeView ready={ready} modelName={state.model?.name ?? "model"} session={() => session.current} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => setDialog("mcp")} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} /> : <>
         <div className="scroll" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           {active && active.messages.length > 0 ? (
             <div className="thread">
@@ -179,8 +192,9 @@ export function App() {
       </main>
       {dialog === "models" ? <ModelDialog system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
+      {dialog === "usage" ? <UsageDialog state={state} ramBytes={system?.ramBytes} usage={usage} agent={agentUsage} jobs={{ active: activeJobs, done: jobList.filter((j) => j.status === "done").length }} onClose={() => setDialog(null)} /> : null}
       {dialog === "mcp" ? <McpDialog servers={servers} manager={mcp} onChange={setServers} onClose={() => setDialog(null)} /> : null}
-      {dialog === "settings" ? <SettingsDialog settings={settings} onChange={setSettings} onClose={() => setDialog(null)} /> : null}
+      {dialog === "settings" ? <SettingsDialog settings={settings} onChange={setSettings} onTools={() => setDialog("mcp")} onClose={() => setDialog(null)} /> : null}
     </div>
   );
 }
