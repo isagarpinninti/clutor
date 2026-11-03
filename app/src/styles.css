@@ -301,7 +301,7 @@ body, .app { -webkit-font-smoothing: antialiased; }
 .filediff, .summary { border-color: #1f1f1f; border-radius: 14px; }
 .btn { border-radius: 999px; }
 
-/* ---- Claude Code-style shell: slim sidebar, quiet top bar, grouped panels ---- */
+/* ---- App shell: slim sidebar, quiet top bar, grouped panels ---- */
 :root { --side-w: 252px; }
 .app.nav-collapsed .sidebar { display: none; }
 .sidebar, :root[data-theme="dark"] .sidebar { width: var(--side-w); padding: 10px 8px 8px; gap: 6px; background: #070707; border-right: 1px solid #131313; }
@@ -360,3 +360,30 @@ body, .app { -webkit-font-smoothing: antialiased; }
 .project-bar .btn { flex: none; white-space: nowrap; padding: 7px 14px; }
 .empty-hint { line-height: 1.6; max-width: 56ch; }
 .menu-item.two.on span::after { content: none; }
+
+/* ---- Dialogs and buttons: one consistent, quiet set ---- */
+.overlay, :root[data-theme="dark"] .overlay { background: rgba(0,0,0,.62); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); animation: fade-in .14s ease-out; }
+.dialog, :root[data-theme="dark"] .dialog { padding: 0 24px 24px; border-radius: 18px; background: #0b0b0b; border: 1px solid #202020; box-shadow: 0 24px 80px rgba(0,0,0,.75), 0 0 0 1px rgba(255,255,255,.02) inset; animation: dialog-in .18s cubic-bezier(.2,.8,.2,1); }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: none; } }
+.dialog > header { position: sticky; top: 0; z-index: 1; margin: 0 -24px 6px; padding: 0 16px 0 24px; background: #0b0b0b; border-bottom: 1px solid #151515; min-height: 56px; }
+.dialog > header h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.dialog > header .icon-btn { width: 30px; min-width: 30px; height: 30px; font-size: 13px; }
+.dialog .tabs { border-bottom: 1px solid #151515; margin: 10px 0 14px; } .dialog .tabs button { font-size: 13.5px; padding: 8px 12px; }
+.dialog .row, :root[data-theme="dark"] .dialog .row { border-radius: 12px; border-color: #1b1b1b; background: #0d0d0d; padding: 11px 14px; transition: background .12s, border-color .12s; }
+.dialog button.row:hover, :root[data-theme="dark"] .dialog button.row:hover { background: #131313; border-color: #2c2c2c; }
+.dialog .row.active, :root[data-theme="dark"] .dialog .row.active { border-color: #4a4a4a; background: #131313; }
+.badge { border-radius: 999px; padding: 2px 10px; background: #171717; }
+
+.btn, :root[data-theme="dark"] .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 16px; border-radius: 10px; font-size: 13.5px; font-weight: 500; letter-spacing: -.005em; border: 1px solid transparent; background: #f3f3f3; color: #0a0a0a; transition: background .12s, border-color .12s, transform .06s, opacity .12s; }
+.btn:hover:not(:disabled), :root[data-theme="dark"] .btn:hover:not(:disabled) { background: #fff; }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn.small, :root[data-theme="dark"] .btn.small { height: 30px; padding: 0 12px; font-size: 13px; border-radius: 9px; }
+.btn.ghost, :root[data-theme="dark"] .btn.ghost { background: transparent; color: #e6e6e6; border-color: #262626; }
+.btn.ghost:hover:not(:disabled), :root[data-theme="dark"] .btn.ghost:hover:not(:disabled) { background: #141414; border-color: #343434; }
+.btn.danger, :root[data-theme="dark"] .btn.danger { background: transparent; color: var(--danger); border-color: #3a2220; } .btn.danger:hover:not(:disabled) { background: #1a0f0e; }
+.btn:disabled { opacity: .4; cursor: default; }
+.icon-btn { border-radius: 9px; transition: background .12s, color .12s; }
+.round { transition: background .12s, transform .06s; } .round:active { transform: scale(.94); }
+.dialog .actions { margin-top: 14px; justify-content: flex-end; }
+.dialog .form .btn { align-self: flex-start; }
+:focus-visible { outline: 2px solid rgba(255,255,255,.55); outline-offset: 2px; border-radius: 8px; }
