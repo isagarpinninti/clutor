@@ -236,7 +236,8 @@ export function App() {
     navBump((n) => n + 1);
   };
   const canBack = hist.current.i > 0, canFwd = hist.current.i < hist.current.stack.length - 1;
-  const homeScreen = !!active && active.messages.length === 0 && (ready || !!lastModel) && state.status !== "loading";
+  const homeScreen = !!active && active.messages.length === 0;
+  const haveModel = ready || !!lastModel;
   const [prefill, setPrefill] = useState<{ text: string; n: number }>();
   const composer = (home: boolean) => (
     <Composer busy={busy} disabled={!ready && !lastModel} placeholder={ready || lastModel ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t, f) => void send(t, f)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
@@ -300,24 +301,19 @@ export function App() {
               {active.messages.map((m) => <MessageView key={m.id} msg={m} streaming={busy && m.id === lastAssistant?.id && !m.jobId} showReasoning={settings.showReasoning} job={jobByMessage.get(m.id)} position={m.jobId ? queue.position(m.jobId) : 0} onJobAction={jobAction} />)}
             </div>
           ) : (
-            homeScreen ? (
-              <div className="home">
-                <div className="mark"><Logo size={48} /></div>
-                <h2>{greeting(settings.userName)}</h2>
-                {composer(true)}
+            <div className="home">
+              <div className="mark"><Logo size={48} /></div>
+              {state.status === "loading" ? <div className="loading-wait"><Thinking label="Loading your model" /></div> : <h2>{greeting(settings.userName)}</h2>}
+              {composer(true)}
+              {state.status === "error" ? <p className="home-note err">{state.error}</p> : null}
+              {!haveModel && state.status !== "loading" ? (
+                <div className="home-note"><p>Choose a model to start. Clutor runs it on your own hardware, with its own engine.</p><button type="button" className="btn" onClick={() => setDialog("models")}>Choose a model</button></div>
+              ) : state.status === "loading" ? <p className="home-note">Mapping the weights into memory. A large model can take a while the first time.</p> : (
                 <div className="suggest">
                   {settings.suggestions ? SUGGESTIONS.map((s) => <button type="button" key={s.label} className="suggestion" onClick={() => setPrefill((p) => ({ text: s.text, n: (p?.n ?? 0) + 1 }))}>{s.label}</button>) : null}
                 </div>
-              </div>
-            ) : (
-            <div className="welcome">
-              <div className="mark"><Logo size={64} /></div>
-              {state.status === "loading" ? <div className="loading-wait"><Thinking label="Loading your model" /></div> : <h2>{ready ? "What can I help with?" : "Welcome to Clutor"}</h2>}
-              <p>{state.status === "loading" ? "Mapping the weights into memory. A large model can take a while the first time." : ready ? "Everything stays on this device." : state.status === "error" ? state.error : "Pick a model to start. Clutor runs it on your own hardware, with its own engine."}</p>
-              {!ready && state.status !== "loading" && lastModel ? <button type="button" className="btn" onClick={() => pickModel(lastModel)}>Load {lastModel.name}</button> : null}
-              {!ready && state.status !== "loading" ? <button type="button" className={lastModel ? "btn ghost" : "btn"} onClick={() => setDialog("models")}>Choose a model</button> : null}
+              )}
             </div>
-            )
           )}
         </div>
         {homeScreen ? null : composer(false)}
