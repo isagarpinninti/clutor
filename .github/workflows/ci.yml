@@ -1,8 +1,9 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, "portable/**"]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -71,3 +72,27 @@ jobs:
       - run: npm ci
       - name: Runtime dependencies must have no known high or critical vulnerabilities
         run: npm audit --omit=dev --audit-level=high
+
+  # The engine built with MinGW-w64 on Windows: the unit checks, the golden test against the independent reference, and the chat protocol.
+  engine-windows:
+    name: Engine (Windows, MinGW-w64)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            make
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-python
+      - run: make -C c
+      - run: make -C c test
+      - run: make -C c golden
+      - run: make -C c chat-test
+

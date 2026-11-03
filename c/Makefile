@@ -8,10 +8,16 @@ ifeq ($(shell uname -m),x86_64)
   CFLAGS += -mavx2
 endif
 LDLIBS = -lm -lpthread
+# Windows (MSYS2 MinGW-w64): GNU C for the POSIX names MinGW declares, FMA with AVX2, and the process-memory library for peak memory.
+ifeq ($(OS),Windows_NT)
+  CFLAGS := $(filter-out -std=c11 -Wpedantic,$(CFLAGS)) -std=gnu11 -mfma
+  LDLIBS += -lpsapi
+  EXE = .exe
+endif
 # BUILD can point somewhere writable when the source sits in a read-only installed package: make BUILD=$HOME/.clutor/bin
 BUILD ?= build
 SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/quant.c src/meta.c src/xs.c src/forward.c src/tokenizer.c src/stream.c src/chat.c
-BIN = $(BUILD)/clutor-engine
+BIN = $(BUILD)/clutor-engine$(EXE)
 
 all: $(BIN)
 build:

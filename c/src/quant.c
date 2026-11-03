@@ -4,7 +4,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include "plat.h"
 
 /* Block layouts are ggml's (llama.cpp/ggml-common.h); the maths below follows its dequantize_row_* functions. */
 #define QK_K 256
@@ -429,7 +429,7 @@ static void dotb_q6_K(int nblk, const b_q6_K *x, const cl_xq *xq, int nb, float 
 static int g_threads = 0;
 void cl_set_threads(int n) { g_threads = n < 1 ? 1 : n > 16 ? 16 : n; }
 int cl_get_threads(void) {
-  if (!g_threads) { long c = sysconf(_SC_NPROCESSORS_ONLN); cl_set_threads(c > 0 ? (int)c : 1); }
+  if (!g_threads) { cl_set_threads(cl_ncpu()); }
   return g_threads;
 }
 

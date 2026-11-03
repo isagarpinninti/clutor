@@ -9,10 +9,7 @@
 #include "quant.h"
 #include <math.h>
 #include <time.h>
-#include <poll.h>
-#include <unistd.h>
 #include <errno.h>
-#include <sys/resource.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -112,7 +109,7 @@ static float *load_trace(const char *path, int L, int E, int *tokens) {
   char *line = NULL; size_t cap = 0;
   int hl = 0, he = 0, maxtok = -1;
   float *buf = NULL; size_t used = 0, alloc = 0;
-  while (getline(&line, &cap, fp) > 0) {
+  while (cl_getline(&line, &cap, fp) > 0) {
     if (line[0] == '#') {
       if (!strstr(line, "route trace v2")) { fprintf(stderr, "%s is not a v2 route trace (make one with `generate --trace`)\n", path); free(line); fclose(fp); return NULL; }
       char *p = strstr(line, "layers="); if (p) hl = atoi(p + 7);
@@ -243,13 +240,7 @@ static cl_fwd_opts fwd_opts(int argc, char **argv) {
 static void report_xs(cl_fwd *f, double secs, int tokens) {
   if (!f->xs) return;
   cl_xs_stats s = cl_xs_get_stats(f->xs);
-  struct rusage ru;
-  getrusage(RUSAGE_SELF, &ru);
-#if defined(__APPLE__)
-  double rss = (double)ru.ru_maxrss / 1048576.0;
-#else
-  double rss = (double)ru.ru_maxrss / 1024.0;
-#endif
+  double rss = (double)cl_peak_rss() / 1048576.0;
   if (f->smart.enabled) fprintf(stderr, "[smart-route %d,%d,%g: %llu of %llu expert slots (%.1f%%) used a resident expert instead of the router's own choice; probability moved: largest %.4f (limit %g), total %.3f]\n", f->smart.J, f->smart.M, f->smart.tau, (unsigned long long)f->subs, (unsigned long long)f->expert_slots, f->expert_slots ? 100.0 * f->subs / f->expert_slots : 0.0, f->max_delta, f->smart.tau, f->dropped_mass);
   fprintf(stderr, "[streaming: cache %u experts of %llu bytes; %llu accesses, %.1f%% hits (%llu from prefetch), %llu misses, prefetch %llu issued / %llu never used (%.0f%% of predicted experts were chosen); read %.2f GB (%.2f GB/token) in %.2f s of read time; compute thread waited %.2f s of %.2f s; peak RSS %.0f MiB]\n",
           cl_xs_cache_slots(f->xs), (unsigned long long)cl_xs_slot_bytes(f->xs), (unsigned long long)s.accesses, s.accesses ? 100.0 * s.hits / s.accesses : 0.0, (unsigned long long)s.stage_hits, (unsigned long long)s.misses,
@@ -495,7 +486,7 @@ static int ib_cancelled(void *unused) {
     char *nl = memchr(ib.buf + start, '\n', ib.len - start);
     if (!nl) break;
     size_t n = (size_t)(nl - (ib.buf + start));
-    if (n < 80 && memmem(ib.buf + start, n, "\"cancel\"", 8)) {
+    if (n < 80 && cl_memmem(ib.buf + start, n, "\"cancel\"", 8)) {
       memmove(ib.buf + start, nl + 1, ib.len - start - n - 1); ib.len -= n + 1;
       return 1;
     }

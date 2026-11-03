@@ -2,20 +2,15 @@
 #include "stream.h"
 #include "kernel.h"
 #include <errno.h>
-#include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/resource.h>
 #include <time.h>
-#include <unistd.h>
+#include "plat.h"
 
-static uint64_t phys_ram_bytes(void) {
-  long pages = sysconf(_SC_PHYS_PAGES), sz = sysconf(_SC_PAGE_SIZE);
-  return pages > 0 && sz > 0 ? (uint64_t)pages * (uint64_t)sz : 0;
-}
+static uint64_t phys_ram_bytes(void) { return cl_phys_mem(); }
 
 static uint64_t now_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec; }
 static uint64_t mix64(uint64_t x) { x += 0x9e3779b97f4a7c15ull; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull; x = (x ^ (x >> 27)) * 0x94d049bb133111ebull; return x ^ (x >> 31); }
@@ -65,14 +60,12 @@ static job *pop_job(eng *e) {
 static int read_full(eng *e, uint8_t *dst, uint64_t len, uint64_t off) {
   uint64_t done = 0;
   while (done < len) {
-    ssize_t n = pread(e->fd, dst + done, (size_t)(len - done), (off_t)(off + done));
+    long long n = cl_pread(e->fd, dst + done, (size_t)(len - done), off + done);
     if (n < 0 && errno == EINTR) continue;
     if (n <= 0) return -1;
     done += (uint64_t)n;
   }
-#if defined(__linux__)
-  if (e->bypass_os_cache) posix_fadvise(e->fd, (off_t)off, (off_t)len, POSIX_FADV_DONTNEED);
-#endif
+  if (e->bypass_os_cache) cl_drop_cache(e->fd, off, len);
   return 0;
 }
 
@@ -196,13 +189,7 @@ static uint64_t peak_rss(void) {
     if (found) return (uint64_t)kb * 1024ull;
   }
 #endif
-  struct rusage u;
-  if (getrusage(RUSAGE_SELF, &u)) return 0;
-#ifdef __APPLE__
-  return (uint64_t)u.ru_maxrss;
-#else
-  return (uint64_t)u.ru_maxrss * 1024ull;
-#endif
+  return cl_peak_rss();
 }
 
 void cl_stream_result_free(cl_stream_result *r) { free(r->layers); r->layers = NULL; free(r->windows); r->windows = NULL; }
@@ -222,23 +209,21 @@ int cl_stream_run(const cl_model *m, const char *path, const cl_stream_opts *o, 
   uint32_t universe = m->n_layers * m->n_experts;
   eng *e = calloc(1, sizeof *e);
   e->m = m; e->bypass_os_cache = o->os_cache_bypass;
-  e->fd = open(path, O_RDONLY);
+  e->fd = cl_open_ro(path);
   if (e->fd < 0) { snprintf(res->error, sizeof res->error, "cannot open %s", path); free(e); return 1; }
-#if defined(__APPLE__)
-  if (o->os_cache_bypass) fcntl(e->fd, F_NOCACHE, 1);
-#endif
+  if (o->os_cache_bypass) cl_nocache(e->fd);
   e->cache = cl_cache_new(cache_slots, stage_slots, universe, o->policy, (uint32_t)o->window_pct);
   uint32_t total = cl_cache_total_slots(e->cache), nbuf = total + m->n_used;
   e->buf = calloc(nbuf, sizeof(uint8_t *));
   e->state = calloc(nbuf, sizeof(int));
   { /* the arena is page aligned (16 KiB on Apple silicon) and a multiple of the page size; individual buffers are only 4 KiB aligned */
-    long pg = sysconf(_SC_PAGESIZE); if (pg < 4096) pg = 4096;
+    long pg = (long)cl_page_size(); if (pg < 4096) pg = 4096;
     uint64_t bytes = ((uint64_t)nbuf * stride + (uint64_t)pg - 1) / (uint64_t)pg * (uint64_t)pg;
-    e->arena = aligned_alloc((size_t)pg, bytes);
+    e->arena = cl_aligned_alloc((size_t)pg, bytes);
     if (!e->arena) { snprintf(res->error, sizeof res->error, "out of memory for the expert cache"); return 1; }
     for (uint32_t i = 0; i < nbuf; i++) e->buf[i] = e->arena + (uint64_t)i * stride;
   }
-  for (int i = 0; i < 2; i++) { e->ring[i] = aligned_alloc(4096, (m->max_dense_bytes + 4095) / 4096 * 4096 + 4096); e->ring_step[i] = -1; }
+  for (int i = 0; i < 2; i++) { e->ring[i] = cl_aligned_alloc(4096, (m->max_dense_bytes + 4095) / 4096 * 4096 + 4096); e->ring_step[i] = -1; }
   uint64_t dense_total = 0;
   for (uint32_t l = 0; l < m->n_layers; l++) dense_total += m->layers[l].dense_bytes;
   int resident = o->dense_mode == CL_DENSE_RESIDENT;
@@ -249,7 +234,7 @@ int cl_stream_run(const cl_model *m, const char *path, const cl_stream_opts *o, 
     for (uint32_t l = 0; l < m->n_layers; l++) {
       const cl_layer *ly = &m->layers[l];
       if (!ly->n_dense) continue;
-      e->dense_res[l] = aligned_alloc(4096, (ly->dense_bytes + 4095) / 4096 * 4096);
+      e->dense_res[l] = cl_aligned_alloc(4096, (ly->dense_bytes + 4095) / 4096 * 4096);
       if (!e->dense_res[l]) { snprintf(res->error, sizeof res->error, "out of memory for resident dense weights (%.1f MiB)", dense_total / 1048576.0); return 1; }
       uint64_t at = 0;
       for (int i = 0; i < ly->n_dense; i++) { if (read_full(e, e->dense_res[l] + at, ly->dense[i].length, ly->dense[i].offset)) { snprintf(res->error, sizeof res->error, "read failed for layer %u", l); return 1; } at += ly->dense[i].length; }
@@ -376,7 +361,7 @@ int cl_stream_run(const cl_model *m, const char *path, const cl_stream_opts *o, 
   res->t = e->t;
   res->rss_peak = peak_rss();
   {
-    uint64_t pg = (uint64_t)sysconf(_SC_PAGESIZE); if (pg < 4096) pg = 4096;
+    uint64_t pg = (uint64_t)cl_page_size(); if (pg < 4096) pg = 4096;
     uint64_t p = res->rss_start + (((uint64_t)nbuf * stride + pg - 1) / pg * pg) + cl_cache_meta_bytes(e->cache);
     p += 2 * (((m->max_dense_bytes + 4095) / 4096 * 4096) + 4096);
     if (resident) for (uint32_t l = 0; l < m->n_layers; l++) p += (m->layers[l].dense_bytes + 4095) / 4096 * 4096;
@@ -391,9 +376,9 @@ int cl_stream_run(const cl_model *m, const char *path, const cl_stream_opts *o, 
   res->cache_slots = cache_slots; res->stage_slots = stage_slots; res->slot_bytes = slot_bytes;
   res->ok = !e->failed;
   if (e->failed) snprintf(res->error, sizeof res->error, "%s", e->error);
-  free(e->arena);
-  if (e->dense_res) { for (uint32_t l = 0; l < m->n_layers; l++) free(e->dense_res[l]); free(e->dense_res); }
-  free(e->buf); free(e->state); free(e->ring[0]); free(e->ring[1]); free(rt.base); free(rt.bonus);
-  cl_cache_free(e->cache); close(e->fd); free(e);
+  cl_aligned_free(e->arena);
+  if (e->dense_res) { for (uint32_t l = 0; l < m->n_layers; l++) cl_aligned_free(e->dense_res[l]); free(e->dense_res); }
+  free(e->buf); free(e->state); cl_aligned_free(e->ring[0]); cl_aligned_free(e->ring[1]); free(rt.base); free(rt.bonus);
+  cl_cache_free(e->cache); cl_close(e->fd); free(e);
   return res->ok ? 0 : 1;
 }

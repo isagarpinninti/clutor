@@ -4,6 +4,7 @@
  */
 #ifndef CL_PLAT_H
 #define CL_PLAT_H
+#include <stdio.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -72,6 +73,25 @@ static inline int cl_stdin_ready(void) {
   return WaitForSingleObject(h, 0) == WAIT_OBJECT_0;
 }
 static inline void cl_stdio_binary(void) { _setmode(0, _O_BINARY); _setmode(1, _O_BINARY); _setmode(2, _O_BINARY); }
+/* getline and memmem, which Windows lacks */
+static inline long long cl_getline(char **line, size_t *cap, FILE *fp) {
+  size_t n = 0;
+  int ch;
+  if (!*line || !*cap) { *cap = 256; *line = malloc(*cap); if (!*line) return -1; }
+  while ((ch = fgetc(fp)) != EOF) {
+    if (n + 2 > *cap) { *cap *= 2; char *g = realloc(*line, *cap); if (!g) return -1; *line = g; }
+    (*line)[n++] = (char)ch;
+    if (ch == '\n') break;
+  }
+  if (n == 0) return -1;
+  (*line)[n] = 0;
+  return (long long)n;
+}
+static inline void *cl_memmem(const void *h, size_t hl, const void *nd, size_t nl) {
+  if (nl == 0) return (void *)h;
+  for (size_t i = 0; i + nl <= hl; i++) if (!memcmp((const char *)h + i, nd, nl)) return (void *)((const char *)h + i);
+  return NULL;
+}
 
 #else   /* ---------------------------------------------------------------- POSIX: macOS, Linux, Android */
 #define _GNU_SOURCE
@@ -125,5 +145,7 @@ static inline int cl_stdin_ready(void) {
   return r > 0;
 }
 static inline void cl_stdio_binary(void) {}
+static inline long long cl_getline(char **line, size_t *cap, FILE *fp) { return (long long)getline(line, cap, fp); }
+static inline void *cl_memmem(const void *h, size_t hl, const void *nd, size_t nl) { return memmem(h, hl, nd, nl); }
 #endif
 #endif

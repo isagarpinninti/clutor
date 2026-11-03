@@ -1,14 +1,11 @@
 #define _GNU_SOURCE
 #include "forward.h"
 #include "quant.h"
-#include <fcntl.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include "plat.h"
 
 static const cl_tensor *find(const cl_model *m, const char *name) {
   for (uint64_t i = 0; i < m->n_tensors; i++) if (!strcmp(m->tensors[i].name, name)) return &m->tensors[i];
@@ -97,14 +94,13 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   f->qk_mode = spec->qk_mode; f->qk_per_head = spec->qk_mode == 2; f->norm_topk = spec->norm_topk; f->rope_pairs = spec->rope_pairs; f->dense = spec->dense; f->qkv_bias = spec->qkv_bias; f->hybrid = spec->hybrid;
   const int NU = spec->dense ? 1 : 0;   /* a dense model has no experts, but its single feed-forward needs the same scratch as one expert */
   f->embed_scale = f->resid_scale = f->logit_scale = 1.0f; f->attn_scale = 0;
-  int fd = open(path, O_RDONLY);
-  struct stat st;
-  if (fd < 0 || fstat(fd, &st)) { snprintf(err, errlen, "cannot open %s", path); if (fd >= 0) close(fd); goto fail; }
-  f->map_size = (size_t)st.st_size;
-  f->map = mmap(NULL, f->map_size, PROT_READ, MAP_PRIVATE, fd, 0);
-  close(fd);
-  if (f->map == MAP_FAILED) { f->map = NULL; snprintf(err, errlen, "cannot map %s", path); goto fail; }
-  if (opts && opts->lock && !opts->cache_bytes) f->locked = mlock(f->map, f->map_size) == 0;   /* reads the whole file in, so it can take seconds; failing just leaves the model evictable */
+  int fd = cl_open_ro(path);
+  if (fd < 0 || cl_fd_size(fd) == 0) { snprintf(err, errlen, "cannot open %s", path); if (fd >= 0) cl_close(fd); goto fail; }
+  f->map_size = (size_t)cl_fd_size(fd);
+  f->map = cl_map_ro(fd, f->map_size);
+  cl_close(fd);
+  if (!f->map) { snprintf(err, errlen, "cannot map %s", path); goto fail; }
+  if (opts && opts->lock && !opts->cache_bytes) f->locked = cl_lock_memory(f->map, f->map_size);   /* reads the whole file in, so it can take seconds; failing just leaves the model evictable */
   if (cl_meta_parse(&f->meta, f->map, f->map_size, err, errlen)) goto fail;
   REQ_U("embedding_length", f->n_embd);
   REQ_U("attention.head_count", f->n_head);
@@ -235,9 +231,9 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   }
   if (!f->kc || !f->vc || !f->x || !f->xn || !f->q || !f->k || !f->v || !f->att || !f->scores || !f->moe || !f->hg || !f->hu || !f->hd || !f->rl || !f->rlogit) { snprintf(err, errlen, "out of memory"); goto fail; }
   if (f->dense && opts && (opts->cache_bytes || opts->smart.enabled)) { snprintf(err, errlen, "this model is dense (it has no experts), so there is nothing to stream or substitute: --cache-mb and --smart apply to mixture-of-experts models only"); goto fail; }
-  { long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
-    if ((!opts || !opts->cache_bytes) && pages > 0 && psz > 0 && f->map_size > (size_t)pages * (size_t)psz * 8 / 10) {
-      snprintf(err, errlen, "the model file (%.1f GiB) is larger than 80%% of this machine's memory (%.1f GiB): mapping it whole would thrash; %s", f->map_size / 1073741824.0, (double)pages * (double)psz / 1073741824.0, f->dense ? "a dense model has no experts to stream, so it needs enough memory for the whole file" : "stream its experts with --cache-mb N"); goto fail;
+  { const uint64_t ram = cl_phys_mem();
+    if ((!opts || !opts->cache_bytes) && ram > 0 && f->map_size > (size_t)(ram / 10 * 8)) {
+      snprintf(err, errlen, "the model file (%.1f GiB) is larger than 80%% of this machine's memory (%.1f GiB): mapping it whole would thrash; %s", f->map_size / 1073741824.0, (double)ram / 1073741824.0, f->dense ? "a dense model has no experts to stream, so it needs enough memory for the whole file" : "stream its experts with --cache-mb N"); goto fail;
     } }
   if (opts && opts->smart.enabled && !opts->cache_bytes) { snprintf(err, errlen, "--smart needs --cache-mb: it substitutes experts that are already in the cache"); goto fail; }
   if (opts && opts->cache_bytes) {
@@ -283,7 +279,7 @@ void cl_fwd_close(cl_fwd *f) {
   free(f->xq_ffk);
   cl_xs_close(f->xs); free(f->prev_sel); free(f->pred_sel);
   cl_meta_free(&f->meta);
-  if (f->map) munmap(f->map, f->map_size);
+  if (f->map) cl_unmap(f->map, f->map_size);
   cl_model_close(&f->model);
   memset(f, 0, sizeof *f);
 }
