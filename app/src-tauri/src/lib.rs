@@ -13,6 +13,7 @@ pub fn run() {
         .manage(engine::EngineState::default())
         .manage(project::McpState::default())
         .manage(project::TermState::default())
+        .manage(remote::commands::RemoteState::default())
         .invoke_handler(tauri::generate_handler![
             engine::engine_open,
             engine::engine_op,
@@ -31,6 +32,18 @@ pub fn run() {
             project::mcp_stop,
             project::term_run,
             project::term_kill,
+            remote::commands::remote_start,
+            remote::commands::remote_stop,
+            remote::commands::remote_set_awake,
+            remote::commands::remote_status,
+            remote::commands::remote_pair_start,
+            remote::commands::remote_pair_cancel,
+            remote::commands::remote_revoke,
+            remote::commands::remote_send,
+            remote::commands::remote_broadcast,
+            remote::commands::remote_kick,
+            remote::commands::remote_log,
+            remote::commands::remote_log_read,
             web::web_fetch,
             web::web_search,
         ])

@@ -2,6 +2,7 @@
 //! relay you host, because the relay only forwards bytes it cannot read.
 
 pub mod client;
+pub mod commands;
 pub mod host;
 pub mod secure;
 pub mod store;

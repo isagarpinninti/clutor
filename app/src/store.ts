@@ -24,6 +24,8 @@ export interface Settings {
   models?: { chat?: ModelInfo; code?: ModelInfo };
   /** A folder you chose to look for models in. */
   modelsDir?: string;
+  /** Remote control from a paired phone. Off until you turn it on in Settings > Remote. */
+  remote?: { projectsRoot?: string; allowedRoots?: string[]; keepAwake?: boolean };
   /** What to call you in greetings, asked on first launch. */
   userName?: string;
   /** The welcome screen has been completed or skipped. */

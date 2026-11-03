@@ -1,5 +1,5 @@
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
-import type { AgentHost, Bridge, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
+import type { AgentHost, Bridge, RemoteApi, RemoteDevice, RemoteStatus, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
 /** A browser preview with no engine: models, downloads and replies are simulated so the interface can be developed and tested without the native shell. */
 
@@ -105,10 +105,26 @@ const mockWeb: WebApi = {
   async openExternal(url) { window.open(url, "_blank", "noopener"); },
 };
 
+let mockRemote: RemoteStatus = { on: false, addresses: [], hostId: "ab".repeat(32), devices: [{ id: "1a2b3c4d5e6f7a8b", name: "Pixel 8", public: "00", created: 1_700_000_000, lastSeen: 1_700_000_500 }], clients: 0, offerOpen: false, awake: false };
+const mockLog: string[] = [];
+const remote: RemoteApi = {
+  async status() { return mockRemote; },
+  async start(keepAwake) { mockRemote = { ...mockRemote, on: true, port: 8765, addresses: ["192.168.1.20:8765"], awake: keepAwake }; return mockRemote; },
+  async stop() { mockRemote = { ...mockRemote, on: false, addresses: [], clients: 0, awake: false, offerOpen: false }; return mockRemote; },
+  async setAwake(on) { mockRemote = { ...mockRemote, awake: on && mockRemote.on }; return mockRemote; },
+  async pairStart() { mockRemote = { ...mockRemote, offerOpen: true }; return { qr: JSON.stringify({ v: 1, name: "preview", key: "preview", id: mockRemote.hostId, addrs: mockRemote.addresses, secret: "preview" }), expiresIn: 120, addresses: mockRemote.addresses }; },
+  async pairCancel() { mockRemote = { ...mockRemote, offerOpen: false }; },
+  async revoke(id) { mockRemote = { ...mockRemote, devices: mockRemote.devices.filter((d: RemoteDevice) => d.id !== id) }; return mockRemote; },
+  async send() { return false; }, async broadcast() { /* no phones */ }, async kick() { /* none */ },
+  async log(line) { mockLog.push(line); }, async readLog(max) { return mockLog.slice(-max); },
+  async onOpen() { return () => undefined; }, async onMessage() { return () => undefined; }, async onClose() { return () => undefined; },
+};
+
 export const mockBridge: Bridge = {
   native: false,
   host: mockHost,
   web: mockWeb,
+  remote,
   async system(): Promise<SystemInfo> { return { os: "preview", arch: "browser", ramBytes: 16 * 2 ** 30, cores: 8, modelsDir: "~/.clutor/models" }; },
   async listModels(folders) { return folders?.length ? [...MODELS, { path: `${folders[0]}/Custom-Model-7B-Q4_K_M.gguf`, name: "Custom-Model-7B-Q4_K_M", bytes: 4_400_000_000 }] : MODELS; },
   async catalog() { return CATALOG; },

@@ -42,3 +42,4 @@ export const FileIcon = () => I(<><path d="M7 3.5h6.5L18 8v10.5c0 .6-.4 1-1 1H7c
 export const BackIcon = () => I(<path d="m14.5 6.5-5.5 5.5 5.5 5.5" />);
 export const ForwardIcon = () => I(<path d="m9.5 6.5 5.5 5.5-5.5 5.5" />);
 export const UserIcon = () => I(<><circle cx="12" cy="8.5" r="3.5" /><path d="M5 19c.6-3.3 3.4-5 7-5s6.4 1.7 7 5" /></>);
+export const PhoneIcon = () => I(<><rect x="7" y="3.5" width="10" height="17" rx="2.6" /><path d="M10.5 17.5h3" /></>);

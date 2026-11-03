@@ -13,6 +13,29 @@ export interface WebPage { url: string; title: string; text: string; truncated: 
 /** Web access, done by the shell: addresses on this computer or its network are refused there. */
 export interface WebApi { search(query: string): Promise<SearchHit[]>; fetch(url: string): Promise<WebPage>; openExternal(url: string): Promise<void> }
 
+export interface RemoteDevice { id: string; name: string; public: string; created: number; lastSeen: number }
+export interface RemoteStatus { on: boolean; port?: number; addresses: string[]; hostId: string; devices: RemoteDevice[]; clients: number; offerOpen: boolean; awake: boolean }
+export interface PairingOffer { qr: string; expiresIn: number; addresses: string[] }
+/** Remote control of this computer from a paired phone (see docs/REMOTE.md). */
+export interface RemoteApi {
+  status(): Promise<RemoteStatus>;
+  start(keepAwake: boolean): Promise<RemoteStatus>;
+  stop(): Promise<RemoteStatus>;
+  setAwake(on: boolean): Promise<RemoteStatus>;
+  pairStart(): Promise<PairingOffer>;
+  pairCancel(): Promise<void>;
+  revoke(id: string): Promise<RemoteStatus>;
+  send(client: number, text: string): Promise<boolean>;
+  broadcast(text: string): Promise<void>;
+  kick(client: number): Promise<void>;
+  log(line: string): Promise<void>;
+  readLog(max: number): Promise<string[]>;
+  /** Phones connecting, sending and leaving. Each returns a function that stops listening. */
+  onOpen(cb: (client: number, device: RemoteDevice) => void): Promise<() => void>;
+  onMessage(cb: (client: number, text: string) => void): Promise<() => void>;
+  onClose(cb: (client: number) => void): Promise<() => void>;
+}
+
 export interface RunOutcome { exit_code: number | null; output: string; timed_out: boolean; duration_ms: number }
 export interface McpLaunch { command: string; args: string[]; env: Record<string, string>; cwd?: string }
 
@@ -39,6 +62,7 @@ export interface Bridge {
   readonly native: boolean;
   readonly host: AgentHost;
   readonly web: WebApi;
+  readonly remote: RemoteApi;
   system(): Promise<SystemInfo>;
   /** The models in the app's folder, the command line's, and any folders you chose. */
   listModels(folders?: string[]): Promise<ModelInfo[]>;

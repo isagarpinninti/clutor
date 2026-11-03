@@ -4,7 +4,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { AgentHost, Bridge, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
+import type { AgentHost, Bridge, RemoteApi, RemoteDevice, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
 /** The engine runs inside this process (src-tauri links it); its events arrive as Tauri events and its operations go out as commands. */
 class TauriTransport implements Transport {
@@ -59,10 +59,29 @@ const web: WebApi = {
   openExternal: (url) => (/^https?:\/\//.test(url) ? openUrl(url) : Promise.reject(new Error("only web addresses can be opened"))),
 };
 
+const remote: RemoteApi = {
+  status: () => invoke("remote_status"),
+  start: (keepAwake) => invoke("remote_start", { keepAwake }),
+  stop: () => invoke("remote_stop"),
+  setAwake: (on) => invoke("remote_set_awake", { on }),
+  pairStart: () => invoke("remote_pair_start"),
+  pairCancel: () => invoke("remote_pair_cancel"),
+  revoke: (id) => invoke("remote_revoke", { id }),
+  send: (client, text) => invoke("remote_send", { client, text }),
+  broadcast: (text) => invoke("remote_broadcast", { text }),
+  kick: (client) => invoke("remote_kick", { client }),
+  log: (line) => invoke("remote_log", { line }),
+  readLog: (max) => invoke("remote_log_read", { max }),
+  onOpen: (cb) => listen<{ client: number; device: RemoteDevice }>("remote-open", (e) => cb(e.payload.client, e.payload.device)),
+  onMessage: (cb) => listen<{ client: number; text: string }>("remote-msg", (e) => cb(e.payload.client, e.payload.text)),
+  onClose: (cb) => listen<{ client: number }>("remote-close", (e) => cb(e.payload.client)),
+};
+
 export const tauriBridge: Bridge = {
   native: true,
   host,
   web,
+  remote,
   system: () => invoke<SystemInfo>("system_info"),
   listModels: (folders) => invoke<ModelInfo[]>("list_models", { folders: folders ?? [] }),
   catalog: () => invoke<CatalogItem[]>("model_catalog"),

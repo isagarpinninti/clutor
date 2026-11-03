@@ -662,3 +662,10 @@ body, .app { -webkit-font-smoothing: antialiased; }
 .ctx-card.slim { padding: 14px 20px; gap: 10px; } .ctx-card.slim .ctx-top b { font-size: 22px; }
 .menu-item.same { color: var(--muted); border-top: 1px solid #1b1b1b; border-radius: 0; margin-top: 4px; padding-top: 10px; font-size: 13px; }
 .mini-check { width: 30px; height: 18px; border-radius: 999px; background: #2a2a2a; position: relative; flex: none; transition: background .15s; } .mini-check::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #8a8a8a; transition: transform .15s, background .15s; } .mini-check.on { background: #2f6df0; } .mini-check.on::after { transform: translateX(12px); background: #fff; }
+
+/* Remote */
+.remote-live { display: flex; align-items: center; gap: 10px; max-width: 760px; margin: -6px 0 6px; padding: 10px 14px; border: 1px solid #1c2a1f; background: #0a120c; border-radius: 12px; color: #a8d8b6; font-size: 13px; line-height: 1.5; } .remote-live .dot { flex: none; margin: 0; }
+.srow.slim { padding: 10px 0; max-width: 760px; } .srow.slim span { font-size: 14px; } .srow.slim small { color: var(--muted); margin-left: 8px; font-size: 12.5px; }
+.pair-card { display: flex; gap: 22px; align-items: center; max-width: 760px; padding: 18px; margin: 8px 0; border: 1px solid #222; border-radius: 16px; background: #0b0b0b; } .pair-card img { background: #fff; border-radius: 12px; flex: none; } .pair-card > div { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; } .pair-card small { color: var(--muted); font-size: 12.5px; }
+.remote-log { max-width: 760px; margin: 6px 0 0; padding: 12px 14px; border: 1px solid #1a1a1a; border-radius: 12px; background: #090909; color: #b5b5b5; font-family: var(--mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap; max-height: 220px; overflow: auto; }
+.notice.ok { color: var(--ok); border-color: #1c2a1f; max-width: 760px; }

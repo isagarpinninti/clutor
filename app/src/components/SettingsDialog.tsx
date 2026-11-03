@@ -6,10 +6,11 @@ import { Logo } from "./Logo";
 import type { McpManager, McpServerConfig } from "../agent/mcp";
 import { DEFAULT_SYSTEM, DEFAULT_SETTINGS, fmtBytes, type Settings } from "../store";
 import { McpPanel } from "./McpDialog";
+import { RemotePanel } from "./RemotePanel";
 import { UsagePanel, type UsageData } from "./UsageDialog";
-import { BellIcon, GearIcon, ChatIcon, ChevronIcon, ChipIcon, CodeIcon, GaugeIcon, GlobeIcon, LaptopIcon, PaletteIcon, InfoIcon, PlugIcon, SearchIcon, ShieldIcon, UserIcon } from "./icons";
+import { BellIcon, GearIcon, ChatIcon, ChevronIcon, ChipIcon, CodeIcon, GaugeIcon, GlobeIcon, LaptopIcon, PaletteIcon, InfoIcon, PhoneIcon, PlugIcon, SearchIcon, ShieldIcon, UserIcon } from "./icons";
 
-export type Section = "profile" | "usage" | "desktop" | "appearance" | "notifications" | "privacy" | "models" | "chat" | "web" | "connectors" | "code" | "desktop" | "about";
+export type Section = "remote" | "profile" | "usage" | "desktop" | "appearance" | "notifications" | "privacy" | "models" | "chat" | "web" | "connectors" | "code" | "desktop" | "about";
 
 interface Props {
   settings: Settings;
@@ -43,6 +44,7 @@ const GROUPS: Array<Array<{ id: Section; label: string; icon: ReactNode; words: 
     { id: "chat", label: "Chat", icon: <ChatIcon />, words: "creativity temperature instructions thinking suggestions background" },
     { id: "web", label: "Web", icon: <GlobeIcon />, words: "browse search duckduckgo internet" },
     { id: "connectors", label: "Connectors", icon: <PlugIcon />, words: "mcp tools servers" },
+    { id: "remote", label: "Remote", icon: <PhoneIcon />, words: "phone pair qr wifi control awake projects" },
     { id: "code", label: "Code", icon: <CodeIcon />, words: "agent permissions steps transcript verbose" },
   ],
   [
@@ -192,6 +194,8 @@ export function SettingsDialog({ settings, onChange, system, modelName, servers,
                 <Row title="The agent" hint="In Code mode the agent can search and read pages too, after asking once per task."><span /></Row>
               </>
             ) : null}
+
+            {sec === "remote" ? <RemotePanel settings={settings} onChange={onChange} /> : null}
 
             {sec === "connectors" ? <div className="stools"><McpPanel servers={servers} manager={manager} onChange={onServers} /></div> : null}
 
