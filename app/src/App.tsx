@@ -45,7 +45,6 @@ export function App() {
       if (last) void load(last, settings);
       else if (models.length > 1) setDialog("models");
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [active?.messages]);
