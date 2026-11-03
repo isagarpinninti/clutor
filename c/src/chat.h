@@ -23,4 +23,7 @@ void cl_chat_close(cl_chat *c);
 /* Shared with the command line. Flags -> streaming / pinning options; on a bad flag, err is set and .policy is -1. */
 cl_fwd_opts cl_fwd_opts_from_args(int argc, const char *const *argv, char *err, size_t errlen);
 int cl_load_tokenizer(const char *path, cl_meta *meta, uint8_t **map, size_t *msize, cl_tok **tok, char *err, size_t errlen);
+/* The machine, as the engine's portability layer sees it. */
+uint64_t cl_system_ram(void);
+int cl_system_cores(void);
 #endif

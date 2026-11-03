@@ -1,0 +1,29 @@
+[package]
+name = "clutor-app"
+version = "0.4.0"
+description = "Clutor: chat with large models on your own machine, on Clutor's own engine."
+authors = ["Sagar Pinninti"]
+edition = "2021"
+license = "MIT"
+
+[lib]
+name = "clutor_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+cc = "1"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "macros"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

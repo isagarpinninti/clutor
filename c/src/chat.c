@@ -347,3 +347,6 @@ done:
   free(op);
   return rc;
 }
+
+uint64_t cl_system_ram(void) { return cl_phys_mem(); }
+int cl_system_cores(void) { return cl_ncpu(); }
