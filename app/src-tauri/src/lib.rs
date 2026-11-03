@@ -1,6 +1,7 @@
 mod engine;
 mod models;
 mod project;
+mod remote;
 mod web;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
