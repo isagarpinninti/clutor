@@ -18,6 +18,10 @@ export interface Settings {
   browse: boolean;
   /** The model used last time: it is selected again when the app opens (and loaded when you first need it). */
   model?: ModelInfo;
+  /** True (the default) when Chat and Code use the same model; false lets each have its own. */
+  sameModel?: boolean;
+  /** The model for each mode, used only when `sameModel` is false. */
+  models?: { chat?: ModelInfo; code?: ModelInfo };
   /** A folder you chose to look for models in. */
   modelsDir?: string;
   /** What to call you in greetings, asked on first launch. */
@@ -71,4 +75,9 @@ export function fmtBytes(n: number): string {
 /** Whether to pin the model in memory. Pinning makes a model that fits much faster, but reading and pinning several GB at once stalls the whole computer, so a model over 40% of RAM is not pinned. */
 export function shouldPin(wanted: boolean, modelBytes: number, ramBytes: number | undefined): boolean {
   return wanted && (ramBytes === undefined || ramBytes <= 0 || modelBytes <= ramBytes * 0.4);
+}
+
+/** The model a mode should run: the shared one, or, when the modes were given their own, the one chosen for that mode (falling back to the shared one). */
+export function modelForMode(settings: Pick<Settings, "sameModel" | "models">, shared: ModelInfo | undefined, mode: "chat" | "code"): ModelInfo | undefined {
+  return (settings.sameModel === false ? settings.models?.[mode] : undefined) ?? shared;
 }

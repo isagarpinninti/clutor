@@ -21,7 +21,7 @@ interface Props {
   onServers: (s: McpServerConfig[]) => void;
   usage: UsageData;
   engine: NativeReady | undefined;
-  onModels: () => void;
+  onModels: (which?: "chat" | "code") => void;
   onDeleteChats: () => void;
   onDeleteSessions: () => void;
   onClose: () => void;
@@ -159,9 +159,17 @@ export function SettingsDialog({ settings, onChange, system, modelName, servers,
                   <button type="button" className="btn small ghost" onClick={() => void chooseFolder()}>{settings.modelsDir ? "Change…" : "Choose…"}</button>
                   {settings.modelsDir ? <button type="button" className="btn small ghost" onClick={clearFolder}>Clear</button> : null}
                 </Row>
-                <Row title="Model" hint={settings.model ? `${settings.model.name} · ${fmtBytes(settings.model.bytes)}. Selected again each time you open the app; it loads when you first use it.` : "None chosen yet."}>
-                  <button type="button" className="btn small ghost" onClick={() => { onClose(); onModels(); }}>{modelName ? "Change…" : "Choose…"}</button>
-                </Row>
+                <Row title="Same model for Chat and Code" hint="Choosing a model once applies it to both. Turn this off to give each its own, which loads when you switch between them."><Switch on={settings.sameModel !== false} onChange={(v) => onChange({ ...settings, sameModel: v, ...(v ? {} : { models: { chat: settings.models?.chat ?? settings.model, code: settings.models?.code ?? settings.model } }) })} label="Same model for Chat and Code" /></Row>
+                {settings.sameModel === false ? (
+                  <>
+                    <Row title="Chat model" hint={settings.models?.chat ? `${settings.models.chat.name} · ${fmtBytes(settings.models.chat.bytes)}` : "None chosen yet."}><button type="button" className="btn small ghost" onClick={() => { onClose(); onModels("chat"); }}>Change…</button></Row>
+                    <Row title="Code model" hint={settings.models?.code ? `${settings.models.code.name} · ${fmtBytes(settings.models.code.bytes)}` : "None chosen yet."}><button type="button" className="btn small ghost" onClick={() => { onClose(); onModels("code"); }}>Change…</button></Row>
+                  </>
+                ) : (
+                  <Row title="Model" hint={settings.model ? `${settings.model.name} · ${fmtBytes(settings.model.bytes)}. Used for Chat and Code; selected again each time you open the app and loaded when you first use it.` : "None chosen yet."}>
+                    <button type="button" className="btn small ghost" onClick={() => { onClose(); onModels(); }}>{modelName ? "Change…" : "Choose…"}</button>
+                  </Row>
+                )}
                 <Row title="Context window" hint={ctxHint(settings.ctx, engine)}><Select label="Context window" value={settings.ctx} options={CTX_OPTIONS.map((n) => ({ id: n, label: `${n >= 1024 ? `${Math.round(n / 1024)}K` : n} tokens` }))} onChange={(v) => set("ctx", v)} /></Row>
                 <Row title="Keep the model in memory" hint="Much faster when other apps are open. Models over 40% of your RAM are never pinned."><Switch on={settings.lock} onChange={(v) => set("lock", v)} label="Keep the model in memory" /></Row>
               </>

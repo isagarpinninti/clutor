@@ -49,7 +49,9 @@ export function Composer({ busy, disabled, placeholder, thinking, onThinking, br
   };
   const touch = typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
 
-  useEffect(() => { if (prefill) { setText(prefill.text); area.current?.focus(); } }, [prefill?.n]);
+  // A suggestion is applied once. The box is rebuilt when the chat starts, so remember which one it has already seen: otherwise the text comes back after it was sent.
+  const seen = useRef(prefill?.n);
+  useEffect(() => { if (prefill && prefill.n !== seen.current) { seen.current = prefill.n; setText(prefill.text); area.current?.focus(); } }, [prefill?.n]);
   useEffect(() => {
     const a = area.current;
     if (!a) return;

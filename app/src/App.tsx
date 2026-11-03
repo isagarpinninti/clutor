@@ -26,7 +26,7 @@ import { Sidebar } from "./components/Sidebar";
 import type { EngineSession } from "@engine/session";
 import { useEngine } from "./engine";
 import { isActive, JobQueue, localJobStore, uid as jobUid, type Job } from "./jobs";
-import { loadConversations, loadSettings, saveConversations, saveSettings, titleFrom, uid, type Conversation, type Msg, type Settings } from "./store";
+import { modelForMode, loadConversations, loadSettings, saveConversations, saveSettings, titleFrom, uid, type Conversation, type Msg, type Settings } from "./store";
 
 const newConversation = (): Conversation => ({ id: uid(), title: "New chat", updated: Date.now(), messages: [] });
 
@@ -140,6 +140,7 @@ export function App() {
 
   const sendBackground = (text: string, attached: Attachment[] = []): void => {
     if (!active) return;
+    setPrefill(undefined);
     const convId = active.id;
     const user: Msg = { id: uid(), role: "user", content: text, ...fileFields(attached) };
     const jobId = jobUid();
@@ -151,12 +152,24 @@ export function App() {
   };
   const jobAction = (id: string, a: JobAction): void => { if (a === "pause") queue.pause(id); else if (a === "resume") queue.resume(id); else if (a === "cancel") queue.cancel(id); else queue.retry(id); };
 
-  const pickModel = (m: ModelInfo): void => { setSettings((s) => ({ ...s, model: m })); setLastModel(m); void load(m, settings, system?.ramBytes); };
+  /** The model this mode should run: the shared one, or the one chosen for this mode when they differ. */
+  const modelFor = (m: "chat" | "code"): ModelInfo | undefined => modelForMode(settings, lastModel, m);
+  const wanted = modelFor(mode);
+  /** Which mode a choice in the model dialog is for (the dialog can be opened from Settings for either). */
+  const [pickFor, setPickFor] = useState<"chat" | "code" | null>(null);
+  const pickModel = (m: ModelInfo): void => {
+    const target = pickFor ?? mode;
+    setPickFor(null);
+    // By default one choice serves both modes; with "same model" off it only changes the mode you are in.
+    if (settings.sameModel === false) setSettings((s) => ({ ...s, model: s.model ?? m, models: { ...s.models, [target]: m } }));
+    else { setSettings((s) => { const { models: _m, ...rest } = s; void _m; return { ...rest, model: m }; }); setLastModel(m); }
+    if (target === mode) void load(m, settings, system?.ramBytes);
+  };
   /** The engine, loading the remembered model first if nothing is loaded yet (so a restart needs no choosing, and launching stays instant). */
   const ensureModel = async (): Promise<EngineSession | null> => {
-    if (session.current) return session.current;
-    if (!lastModel) return null;
-    return load(lastModel, settings, system?.ramBytes);
+    if (!wanted) return session.current;
+    if (session.current && state.model?.path === wanted.path) return session.current;
+    return load(wanted, settings, system?.ramBytes);
   };
 
   /** The files as stored on a message, cut to fit the model's context. */
@@ -168,7 +181,8 @@ export function App() {
   };
 
   const send = async (text: string, attached: Attachment[] = []): Promise<void> => {
-    if (!active || (!session.current && !lastModel)) return;
+    if (!active || (!session.current && !wanted)) return;
+    setPrefill(undefined);
     const convId = active.id;
     const user: Msg = { id: uid(), role: "user", content: text, ...fileFields(attached) };
     const reply: Msg = { id: uid(), role: "assistant", content: "" };
@@ -178,7 +192,7 @@ export function App() {
     const ac = new AbortController();
     abort.current = ac;
     setBusy(true);
-    if (!session.current) flash("Loading your model first…");
+    if (!session.current || (wanted && state.model?.path !== wanted.path)) flash(`Loading ${wanted?.name ?? "your model"} first…`);
     const s = await ensureModel();
     if (!s) { update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, error: "The model could not be loaded." } : m)) })); abort.current = null; setBusy(false); return; }
     // Browse: look the question up first (this only uses the network, so a background job keeps running meanwhile).
@@ -213,7 +227,8 @@ export function App() {
 
   const ready = state.status === "ready";
   const note = state.ready?.locked ? "pinned" : state.unpinned ? "not pinned" : undefined;
-  const picker = <ModelPicker current={state.model ?? lastModel} folders={folders} status={state.status} note={note} onPick={pickModel} onMore={() => setDialog("models")} />;
+  const loadedIsWanted = !!wanted && state.model?.path === wanted.path;
+  const picker = <ModelPicker current={wanted} folders={folders} same={settings.sameModel !== false} onSame={(v) => setSettings((s) => ({ ...s, sameModel: v, ...(v ? {} : { models: { chat: s.model, code: s.model } }) }))} status={loadedIsWanted ? state.status : state.status === "loading" ? "loading" : "idle"} note={note} onPick={pickModel} onMore={() => setDialog("models")} />;
   const usage = chatUsage(active?.messages ?? [], state.ready?.nCtx ?? settings.ctx);
   const pct = contextPercent(usage);
   const here = `${mode}|${mode === "chat" ? activeId : codeId}`;
@@ -238,10 +253,10 @@ export function App() {
   };
   const canBack = hist.current.i > 0, canFwd = hist.current.i < hist.current.stack.length - 1;
   const homeScreen = !!active && active.messages.length === 0;
-  const haveModel = ready || !!lastModel;
+  const haveModel = ready || !!wanted;
   const [prefill, setPrefill] = useState<{ text: string; n: number }>();
   const composer = (home: boolean) => (
-    <Composer busy={busy} disabled={!ready && !lastModel} placeholder={ready || lastModel ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t, f) => void send(t, f)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
+    <Composer busy={busy} disabled={!ready && !wanted} placeholder={ready || wanted ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t, f) => void send(t, f)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
   );
   const lastAssistant = active?.messages[active.messages.length - 1];
 
@@ -295,7 +310,7 @@ export function App() {
       <div className="shell">
       <Sidebar userName={settings.userName} ramLabel={system ? `Local · ${Math.round(system.ramBytes / 2 ** 30)} GB` : "Local"} conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setSettingsAt("usage"); setDialog("settings"); setSidebar(false); }} mode={mode} codeSessions={codeSessions} codeId={codeId} onSelectCode={(id) => { setCodeId(id); setSidebar(false); }} onNewCode={() => void newCodeSession()} onDeleteCode={deleteSession} onJobs={() => { setDialog("jobs"); setSidebar(false); }} onUsage={() => { setDialog("usage"); setSidebar(false); }} collapsed={collapsed} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
       <main className="main">
-        {mode === "code" ? <CodeView active={codeActive} onChange={changeSession} onCreate={createSession} ready={ready || !!lastModel} modelName={state.model?.name ?? lastModel?.name ?? "model"} engine={ensureModel} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => { setSettingsAt("connectors"); setDialog("settings"); }} overviewProps={{ system, modelName: state.model?.name ?? lastModel?.name ?? "No model", pinned: note, contextMax: state.ready?.nCtx ?? settings.ctx, permission: ({ ask: "Ask first", auto: "Auto-run checks", plan: "Plan only" } as const)[settings.permission], mcp, onManageTools: () => { setSettingsAt("connectors"); setDialog("settings"); } }} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} panel={panel} onPanel={setPanel} tab={panelTab} onTab={setPanelTab} perm={settings.permission} onPerm={(p) => setSettings((s) => ({ ...s, permission: p }))} maxSteps={settings.maxSteps} verbose={settings.transcript === "verbose"} notifyAgent={settings.notifyAgent} /> : <>
+        {mode === "code" ? <CodeView active={codeActive} onChange={changeSession} onCreate={createSession} ready={ready || !!wanted} modelName={wanted?.name ?? state.model?.name ?? "model"} engine={ensureModel} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => { setSettingsAt("connectors"); setDialog("settings"); }} overviewProps={{ system, modelName: state.model?.name ?? lastModel?.name ?? "No model", pinned: note, contextMax: state.ready?.nCtx ?? settings.ctx, permission: ({ ask: "Ask first", auto: "Auto-run checks", plan: "Plan only" } as const)[settings.permission], mcp, onManageTools: () => { setSettingsAt("connectors"); setDialog("settings"); } }} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} panel={panel} onPanel={setPanel} tab={panelTab} onTab={setPanelTab} perm={settings.permission} onPerm={(p) => setSettings((s) => ({ ...s, permission: p }))} maxSteps={settings.maxSteps} verbose={settings.transcript === "verbose"} notifyAgent={settings.notifyAgent} /> : <>
         <div className="scroll" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           {active && active.messages.length > 0 ? (
             <div className="thread">
@@ -326,7 +341,7 @@ export function App() {
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
       {dialog === "usage" ? <UsageDialog state={state} ramBytes={system?.ramBytes} usage={usage} agent={agentUsage} {...(lastAgentContext ? { agentContext: { used: lastAgentContext, max: state.ready?.nCtx ?? settings.ctx } } : {})} jobs={{ active: activeJobs, done: jobList.filter((j) => j.status === "done").length }} onClose={() => setDialog(null)} /> : null}
       {dialog === "mcp" ? <McpDialog servers={servers} manager={mcp} onChange={setServers} onClose={() => setDialog(null)} /> : null}
-      {dialog === "settings" ? <SettingsDialog start={settingsAt} settings={settings} onChange={setSettings} system={system} modelName={state.model?.name ?? lastModel?.name} servers={servers} manager={mcp} onServers={setServers} usage={{ state, ramBytes: system?.ramBytes, usage, agent: agentUsage, ...(lastAgentContext ? { agentContext: { used: lastAgentContext, max: state.ready?.nCtx ?? settings.ctx } } : {}), jobs: { active: activeJobs, done: jobList.filter((j) => j.status === "done").length } }} engine={state.ready} onModels={() => setDialog("models")} onDeleteChats={() => { for (const j of queue.list()) queue.remove(j.id); const c = newConversation(); setConversations([c]); setActiveId(c.id); }} onDeleteSessions={() => { setCodeSessions([]); setCodeId(""); }} onClose={() => setDialog(null)} /> : null}
+      {dialog === "settings" ? <SettingsDialog start={settingsAt} settings={settings} onChange={setSettings} system={system} modelName={wanted?.name ?? state.model?.name} servers={servers} manager={mcp} onServers={setServers} usage={{ state, ramBytes: system?.ramBytes, usage, agent: agentUsage, ...(lastAgentContext ? { agentContext: { used: lastAgentContext, max: state.ready?.nCtx ?? settings.ctx } } : {}), jobs: { active: activeJobs, done: jobList.filter((j) => j.status === "done").length } }} engine={state.ready} onModels={(which) => { setPickFor(which ?? null); setDialog("models"); }} onDeleteChats={() => { for (const j of queue.list()) queue.remove(j.id); const c = newConversation(); setConversations([c]); setActiveId(c.id); }} onDeleteSessions={() => { setCodeSessions([]); setCodeId(""); }} onClose={() => setDialog(null)} /> : null}
     </div>
   );
 }

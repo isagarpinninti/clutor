@@ -660,3 +660,5 @@ body, .app { -webkit-font-smoothing: antialiased; }
 
 /* context: slim second card */
 .ctx-card.slim { padding: 14px 20px; gap: 10px; } .ctx-card.slim .ctx-top b { font-size: 22px; }
+.menu-item.same { color: var(--muted); border-top: 1px solid #1b1b1b; border-radius: 0; margin-top: 4px; padding-top: 10px; font-size: 13px; }
+.mini-check { width: 30px; height: 18px; border-radius: 999px; background: #2a2a2a; position: relative; flex: none; transition: background .15s; } .mini-check::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #8a8a8a; transition: transform .15s, background .15s; } .mini-check.on { background: #2f6df0; } .mini-check.on::after { transform: translateX(12px); background: #fff; }

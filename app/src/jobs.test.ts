@@ -174,12 +174,23 @@ describe("JobQueue", () => {
   });
 });
 
-import { shouldPin } from "./store";
+import { modelForMode, shouldPin } from "./store";
 describe("shouldPin", () => {
   it("pins models that are comfortable for the machine and skips large ones", () => {
     expect(shouldPin(true, 5.6e9, 16e9)).toBe(true);
     expect(shouldPin(true, 8e9, 16e9)).toBe(false);
     expect(shouldPin(false, 1e9, 16e9)).toBe(false);
     expect(shouldPin(true, 5e9, undefined)).toBe(true);
+  });
+});
+
+describe("modelForMode", () => {
+  const a = { path: "/a", name: "A", bytes: 1 }, b = { path: "/b", name: "B", bytes: 2 };
+  it("uses the shared model unless each mode was given its own", () => {
+    expect(modelForMode({}, a, "code")).toBe(a);
+    expect(modelForMode({ sameModel: true, models: { code: b } }, a, "code")).toBe(a);
+    expect(modelForMode({ sameModel: false, models: { code: b } }, a, "code")).toBe(b);
+    expect(modelForMode({ sameModel: false, models: { code: b } }, a, "chat")).toBe(a);
+    expect(modelForMode({}, undefined, "chat")).toBeUndefined();
   });
 });

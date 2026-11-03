@@ -4,6 +4,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ## Unreleased
 
+- App: **one model for Chat and Code by default**: choosing a model applies to both. The model menu (and Settings > Models) has "Same model for Chat and Code"; turning it off gives each mode its own model, which loads when you switch to it. Fixed: a suggestion chosen on the home screen reappeared in the message box after it was sent.
+
 - App and engine: the **context window can be set up to 256K tokens** (Settings > Models: 4K to 256K). The engine reports the longest context the loaded model was trained for (`nCtxTrain`) and the attention-cache memory per token (`kvBytesPerToken`), and Settings shows what a full window can take for that model. A model is never asked for more than it was trained for (Llama 3.2 1B stops at 128K, Qwen3.5 reaches 256K). The cache is allocated lazily, so a short chat in a 128K window peaked at about 0.9 GB for the 1B model. The default stays at 4K; the agent now keeps more of its conversation when the window is larger. **Usage** also shows the agent's context.
 - App: dialog headers have an icon tile, a title and a line saying what the dialog is for; buttons have a refined look (soft gradient primary, quiet outlined secondary, a distinct danger style, press feedback).
 

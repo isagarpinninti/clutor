@@ -9,12 +9,15 @@ interface Props {
   /** Short note about how the loaded model runs, e.g. "pinned in memory". */
   note?: string | undefined;
   folders?: string[];
+  /** Chat and Code share one model (the default). */
+  same?: boolean;
+  onSame?: (v: boolean) => void;
   onPick: (m: ModelInfo) => void;
   onMore: () => void;
 }
 
 /** The model chooser that sits under the message box: the loaded model's name, and a small menu of the models on this device. */
-export function ModelPicker({ current, status, note, folders, onPick, onMore }: Props) {
+export function ModelPicker({ current, status, note, folders, same, onSame, onPick, onMore }: Props) {
   const [open, setOpen] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const box = useRef<HTMLDivElement>(null);
@@ -45,6 +48,7 @@ export function ModelPicker({ current, status, note, folders, onPick, onMore }: 
               <span>{m.name}</span><small>{fmtBytes(m.bytes)}</small>
             </button>
           ))}
+          {onSame ? <button type="button" role="menuitemcheckbox" aria-checked={same ?? true} className="menu-item same" onClick={() => onSame(!(same ?? true))}><span>Same model for Chat and Code</span><span className={`mini-check${(same ?? true) ? " on" : ""}`} aria-hidden="true" /></button> : null}
           <button type="button" className="menu-item more" onClick={() => { setOpen(false); onMore(); }}>Get more models…</button>
         </div>
       ) : null}
