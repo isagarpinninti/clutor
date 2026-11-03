@@ -51,7 +51,8 @@ fn stop(running: Running) {
 /// Loads a model into the engine and returns its first ("ready") event as JSON. Later events arrive as `engine-event` events.
 #[tauri::command]
 pub async fn engine_open(app: AppHandle, state: State<'_, EngineState>, path: String, ctx: u32, lock: bool) -> Result<String, String> {
-    if let Some(old) = state.0.lock().map_err(|e| e.to_string())?.take() {
+    let old = state.0.lock().map_err(|e| e.to_string())?.take();   // the lock is released here, before any await
+    if let Some(old) = old {
         tauri::async_runtime::spawn_blocking(move || stop(old)).await.map_err(|e| e.to_string())?;
     }
     let (ready_tx, ready_rx): (Sender<Result<String, String>>, Receiver<Result<String, String>>) = channel();

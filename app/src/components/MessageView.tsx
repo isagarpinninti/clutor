@@ -11,7 +11,7 @@ export function MessageView({ msg, streaming, showReasoning }: { msg: Msg; strea
   const copy = (): void => { void navigator.clipboard?.writeText(msg.content).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); };
   return (
     <div className="msg assistant">
-      <div className="who"><Logo size={18} />Clutor</div>
+      <div className="who"><Logo size={22} /><span>Clutor</span></div>
       <div className="body">
         {msg.reasoning ? (
           <details className="reasoning" open={showReasoning}>

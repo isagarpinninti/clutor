@@ -10,12 +10,53 @@
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 }
+/* Dark mode follows the familiar neutral-graphite pattern: no brand colour on surfaces, a white primary button, soft rounded input. */
 :root[data-theme="dark"] {
-  --bg: #0e0e10; --panel: #151517; --panel-2: #1f1f23; --card: #151517; --text: #f2f2f4; --muted: #8e8e98; --line: #26262b;
-  --accent: #5b8cff; --accent-2: #7aa2ff; --accent-ink: #06102b; --accent-soft: rgba(91,140,255,.13); --danger: #ff7b72; --ok: #6ee79a;
-  --code-bg: #121214; --code-head: #1a1a1e; --shadow: 0 1px 2px rgba(0,0,0,.5), 0 10px 30px rgba(0,0,0,.45);
-  --hl-kw: #b69cff; --hl-str: #7ee0a1; --hl-num: #f0b27a; --hl-com: #6b6b75; --hl-fn: #8db4ff; --hl-ty: #7fd8e0;
+  --bg: #212121; --panel: #171717; --panel-2: #2f2f2f; --card: #2f2f2f; --text: #ececec; --muted: #b4b4b4; --line: rgba(255,255,255,.1);
+  --accent: #ffffff; --accent-2: #ffffff; --accent-ink: #0d0d0d; --accent-soft: rgba(255,255,255,.1); --danger: #ff8a80; --ok: #7ee2a8;
+  --code-bg: #171717; --code-head: #2a2a2a; --shadow: 0 0 0 transparent;
+  --hl-kw: #c4a8ff; --hl-str: #8fe0ad; --hl-num: #f3b887; --hl-com: #8a8a8a; --hl-fn: #8ab8ff; --hl-ty: #7fd8e0;
+  --link: #7ab7ff;
 }
+:root[data-theme="dark"] .md a { color: var(--link); }
+:root[data-theme="dark"] .sidebar { background: var(--panel); border-right: 0; }
+:root[data-theme="dark"] .topbar { border-bottom: 0; }
+:root[data-theme="dark"] .new-chat { background: none; border: 0; }
+:root[data-theme="dark"] .new-chat:hover, :root[data-theme="dark"] .conv:hover, :root[data-theme="dark"] .side-btn:hover { background: var(--panel-2); }
+:root[data-theme="dark"] .conv { border-left: 0; border-radius: 8px; }
+:root[data-theme="dark"] .conv.active { background: var(--panel-2); }
+:root[data-theme="dark"] .model-pill { background: none; border-color: transparent; }
+:root[data-theme="dark"] .model-pill:hover { background: var(--panel-2); border-color: transparent; }
+:root[data-theme="dark"] .model-pill.ready { border-color: transparent; }
+/* messages: your prompt is a soft right-aligned bubble, the reply is plain text beside the small mark */
+:root[data-theme="dark"] .msg.user { display: flex; flex-direction: column; align-items: flex-end; }
+:root[data-theme="dark"] .msg.user .who { display: none; }
+:root[data-theme="dark"] .msg.user .prompt { border: 0; background: var(--panel-2); border-radius: 22px; padding: 10px 18px; max-width: 80%; }
+:root[data-theme="dark"] .msg.assistant .who span { display: none; }
+:root[data-theme="dark"] .msg.assistant { display: grid; grid-template-columns: 24px 1fr; column-gap: 14px; }
+:root[data-theme="dark"] .msg.assistant .who { margin: 3px 0 0; align-self: start; }
+:root[data-theme="dark"] .meta { font-family: inherit; }
+:root[data-theme="dark"] .codeblock { border: 0; border-radius: 12px; }
+:root[data-theme="dark"] .md th { background: var(--panel-2); }
+:root[data-theme="dark"] .md th, :root[data-theme="dark"] .md td { border-color: rgba(255,255,255,.14); }
+/* the input: one rounded field, no outline until used, a white send button */
+:root[data-theme="dark"] .composer { background: var(--card); border: 0; border-radius: 28px; padding: 12px 16px 10px; box-shadow: none; }
+:root[data-theme="dark"] .composer:focus-within { box-shadow: 0 0 0 1px rgba(255,255,255,.18); }
+:root[data-theme="dark"] .composer textarea::placeholder { color: #9b9b9b; }
+:root[data-theme="dark"] .chip { border-color: rgba(255,255,255,.16); color: var(--muted); }
+:root[data-theme="dark"] .chip.on { background: rgba(255,255,255,.12); border-color: transparent; color: var(--text); }
+:root[data-theme="dark"] .round.send { background: #fff; color: #0d0d0d; }
+:root[data-theme="dark"] .round.send:disabled { background: #676767; color: #2f2f2f; }
+:root[data-theme="dark"] .round.stop { background: #fff; color: #0d0d0d; }
+:root[data-theme="dark"] .dialog { background: #2a2a2a; border: 0; }
+:root[data-theme="dark"] .row { background: var(--panel-2); border-color: transparent; }
+:root[data-theme="dark"] button.row:hover { background: #3a3a3a; border-color: transparent; }
+:root[data-theme="dark"] .row.active { background: #3a3a3a; }
+:root[data-theme="dark"] .form select, :root[data-theme="dark"] .form textarea { background: var(--panel-2); border-color: transparent; }
+:root[data-theme="dark"] .btn { background: #fff; color: #0d0d0d; }
+:root[data-theme="dark"] .mark { filter: none; }
+:root[data-theme="dark"] .typing i { background: #fff; }
+
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.6; letter-spacing: -.006em; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; overscroll-behavior: none; }
