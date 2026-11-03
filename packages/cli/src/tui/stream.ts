@@ -8,7 +8,7 @@ export type StreamEvent =
   | { type: "content"; text: string }
   | { type: "reasoning"; text: string }
   | { type: "progress"; processed: number; total: number }
-  | { type: "done"; finish: string | null; promptTokens?: number; completionTokens?: number; promptPerSecond?: number; tokensPerSecond?: number };
+  | { type: "done"; finish: string | null; promptTokens?: number; completionTokens?: number; promptPerSecond?: number; tokensPerSecond?: number; cache?: { hitRate: number; gbRead: number } };
 
 export interface StreamRequest {
   baseUrl: string;

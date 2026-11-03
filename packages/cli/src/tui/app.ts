@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, totalmem } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { BackendManager, buildLlamaArgs, findLlamaServer, probeLlamaServer } from "../backend";
 import { ConfigError, loadConfig, type ClutorConfig } from "../config";
@@ -15,7 +15,9 @@ import { Editor, type Cmd } from "./editor";
 import { KeyParser } from "./keys";
 import { MarkdownStream } from "./markdown";
 import { formatElapsed, spinnerLine, verbFor } from "./spinner";
-import { streamChat, type ChatMessage } from "./stream";
+import { streamChat, type ChatMessage, type StreamEvent } from "./stream";
+import { NativeEngine } from "./native";
+import { engineInfo, findEngine, run as runBinary } from "../engine";
 
 /**
  * The interactive session: a prompt box at the bottom, the model's reply streamed above it as Markdown, an animated status line while
@@ -32,8 +34,17 @@ interface Target {
   path?: string;
   bytes?: number;
   backend?: BackendManager;
+  /** Clutor's own engine, when it runs this model; otherwise the model is served by llama-server (or a remote server). */
+  native?: NativeEngine;
+  /** Which engine answers, in words, for the welcome panel and /engine. */
+  engine: string;
+  /** Why the native engine was not used, when it was not. */
+  engineNote?: string;
   loadMs?: number;
 }
+
+/** The architectures Clutor's engine runs (see docs/MODELS.md). */
+const NATIVE_ARCHS = new Set(["olmoe", "qwen3moe", "granitemoe", "qwen2", "llama"]);
 
 export interface TuiOptions {
   io: Io;
@@ -52,6 +63,7 @@ const COMMANDS: Cmd[] = [
   { name: "clear", help: "start a new conversation" },
   { name: "compact", help: "summarise the conversation to free up context" },
   { name: "model", help: "choose another model file" },
+  { name: "engine", help: "which engine runs this model, and why" },
   { name: "think", args: "[on|off|show]", help: "let thinking models think first (slower, often better)" },
   { name: "system", args: "<text>", help: "set the instructions the model always follows" },
   { name: "temp", args: "<0-2>", help: "how adventurous the replies are" },
@@ -153,7 +165,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
   const restore = (): void => { try { setRaw(false); out.write("\x1b[?25h\x1b[0m"); } catch { /* terminal already gone */ } };
   // Whatever way the process ends (window closed, kill, crash), the terminal is put back and the model server does not outlive it.
   let starting: BackendManager | undefined;
-  const onExit = (): void => { restore(); starting?.killNow(); target?.backend?.killNow(); };
+  const onExit = (): void => { restore(); starting?.killNow(); target?.backend?.killNow(); target?.native?.killNow(); };
   process.once("exit", onExit);
   const onSignal = (code: number) => (): void => { onExit(); process.exit(code); };
   const sighup = onSignal(129), sigterm = onSignal(143);
@@ -190,7 +202,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
   };
   const welcome = (): void => {
     println();
-    for (const l of welcomeLines(st, cols(), { version: o.version, cwd, model: target?.name ?? "", detail: target ? `${target.bytes ? `${gb(target.bytes)} · ` : ""}${compactNum(chat.ctx)} context${target.loadMs ? ` · loaded in ${(target.loadMs / 1000).toFixed(1)} s` : ""}` : "", recent: recentTitles() })) println(l);
+    for (const l of welcomeLines(st, cols(), { version: o.version, cwd, model: target?.name ?? "", detail: target ? `${target.engine} · ${target.bytes ? `${gb(target.bytes)} · ` : ""}${compactNum(chat.ctx)} ctx${target.loadMs ? ` · ${(target.loadMs / 1000).toFixed(1)} s` : ""}` : "", recent: recentTitles() })) println(l);
     println();
   };
 
@@ -276,9 +288,46 @@ export async function runTui(o: TuiOptions): Promise<number> {
   };
 
   // ---- model ----
-  const stopTarget = async (): Promise<void> => { try { await target?.backend?.stop(); } catch { /* already gone */ } target = undefined; };
+  const stopTarget = async (): Promise<void> => { try { await target?.backend?.stop(); await target?.native?.close(); } catch { /* already gone */ } target = undefined; };
+
+  /** Whether Clutor's engine can run this file, and if not, why not (said to the user, not hidden). */
+  const nativeCheck = async (m: FoundModel): Promise<{ bin: string; experts: number } | { reason: string }> => {
+    const bin = findEngine();
+    if (!bin) return { reason: "Clutor's engine is not built here (run `clutor engine install` or `clutor engine build`)" };
+    let info;
+    try { info = await engineInfo(bin, m.path); } catch (e) { return { reason: `Clutor's engine could not read the file: ${e instanceof Error ? e.message : String(e)}` }; }
+    if (!NATIVE_ARCHS.has(info.arch)) return { reason: `Clutor's engine does not run the "${info.arch}" architecture yet` };
+    const usage = await runBinary(bin, [], { timeoutMs: 15_000 }).catch(() => ({ stdout: "" }));
+    if (!/\n\s+chat <model\.gguf>/.test(usage.stdout)) return { reason: "the installed engine is older than chat support (run `clutor engine install` or `clutor engine build`)" };
+    return { bin, experts: info.experts };
+  };
+
+  const startNative = async (m: FoundModel, bin: string, experts: number): Promise<Target> => {
+    const ctx = flagInt(args, "ctx", 64, 2_000_000) ?? Math.min(config.memory.contextTokens, 4096);
+    // A mixture-of-experts model bigger than half the memory is streamed from disk through a cache (the point of this engine).
+    const stream = experts > 0 && m.bytes > totalmem() * 0.5;
+    const extra = stream ? ["--cache-mb", String(Math.floor((totalmem() / 1048576) * 0.3))] : [];
+    const t0 = Date.now();
+    const eng = await busy(`Loading ${m.name}`, async () => NativeEngine.start({ bin, model: m.path, ctx, extraArgs: extra }));
+    chat.ctx = eng.ready.nCtx;
+    return { name: m.name, baseUrl: "", model: "native", path: m.path, bytes: m.bytes, native: eng, engine: `Clutor engine${stream ? " · experts streamed from disk" : ""}`, loadMs: Date.now() - t0 };
+  };
 
   const startLocal = async (m: FoundModel): Promise<Target> => {
+    const want = flagString(args, "backend") ?? "auto";
+    let engineNote: string | undefined;
+    if (want !== "llama") {
+      const c = await nativeCheck(m);
+      if ("bin" in c) {
+        try { return await startNative(m, c.bin, c.experts); } catch (e) {
+          if (want === "native") throw e;
+          engineNote = `Clutor's engine failed to start (${e instanceof Error ? e.message : String(e)})`;
+        }
+      } else {
+        if (want === "native") throw new ConfigError(`--backend native: ${c.reason}`);
+        engineNote = c.reason;
+      }
+    }
     const ls = config.backend.llamaServer;
     const binary = ls.binary ?? findLlamaServer();
     if (!binary) throw new ConfigError("llama-server was not found. Install llama.cpp (`brew install llama.cpp`) or set backend.llamaServer.binary in clutor.config.json.");
@@ -292,13 +341,13 @@ export async function runTui(o: TuiOptions): Promise<number> {
       const poll = setInterval(() => { const p = loadPhase(backend.recentLog); if (p) detail(p); }, 300);
       try { await backend.start(binary, a); } finally { clearInterval(poll); }
     });
-    return { name: m.name, baseUrl: backend.baseUrl, model: "local", path: m.path, bytes: m.bytes, backend, loadMs: Date.now() - t0 };
+    return { name: m.name, baseUrl: backend.baseUrl, model: "local", path: m.path, bytes: m.bytes, backend, engine: "llama-server", ...(engineNote ? { engineNote } : {}), loadMs: Date.now() - t0 };
   };
 
   const chooseModel = async (forcePick: boolean): Promise<Target | undefined> => {
     const b = config.backend;
     if (b.kind === "openai" && b.baseUrl && !forcePick) {
-      return { name: b.model ?? "remote model", baseUrl: b.baseUrl, model: b.model ?? "default", ...(b.apiKeyEnv && process.env[b.apiKeyEnv] ? { apiKey: process.env[b.apiKeyEnv] as string } : {}) };
+      return { name: b.model ?? "remote model", baseUrl: b.baseUrl, model: b.model ?? "default", engine: "remote server", ...(b.apiKeyEnv && process.env[b.apiKeyEnv] ? { apiKey: process.env[b.apiKeyEnv] as string } : {}) };
     }
     const explicit = flagString(args, "model") ?? (!forcePick ? b.llamaServer.model : undefined);
     if (explicit) {
@@ -319,6 +368,11 @@ export async function runTui(o: TuiOptions): Promise<number> {
     }
     return startLocal(m);
   };
+
+  const targetStream = (t: Target, messages: ChatMessage[], o: { thinking: boolean; signal?: AbortSignal }): AsyncGenerator<StreamEvent> =>
+    t.native
+      ? t.native.stream(messages, { thinking: o.thinking, ...(chat.temperature !== undefined ? { temp: chat.temperature } : {}), ...(o.signal ? { signal: o.signal } : {}) })
+      : streamChat({ baseUrl: t.baseUrl, model: t.model, messages, thinking: o.thinking, ...(o.signal ? { signal: o.signal } : {}), ...(t.apiKey ? { apiKey: t.apiKey } : {}), ...(chat.temperature !== undefined ? { temperature: chat.temperature } : {}) });
 
   // ---- one chat turn ----
   const turn = async (userText: string): Promise<void> => {
@@ -356,10 +410,9 @@ export async function runTui(o: TuiOptions): Promise<number> {
     inp.on("data", onKey);
     const timer = setInterval(paint, 80);
     paint();
-    let done: { promptTokens?: number; completionTokens?: number; promptPerSecond?: number; tokensPerSecond?: number; finish: string | null } | undefined;
+    let done: Extract<StreamEvent, { type: "done" }> | undefined;
     try {
-      const req = { baseUrl: target.baseUrl, model: target.model, messages: [{ role: "system" as const, content: chat.system }, ...chat.messages], thinking: chat.thinking, signal: ac.signal, ...(target.apiKey ? { apiKey: target.apiKey } : {}), ...(chat.temperature !== undefined ? { temperature: chat.temperature } : {}) };
-      for await (const ev of streamChat(req)) {
+      for await (const ev of targetStream(target, [{ role: "system" as const, content: chat.system }, ...chat.messages], { thinking: chat.thinking, signal: ac.signal })) {
         if (ev.type === "progress") { progress = `${Math.round((ev.processed / ev.total) * 100)}% of ${ev.total} prompt tokens`; continue; }
         if (ev.type === "done") { done = ev; continue; }
         if (!firstToken) firstToken = Date.now();
@@ -396,7 +449,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
     const secs = ((Date.now() - (firstToken || t0)) / 1000) || 0.001;
     const gen = done?.completionTokens ?? chunks + reasoningChunks;
     const tps = done?.tokensPerSecond ?? (firstToken ? gen / secs : 0);
-    const bits = [`${gen} tokens`, ...(tps ? [`${tps.toFixed(1)} tok/s`] : []), ...(done?.promptTokens ? [`prompt ${done.promptTokens} tok`] : []), formatElapsed(Date.now() - t0)];
+    const bits = [`${gen} tokens`, ...(tps ? [`${tps.toFixed(1)} tok/s`] : []), ...(done?.promptTokens ? [`prompt ${done.promptTokens} tok`] : []), ...(done?.cache ? [`cache ${Math.round(done.cache.hitRate * 100)}% hit, ${done.cache.gbRead.toFixed(2)} GB read`] : []), formatElapsed(Date.now() - t0)];
     println();
     note(`${interrupted ? "stopped · " : ""}${bits.join(" · ")}`);
     stats.turns++;
@@ -419,7 +472,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
     println(`${st.dim("❯")} ${st.dim(task.split("\n").join("\n  "))}`);
     println();
     try {
-      await runAgentTask(host, { task, dir: cwd, config, endpoint: { baseUrl: target.baseUrl, model: target.model, ...(target.apiKey ? { apiKey: target.apiKey } : {}), local: target.backend !== undefined }, session, autoApply: mode === "auto", contextTokens: chat.ctx }, agentState);
+      await runAgentTask(host, { task, dir: cwd, config, endpoint: { baseUrl: target.baseUrl, model: target.model, ...(target.apiKey ? { apiKey: target.apiKey } : {}), local: target.backend !== undefined }, ...(target.native ? { llm: target.native.asLlm(target.name) } : {}), session, autoApply: mode === "auto", contextTokens: chat.ctx }, agentState);
     } catch (e) { fail(e instanceof Error ? e.message : String(e)); }
     println();
   };
@@ -440,7 +493,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
     const asked: ChatMessage[] = [{ role: "system", content: "Summarise the conversation so far in under 250 words, keeping every fact, name, number and decision the user may refer to later. Write the summary only." }, { role: "user", content: chat.messages.map((m) => `${m.role}: ${m.content}`).join("\n\n") }];
     let summary = "";
     try {
-      await busy("Compacting", async () => { for await (const ev of streamChat({ baseUrl: target?.baseUrl ?? "", model: target?.model ?? "", messages: asked, thinking: false, ...(target?.apiKey ? { apiKey: target.apiKey } : {}) })) if (ev.type === "content") summary += ev.text; });
+      await busy("Compacting", async () => { if (target) for await (const ev of targetStream(target, asked, { thinking: false })) if (ev.type === "content") summary += ev.text; });
     } catch (e) { fail(e instanceof Error ? e.message : String(e)); return; }
     if (!summary.trim()) { fail("the model returned no summary; the conversation is unchanged"); return; }
     chat.messages = [{ role: "user", content: `Summary of our conversation so far:\n${summary.trim()}` }, { role: "assistant", content: "Understood. I'll continue from that summary." }];
@@ -477,6 +530,17 @@ export async function runTui(o: TuiOptions): Promise<number> {
         const t = await chooseModel(true).catch((e: unknown) => { fail(e instanceof Error ? e.message : String(e)); return undefined; });
         if (t) { target = t; chat.messages = []; stats.ctxUsed = 0; sessionFile = undefined; note(`${t.name} ready${t.loadMs ? ` in ${(t.loadMs / 1000).toFixed(1)} s` : ""}; started a new conversation`); }
         else note("no model loaded: use /model to choose one");
+        return;
+      }
+      case "engine": {
+        if (!target) { note("no model loaded"); return; }
+        note(`engine: ${target.engine}`);
+        if (target.native) {
+          const r = target.native.ready;
+          note(`${r.arch} · ${r.nLayer} layers · ${r.threads} threads · context ${r.nCtx} · prompt format ${target.native.template.family}${target.native.template.thinkTags ? " (with <think> tags)" : ""} · ${r.streaming ? "experts streamed from disk" : "weights memory-mapped"}`);
+          const a = target.native.lastAppend;
+          note(`last turn sent ${a.tokens} new token${a.tokens === 1 ? "" : "s"} to the engine${a.reset ? " (started over: the conversation did not extend the cache)" : " (the rest was already in its cache)"}`);
+        } else if (target.engineNote) note(`not the native engine: ${target.engineNote}`);
         return;
       }
       case "think":
@@ -569,6 +633,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
     if (out.isTTY) out.write("\x1b[2J\x1b[H");
     welcome();
     if (!target) note("no model loaded: /model chooses one, /pull downloads a small one");
+    else if (target.engineNote) note(`running on llama-server because ${target.engineNote}`);
     println();
     for (;;) {
       const line = await readInput();

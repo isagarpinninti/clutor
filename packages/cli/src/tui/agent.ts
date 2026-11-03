@@ -1,4 +1,4 @@
-import { ShadowWorkspace, runAgent, type AgentEvent, type FileDiff } from "@clutor/core";
+import { ShadowWorkspace, runAgent, type AgentEvent, type FileDiff, type LlmClient } from "@clutor/core";
 import { NodeProject, appendReceipt, applyChanges, lastReceiptTag, loadOrCreateReceiptSigner, scratchRunner, ConflictError } from "@clutor/core/node";
 import { agentLlm } from "../agentllm";
 import type { ClutorConfig } from "../config";
@@ -28,6 +28,8 @@ export interface AgentRun {
   dir: string;
   config: ClutorConfig;
   endpoint: { baseUrl: string; model: string; apiKey?: string; local: boolean };
+  /** A model client to use instead of the HTTP endpoint: Clutor's own engine. */
+  llm?: LlmClient;
   session: SessionState;
   /** Write the changes without asking (still only if the check passed, when there is one). */
   autoApply: boolean;
@@ -113,7 +115,7 @@ export async function runAgentTask(h: AgentHost, o: AgentRun, state: { allowComm
   const ws = new ShadowWorkspace(project);
   const key = await loadOrCreateReceiptSigner(o.dir);
   const cfg = { ...o.config, agent: { ...o.config.agent, prefixSnapshots: false } };
-  const llm = agentLlm(cfg, o.endpoint, withoutThinking());
+  const llm = o.llm ?? agentLlm(cfg, o.endpoint, withoutThinking());
   const verify = o.session.verify ?? cfg.agent.verifyCommand;
 
   const region = h.region();

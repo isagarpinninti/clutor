@@ -23,6 +23,8 @@ jobs:
       - run: npm run engine
       - run: npm run engine:test
       - run: npm run engine:golden
+      # The chat protocol the terminal UI uses, on every architecture, against the engine's own greedy decoding.
+      - run: npm run engine:chat
       - run: npm run build
       - run: npm run typecheck
       - run: npm run lint

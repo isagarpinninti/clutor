@@ -29,9 +29,10 @@ jobs:
       - name: Unit tests and golden test against the built binary
         run: |
           make -C c test
-          for arch in olmoe qwen3moe granitemoe qwen2; do
+          for arch in olmoe qwen3moe granitemoe qwen2 llama; do
             python3 c/test/tiny_olmoe.py write c/build/tiny_$arch.gguf --arch $arch
             python3 c/test/tiny_olmoe.py check c/dist/clutor-engine c/build/tiny_$arch.gguf --arch $arch
+            python3 c/test/chat_protocol.py c/dist/clutor-engine c/build/tiny_$arch.gguf
           done
       - name: Package
         run: |

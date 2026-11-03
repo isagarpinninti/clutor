@@ -29,6 +29,8 @@ jobs:
       - run: npm run engine:test
       # An independent pure-Python forward pass checks the engine on every kernel path this runner compiles (AVX2 on Linux x86, NEON on macOS arm64).
       - run: npm run engine:golden
+      # The chat protocol the terminal UI uses, on every architecture, against the engine's own greedy decoding.
+      - run: npm run engine:chat
       # @clutor/cli type-checks against the built @clutor/core, so build first.
       - run: npm run build
       - run: npm run typecheck

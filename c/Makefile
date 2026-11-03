@@ -59,6 +59,9 @@ golden: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GR) --arch granitemoe
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q2) --arch qwen2
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_LL) --arch llama
+# The chat protocol (the terminal UI's way into the engine) on every architecture, checked against `generate`.
+chat-test: $(BIN) golden-files
+	for g in $(GOLDEN_GGUF) $(GOLDEN_Q3) $(GOLDEN_GR) $(GOLDEN_Q2) $(GOLDEN_LL); do echo "== $$g"; python3 test/chat_protocol.py $(BIN) $$g || exit 1; done
 golden-paths: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q3) --arch qwen3moe
@@ -100,4 +103,4 @@ verify-llama: $(BIN)
 	python3 test/verify_llama.py $(MODEL) --engine $(BIN)
 clean:
 	rm -rf build
-.PHONY: fuzz golden golden-files golden-paths verify-llama all test test-paths test-avx2 sanitize clean
+.PHONY: fuzz golden golden-files golden-paths chat-test verify-llama all test test-paths test-avx2 sanitize clean
