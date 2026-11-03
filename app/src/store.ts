@@ -20,6 +20,10 @@ export interface Settings {
   model?: ModelInfo;
   /** A folder you chose to look for models in. */
   modelsDir?: string;
+  /** What to call you in greetings, asked on first launch. */
+  userName?: string;
+  /** The welcome screen has been completed or skipped. */
+  onboarded?: boolean;
   /** Default permission mode for the agent. */
   permission: "ask" | "auto" | "plan";
   /** Most steps one agent task may take. */

@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ModelInfo, type SystemInfo } from "./bridge";
 import { streamReply, toChatMessages } from "./chat";
-import { ChevronIcon, DiffIcon, FilesIcon, GlobeIcon, LaptopIcon, MoreIcon, SidebarIcon, TerminalIcon } from "./components/icons";
+import { BackIcon, ChatIcon, ChevronIcon, CodeIcon, ForwardIcon, DiffIcon, FilesIcon, GlobeIcon, LaptopIcon, MoreIcon, SidebarIcon, TerminalIcon } from "./components/icons";
 import { Logo } from "./components/Logo";
 import { Thinking } from "./components/Thinking";
 import { Composer } from "./components/Composer";
 import { JobsDialog } from "./components/JobsDialog";
 import type { JobAction } from "./components/JobStrip";
 import { MessageView } from "./components/MessageView";
+import { Onboarding } from "./components/Onboarding";
 import { PlusMenu } from "./components/PlusMenu";
 import { CodeView } from "./components/CodeView";
 import type { PanelTab } from "./components/SidePanel";
@@ -35,7 +36,7 @@ const SUGGESTIONS = [
   { label: "Summarise", text: "Summarise the following text in five bullet points:\n\n" },
   { label: "Look something up", text: "What are the latest developments in " },
 ];
-const greeting = (): string => { const h = new Date().getHours(); return h < 5 ? "Burning the midnight oil?" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; };
+const greeting = (name?: string): string => { const h = new Date().getHours(); const base = h < 5 ? "Burning the midnight oil" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; return name ? `${base}, ${name}` : h < 5 ? `${base}?` : base; };
 
 
 export function App() {
@@ -67,6 +68,10 @@ export function App() {
   const newCodeSession = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) createSession(p); };
   const deleteSession = (id: string): void => { setCodeSessions((all) => all.filter((s) => s.id !== id)); if (id === codeId) setCodeId(""); };
   useEffect(() => { try { (document.documentElement.style as CSSStyleDeclaration & { zoom: string }).zoom = ({ small: "0.92", medium: "1", large: "1.1" } as const)[settings.textSize]; } catch { /* unsupported */ } }, [settings.textSize]);
+  const mac = bridge.native && /Mac/i.test(navigator.userAgent);
+  // Back and forward move between the places you opened (a chat or a coding session), like a browser.
+  const hist = useRef<{ stack: string[]; i: number; skip: boolean }>({ stack: [], i: -1, skip: false });
+  const [, navBump] = useState(0);
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("clutor.sidebar") === "off"; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem("clutor.sidebar", collapsed ? "off" : "on"); } catch { /* storage unavailable */ } }, [collapsed]);
   const [agentUsage, setAgentUsage] = useState({ runs: 0, steps: 0, tokens: 0 });
@@ -210,6 +215,27 @@ export function App() {
   const picker = <ModelPicker current={state.model ?? lastModel} folders={folders} status={state.status} note={note} onPick={pickModel} onMore={() => setDialog("models")} />;
   const usage = chatUsage(active?.messages ?? [], state.ready?.nCtx ?? settings.ctx);
   const pct = contextPercent(usage);
+  const here = `${mode}|${mode === "chat" ? activeId : codeId}`;
+  useEffect(() => {
+    const h = hist.current;
+    if (h.skip) { h.skip = false; return; }
+    if (h.stack[h.i] === here) return;
+    h.stack = [...h.stack.slice(0, h.i + 1), here].slice(-50);
+    h.i = h.stack.length - 1;
+    navBump((n) => n + 1);
+  }, [here]);
+  const go = (d: number): void => {
+    const h = hist.current, j = h.i + d;
+    if (j < 0 || j >= h.stack.length) return;
+    const target = h.stack[j] as string;
+    h.i = j;
+    if (target !== here) h.skip = true;
+    const [m, id] = target.split("|") as [string, string];
+    setMode(m === "code" ? "code" : "chat");
+    if (m === "code") setCodeId(id); else setActiveId(id);
+    navBump((n) => n + 1);
+  };
+  const canBack = hist.current.i > 0, canFwd = hist.current.i < hist.current.stack.length - 1;
   const homeScreen = !!active && active.messages.length === 0 && (ready || !!lastModel) && state.status !== "loading";
   const [prefill, setPrefill] = useState<{ text: string; n: number }>();
   const composer = (home: boolean) => (
@@ -218,11 +244,18 @@ export function App() {
   const lastAssistant = active?.messages[active.messages.length - 1];
 
   return (
-    <div className={`app${collapsed ? " nav-collapsed" : ""}`}>
-      <Sidebar ramLabel={system ? `Local · ${Math.round(system.ramBytes / 2 ** 30)} GB` : "Local"} onMode={setMode} conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setSettingsAt("usage"); setDialog("settings"); setSidebar(false); }} mode={mode} codeSessions={codeSessions} codeId={codeId} onSelectCode={(id) => { setCodeId(id); setSidebar(false); }} onNewCode={() => void newCodeSession()} onDeleteCode={deleteSession} onJobs={() => { setDialog("jobs"); setSidebar(false); }} onUsage={() => { setDialog("usage"); setSidebar(false); }} onCollapse={() => setCollapsed(true)} collapsed={collapsed} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
-      <main className="main">
-        <header className="topbar">
-          <button type="button" className={`icon-btn side-open tip${collapsed ? " always" : ""}`} data-tip="Show sidebar" onClick={() => { setSidebar(true); setCollapsed(false); }} aria-label="Show sidebar"><SidebarIcon /></button>
+    <div className={`app${collapsed ? " nav-collapsed" : ""}${mac ? " mac" : ""}`}>
+      <header className="titlebar" data-tauri-drag-region>
+        <div className="tb-left" data-tauri-drag-region>
+          <button type="button" className="icon-btn tip" data-tip={collapsed ? "Show sidebar" : "Hide sidebar"} onClick={() => { if (window.matchMedia("(max-width: 820px)").matches) setSidebar((s) => !s); else setCollapsed((c) => !c); }} aria-label="Toggle sidebar"><SidebarIcon /></button>
+          <button type="button" className="icon-btn tip" data-tip="Back" onClick={() => go(-1)} disabled={!canBack} aria-label="Back"><BackIcon /></button>
+          <button type="button" className="icon-btn tip" data-tip="Forward" onClick={() => go(1)} disabled={!canFwd} aria-label="Forward"><ForwardIcon /></button>
+          <div className="mode-icons" role="tablist" aria-label="Mode">
+            <button type="button" role="tab" aria-selected={mode === "chat"} className={`mode-icon tip${mode === "chat" ? " on" : ""}`} data-tip="Chat" onClick={() => setMode("chat")}><ChatIcon /></button>
+            <button type="button" role="tab" aria-selected={mode === "code"} className={`mode-icon tip${mode === "code" ? " on" : ""}`} data-tip="Code" onClick={() => setMode("code")}><CodeIcon /></button>
+          </div>
+        </div>
+        <div className="topbar" data-tauri-drag-region>
           {renaming && (mode === "chat" ? active : codeActive) ? (
             <input className="title-input" autoFocus defaultValue={mode === "chat" ? active?.title : codeActive?.title} aria-label="Session name"
               onBlur={(e) => { const t = e.target.value.trim(); if (t) { if (mode === "chat" && active) update(active.id, (c) => ({ ...c, title: t })); else if (codeActive) changeSession(codeActive.id, (s) => ({ ...s, title: t })); } setRenaming(false); }}
@@ -255,7 +288,11 @@ export function App() {
             { id: "usage", label: "Usage", onSelect: () => setDialog("usage") },
             { id: "tools", label: "Connectors", hint: "Tool servers for the agent", onSelect: () => { setSettingsAt("connectors"); setDialog("settings"); } },
           ]} />
-        </header>
+        </div>
+      </header>
+      <div className="shell">
+      <Sidebar userName={settings.userName} ramLabel={system ? `Local · ${Math.round(system.ramBytes / 2 ** 30)} GB` : "Local"} conversations={conversations} activeId={active?.id ?? ""} open={sidebar} onSelect={(id) => { setActiveId(id); setSidebar(false); }} onNew={onNew} onDelete={onDelete} onSettings={() => { setSettingsAt("usage"); setDialog("settings"); setSidebar(false); }} mode={mode} codeSessions={codeSessions} codeId={codeId} onSelectCode={(id) => { setCodeId(id); setSidebar(false); }} onNewCode={() => void newCodeSession()} onDeleteCode={deleteSession} onJobs={() => { setDialog("jobs"); setSidebar(false); }} onUsage={() => { setDialog("usage"); setSidebar(false); }} collapsed={collapsed} activeJobs={activeJobs} onClose={() => setSidebar(false)} />
+      <main className="main">
         {mode === "code" ? <CodeView active={codeActive} onChange={changeSession} onCreate={createSession} ready={ready || !!lastModel} modelName={state.model?.name ?? lastModel?.name ?? "model"} engine={ensureModel} mcp={mcp} hold={() => queue.holdForChat()} onChooseModel={() => setDialog("models")} picker={picker} onMcp={() => { setSettingsAt("connectors"); setDialog("settings"); }} overviewProps={{ system, modelName: state.model?.name ?? lastModel?.name ?? "No model", pinned: note, contextMax: state.ready?.nCtx ?? settings.ctx, permission: ({ ask: "Ask first", auto: "Auto-run checks", plan: "Plan only" } as const)[settings.permission], mcp, onManageTools: () => { setSettingsAt("connectors"); setDialog("settings"); } }} onUsage={(u) => setAgentUsage((x) => ({ runs: x.runs + 1, steps: x.steps + u.steps, tokens: x.tokens + u.tokens }))} panel={panel} onPanel={setPanel} tab={panelTab} onTab={setPanelTab} perm={settings.permission} onPerm={(p) => setSettings((s) => ({ ...s, permission: p }))} maxSteps={settings.maxSteps} verbose={settings.transcript === "verbose"} notifyAgent={settings.notifyAgent} /> : <>
         <div className="scroll" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           {active && active.messages.length > 0 ? (
@@ -266,7 +303,7 @@ export function App() {
             homeScreen ? (
               <div className="home">
                 <div className="mark"><Logo size={48} /></div>
-                <h2>{greeting()}</h2>
+                <h2>{greeting(settings.userName)}</h2>
                 {composer(true)}
                 <div className="suggest">
                   {settings.suggestions ? SUGGESTIONS.map((s) => <button type="button" key={s.label} className="suggestion" onClick={() => setPrefill((p) => ({ text: s.text, n: (p?.n ?? 0) + 1 }))}>{s.label}</button>) : null}
@@ -286,6 +323,8 @@ export function App() {
         {homeScreen ? null : composer(false)}
         </>}
       </main>
+      </div>
+      {settings.onboarded ? null : <Onboarding onDone={(name) => setSettings((s) => ({ ...s, onboarded: true, ...(name ? { userName: name } : {}) }))} />}
       {dialog === "models" ? <ModelDialog folders={folders} onFolder={(p) => setSettings((s) => ({ ...s, modelsDir: p }))} system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
       {dialog === "usage" ? <UsageDialog state={state} ramBytes={system?.ramBytes} usage={usage} agent={agentUsage} jobs={{ active: activeJobs, done: jobList.filter((j) => j.status === "done").length }} onClose={() => setDialog(null)} /> : null}

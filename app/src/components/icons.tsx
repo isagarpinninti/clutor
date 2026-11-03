@@ -39,3 +39,6 @@ export const PlugIcon = () => I(<><path d="M9 4.5v4M15 4.5v4M7 8.5h10v3.2a5 5 0 
 export const InfoIcon = () => I(<><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5M12 8h.01" strokeWidth="1.8" /></>);
 export const PaperclipIcon = () => I(<path d="m18.5 11-6.2 6.2a4 4 0 0 1-5.7-5.7l6.5-6.5a2.7 2.7 0 0 1 3.8 3.8l-6.5 6.5a1.3 1.3 0 0 1-1.9-1.9l5.9-5.9" />);
 export const FileIcon = () => I(<><path d="M7 3.5h6.5L18 8v10.5c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1v-14c0-.6.4-1 1-1Z" /><path d="M13.5 3.5V8H18" /></>);
+export const BackIcon = () => I(<path d="m14.5 6.5-5.5 5.5 5.5 5.5" />);
+export const ForwardIcon = () => I(<path d="m9.5 6.5 5.5 5.5-5.5 5.5" />);
+export const UserIcon = () => I(<><circle cx="12" cy="8.5" r="3.5" /><path d="M5 19c.6-3.3 3.4-5 7-5s6.4 1.7 7 5" /></>);

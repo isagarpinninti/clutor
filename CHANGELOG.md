@@ -4,6 +4,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ## Unreleased
 
+- App: **first-launch welcome** asks what to call you; the name is used in the home greeting and the sidebar, and can be changed in Settings > Profile. **One window**: on macOS the title bar is part of the app (traffic lights sit in the top row beside the sidebar toggle, back and forward, and the Chat/Code icons), and the row can be dragged to move the window. Back and forward move between the chats and sessions you opened.
+
 - App: **file attachments in chat**. Add files from the + menu, by dragging them onto the message box, or by pasting. Text and code files up to 1 MB, five at a time; images, PDFs and other binary files are refused with the reason, because the model reads text. Attachments are cut to fit the model's context (and the cut is shown), appear as chips on your message, and go to the model in fenced blocks after your words.
 - App: dialog headers are distinct (lighter bar, accent mark, bordered close button), and **Settings > About** shows the app, the computer and the loaded engine.
 

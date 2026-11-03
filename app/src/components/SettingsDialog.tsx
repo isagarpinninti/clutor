@@ -6,9 +6,9 @@ import type { McpManager, McpServerConfig } from "../agent/mcp";
 import { DEFAULT_SYSTEM, DEFAULT_SETTINGS, fmtBytes, type Settings } from "../store";
 import { McpPanel } from "./McpDialog";
 import { UsagePanel, type UsageData } from "./UsageDialog";
-import { BellIcon, ChatIcon, ChevronIcon, ChipIcon, CloseIcon, CodeIcon, GaugeIcon, GlobeIcon, LaptopIcon, PaletteIcon, InfoIcon, PlugIcon, SearchIcon, ShieldIcon } from "./icons";
+import { BellIcon, ChatIcon, ChevronIcon, ChipIcon, CloseIcon, CodeIcon, GaugeIcon, GlobeIcon, LaptopIcon, PaletteIcon, InfoIcon, PlugIcon, SearchIcon, ShieldIcon, UserIcon } from "./icons";
 
-export type Section = "usage" | "desktop" | "appearance" | "notifications" | "privacy" | "models" | "chat" | "web" | "connectors" | "code" | "desktop" | "about";
+export type Section = "profile" | "usage" | "desktop" | "appearance" | "notifications" | "privacy" | "models" | "chat" | "web" | "connectors" | "code" | "desktop" | "about";
 
 interface Props {
   settings: Settings;
@@ -28,7 +28,10 @@ interface Props {
 }
 
 const GROUPS: Array<Array<{ id: Section; label: string; icon: ReactNode; words: string }>> = [
-  [{ id: "usage", label: "Usage", icon: <GaugeIcon />, words: "context tokens speed memory" }],
+  [
+    { id: "profile", label: "Profile", icon: <UserIcon />, words: "name greeting account" },
+    { id: "usage", label: "Usage", icon: <GaugeIcon />, words: "context tokens speed memory" },
+  ],
   [
     { id: "appearance", label: "Appearance", icon: <PaletteIcon />, words: "theme dark text size font" },
     { id: "notifications", label: "Notifications", icon: <BellIcon />, words: "alerts finished job task" },
@@ -104,6 +107,14 @@ export function SettingsDialog({ settings, onChange, system, modelName, servers,
           </nav>
           <div className="spane">
             <h3 className="stitle">{current?.label}</h3>
+
+            {sec === "profile" ? (
+              <>
+                <Row title="Your name" hint="Used in greetings and shown in the sidebar. It stays on this device.">
+                  <input className="text-input" value={settings.userName ?? ""} maxLength={40} placeholder="Your name" aria-label="Your name" onChange={(e) => { const { userName: _u, ...rest } = settings; void _u; onChange(e.target.value ? { ...rest, userName: e.target.value } : (rest as Settings)); }} />
+                </Row>
+              </>
+            ) : null}
 
             {sec === "usage" ? <UsagePanel {...usage} /> : null}
 

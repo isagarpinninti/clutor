@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { groupByProject, sessionDot, type CodeSession } from "../agent/sessions";
 import type { Conversation } from "../store";
-import { ChatIcon, ChevronIcon, ClockIcon, CodeIcon, GaugeIcon, GearIcon, PlusIcon, SearchIcon, SidebarIcon, TrashIcon } from "./icons";
+import { ChevronIcon, ClockIcon, GaugeIcon, GearIcon, PlusIcon, SearchIcon, TrashIcon } from "./icons";
 
 interface Props {
   conversations: Conversation[];
@@ -10,7 +10,6 @@ interface Props {
   onSelect: (id: string) => void;
   onNew: () => void;
   mode: "chat" | "code";
-  onMode: (m: "chat" | "code") => void;
   codeSessions: CodeSession[];
   codeId: string;
   onSelectCode: (id: string) => void;
@@ -20,11 +19,11 @@ interface Props {
   onSettings: () => void;
   onJobs: () => void;
   onUsage: () => void;
-  onCollapse: () => void;
   collapsed: boolean;
   activeJobs: number;
   onClose: () => void;
   ramLabel: string;
+  userName?: string | undefined;
 }
 
 function group(conversations: Conversation[]): Array<[string, Conversation[]]> {
@@ -62,14 +61,6 @@ export function Sidebar(p: Props) {
     <>
       <div className={`scrim${p.open ? " show" : ""}`} onClick={p.onClose} aria-hidden="true" />
       <aside className={`sidebar${p.open ? " open" : ""}${p.collapsed ? " collapsed" : ""}`} aria-label="Sidebar">
-        <div className="side-top">
-          <div className="mode-icons" role="tablist" aria-label="Mode">
-            <button type="button" role="tab" aria-selected={p.mode === "chat"} className={`mode-icon tip${p.mode === "chat" ? " on" : ""}`} data-tip="Chat" onClick={() => p.onMode("chat")}><ChatIcon /></button>
-            <button type="button" role="tab" aria-selected={p.mode === "code"} className={`mode-icon tip${p.mode === "code" ? " on" : ""}`} data-tip="Code" onClick={() => p.onMode("code")}><CodeIcon /></button>
-          </div>
-          <button type="button" className="icon-btn tip" data-tip="Hide sidebar" onClick={p.onCollapse} aria-label="Hide sidebar"><SidebarIcon /></button>
-        </div>
-
         <div className="side-nav">
           <button type="button" className="nav-item" onClick={p.mode === "code" ? p.onNewCode : p.onNew}><PlusIcon /><span>New</span></button>
           {searching || q ? (
@@ -111,7 +102,7 @@ export function Sidebar(p: Props) {
         )}
 
         <div className="side-foot">
-          <div className="account"><span className="avatar" aria-hidden="true">C</span><span className="acc-text"><b>Clutor</b><small>{p.ramLabel}</small></span></div>
+          <div className="account"><span className="avatar" aria-hidden="true">{(p.userName?.trim()[0] ?? "C").toUpperCase()}</span><span className="acc-text"><b>{p.userName || "Clutor"}</b><small>{p.ramLabel}</small></span></div>
           <button type="button" className="icon-btn tip" data-tip="Usage" onClick={p.onUsage} aria-label="Usage"><GaugeIcon /></button>
           <button type="button" className="icon-btn tip" data-tip="Settings" onClick={p.onSettings} aria-label="Settings"><GearIcon /></button>
         </div>
