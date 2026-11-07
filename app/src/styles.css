@@ -4,10 +4,10 @@
   --ink-rgb: 255 255 255; --shade-rgb: 0 0 0;
   --g0: #060607; --g1: #0e0e10; --g2: #1a1a1d; --g3: #26262a; --g4: #323237; --g5: #3e3e44; --g6: #54545b; --g7: #6a6a71; --g8: #808088; --g9: #93939b; --g10: #a5a5ad; --g11: #b8b8c0; --g12: #c9c9d0; --g13: #dbdbe1; --g14: #ececf1; --g15: #f8f8fa;
   --bg: var(--g0); --panel: var(--g0); --panel-2: var(--g1); --card: var(--g1); --text: var(--g14); --muted: var(--g8); --line: var(--g2);
-  --accent: #4d7cff; --accent-2: #4d7cff; --accent-ink: #ffffff; --accent-soft: rgb(77 124 255 / .16); --danger: #ff8f86; --ok: #7ee2a8; --warn: #e6b450;
-  --code-bg: var(--g1); --code-head: var(--g2); --shadow: 0 0 0 transparent; --glow: none; --link: #6f9bff;
+  --accent: #7ea6ff; --accent-2: #7ea6ff; --accent-ink: #ffffff; --accent-soft: rgb(126 166 255 / .12); --danger: #ff8f86; --ok: #7ee2a8; --warn: #e6b450;
+  --code-bg: var(--g1); --code-head: var(--g2); --shadow: 0 0 0 transparent; --glow: none; --link: #8db2ff;
   --hl-kw: #c4a8ff; --hl-str: #8fe0ad; --hl-num: #f3b887; --hl-com: #7a8090; --hl-fn: #8ab8ff; --hl-ty: #7fd8e0;
-  --on-brand: #ffffff; --brand: #3d6cf5;
+  --on-brand: #ffffff; --brand: #3b6fe3;
   --r: 8px; --r-lg: 18px;
   --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -17,7 +17,7 @@
   color-scheme: light;
   --ink-rgb: 12 18 36; --shade-rgb: 12 18 36;
   --g0: #ffffff; --g1: #efeff0; --g2: #dfdfe2; --g3: #ced0d3; --g4: #bec0c5; --g5: #aeb0b6; --g6: #9ea0a7; --g7: #8e9099; --g8: #7d818a; --g9: #6d717c; --g10: #5d616d; --g11: #4d515e; --g12: #3d4150; --g13: #2c3241; --g14: #1c2233; --g15: #0c1224;
-  --accent: #2f5bea; --accent-2: #2f5bea; --accent-soft: rgb(47 91 234 / .11); --brand: #2f5bea; --glow: none; --danger: #c93c37; --ok: #17803d; --warn: #9a6a00; --link: #2554d6;
+  --accent: #2c5fd6; --accent-2: #2c5fd6; --accent-soft: rgb(44 95 214 / .10); --brand: #2c5fd6; --glow: none; --danger: #c93c37; --ok: #17803d; --warn: #9a6a00; --link: #2554d6;
   --hl-kw: #7b45d6; --hl-str: #1a7f4b; --hl-num: #b45a14; --hl-com: #7b8394; --hl-fn: #2554d6; --hl-ty: #0e7490;
   --shadow: 0 1px 2px rgb(13 16 26 / .06), 0 8px 24px rgb(13 16 26 / .06);
 }
@@ -725,20 +725,20 @@ html, body, .app, .main { background: var(--bg); }
 .suggest { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 :root[data-theme] .suggestion { height: 32px; padding: 0 14px; border-radius: 999px; display: flex; flex-direction: row; align-items: center; border: 1px solid var(--g2); background: transparent; font-size: 13px; transition: border-color .15s, background .15s; animation: fade-in .5s var(--ease) both; }
 .suggestion b { font-weight: 500; color: var(--muted); }
-:root[data-theme] .suggestion:hover { border-color: var(--accent); background: var(--accent-soft); }
+:root[data-theme] .suggestion:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--g2)); background: var(--accent-soft); }
 :root[data-theme] .suggestion:hover b { color: var(--text); }
 @media (max-width: 560px) { .hello h2 { font-size: 22px; } .hello .logo { width: 38px; height: 38px; } }
 
 /* the message box */
 :root[data-theme] .composer { border-radius: 24px; background: var(--g1); border: 1px solid var(--g2); box-shadow: none; transition: border-color .2s, box-shadow .2s; }
-:root[data-theme] .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+:root[data-theme] .composer:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--g3)); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 7%, transparent); }
 :root[data-theme] .home .composer { border-radius: 22px; padding: 16px 16px 12px 20px; }
 .toggle { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px 0 10px; border-radius: 999px; border: 1px solid var(--g3); background: none; color: var(--muted); font-size: 12.5px; transition: background .15s, color .15s, border-color .15s, transform .1s; }
 .toggle svg { width: 15px; height: 15px; }
 .toggle:hover { background: var(--g2); color: var(--text); } .toggle:active { transform: scale(.96); }
-:root[data-theme] .toggle.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+:root[data-theme] .toggle.on { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 32%, transparent); color: var(--accent); }
 :root[data-theme] .round.send { background: var(--brand); color: #fff; box-shadow: none; transition: transform .12s var(--ease), filter .15s; }
-:root[data-theme] .round.send:hover:not(:disabled) { transform: scale(1.07); filter: brightness(1.1); }
+:root[data-theme] .round.send:hover:not(:disabled) { transform: scale(1.05); filter: brightness(1.08); }
 :root[data-theme] .round.send:active:not(:disabled) { transform: scale(.93); }
 :root[data-theme] .round.send:disabled { background: var(--g2); color: var(--g6); }
 :root[data-theme] .round.stop { position: relative; background: var(--g2); color: var(--text); }
@@ -784,3 +784,9 @@ html, body, .app, .main { background: var(--bg); }
   .logo .logo-seg, .logo .logo-spark { animation: none !important; }
   .round.stop::before { animation-duration: 3s !important; }
 }
+
+/* ---- refinement: a calmer blue, used with restraint ---- */
+.btn:not(.ghost):not(.small), .btn.small:not(.ghost) { box-shadow: inset 0 0 0 1px rgb(255 255 255 / .08); }
+:root[data-theme] .round.send:not(:disabled) { box-shadow: inset 0 0 0 1px rgb(255 255 255 / .1); }
+:root[data-theme] .msg.user .prompt { background: color-mix(in srgb, var(--accent) 7%, var(--g2)); border-color: color-mix(in srgb, var(--accent) 14%, var(--g3)); }
+:root[data-theme] .round.stop::before { border-top-color: var(--accent); border-right-color: color-mix(in srgb, var(--accent) 30%, transparent); }

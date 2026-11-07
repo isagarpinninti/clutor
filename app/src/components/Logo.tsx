@@ -26,7 +26,7 @@ const FULL = `M${pt(START)}A${R} ${R} 0 1 1 ${pt(START + SPAN)}`;
 export function Logo({ size = 24, state = "idle", tile = false }: { size?: number; state?: LogoState; tile?: boolean }) {
   return (
     <svg className={`logo ${state}${tile ? " tile" : ""}`} width={size} height={size} viewBox="0 0 64 64" role="img" aria-label="Clutor">
-      {tile ? <rect width="64" height="64" rx="16" fill="var(--brand, #3d6cf5)" /> : null}
+      {tile ? <rect width="64" height="64" rx="16" fill="var(--brand, #3b6fe3)" /> : null}
       {state === "idle"
         ? <path d={FULL} fill="none" stroke="currentColor" strokeWidth="9" strokeLinecap="round" />
         : (
