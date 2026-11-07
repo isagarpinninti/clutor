@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "plat.h"
 
 static const cl_tensor *find(const cl_model *m, const char *name) {
@@ -277,7 +278,7 @@ void cl_fwd_close(cl_fwd *f) {
   if (f->ps_ready) {
     for (int i = 0; i < f->ps_cap; i++) { cl_xq_free(&f->ps_xqe[i]); cl_xq_free(&f->ps_xqq[i]); cl_xq_free(&f->ps_xqff[i]); }
     free(f->ps_xqe); free(f->ps_xqq); free(f->ps_xqff);
-    free(f->ps_x); free(f->ps_xn); free(f->ps_xg); free(f->ps_q); free(f->ps_k); free(f->ps_v); free(f->ps_att); free(f->ps_hd); free(f->ps_moe); free(f->ps_hg); free(f->ps_hu); free(f->ps_wt); free(f->ps_hde); free(f->ps_sel);
+    free(f->ps_x); free(f->ps_xn); free(f->ps_xg); free(f->ps_q); free(f->ps_k); free(f->ps_v); free(f->ps_att); free(f->ps_hd); free(f->ps_moe); free(f->ps_hg); free(f->ps_hu); free(f->ps_rg); free(f->ps_wt); free(f->ps_hde); free(f->ps_sel);
   }
   free(f->logits_buf); free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
   cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_q); cl_xq_free(&f->xq_ff);
@@ -669,21 +670,40 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
 
 /* ---- Prompt processing for the plain transformer architectures (llama, qwen2, olmoe, qwen3moe, granitemoe) ---------------------------------------------------------- */
 
+/* CLUTOR_PROFILE=1: where the time of the batched prompt path goes, printed to stderr after each prompt (for finding the next thing to speed up). Costs two clock reads per section. */
+static int look_default(void) { const char *e = getenv("CLUTOR_LOOKAHEAD"); return e && *e ? atoi(e) : 1; }
+static double prof_t[10];
+static int prof_on = -1;
+static const char *const prof_name[10] = {"norm+quantize", "q/k/v products", "bias, rope, store K/V", "attention", "output product", "routing", "waiting for experts", "expert products", "expert other", "final norm + logits"};
+static double prof_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9; }
+#define P0() double _pt = prof_on > 0 ? prof_now() : 0
+#define PA(i) do { if (prof_on > 0) { double _n = prof_now(); prof_t[i] += _n - _pt; _pt = _n; } } while (0)
 _Static_assert(CL_PS_B <= CL_MV_MAX, "a prompt batch must fit in one batched product");
 static int ps_alloc(cl_fwd *f) {
   if (f->ps_ready) return 0;
   const size_t B = f->xs ? CL_PS_B : 64, E = (size_t)f->n_embd, NQ = (size_t)f->n_q, KW = (size_t)f->n_kvw, FF = (size_t)f->n_ff_exp;
   f->ps_x = calloc(B * E, 4); f->ps_xn = calloc(B * E, 4); f->ps_xg = calloc(B * E, 4); f->ps_hd = calloc(B * E, 4); f->ps_moe = calloc(B * E, 4); f->ps_hde = calloc(B * E, 4);
   f->ps_q = calloc(B * NQ, 4); f->ps_att = calloc(B * NQ, 4); f->ps_k = calloc(B * KW, 4); f->ps_v = calloc(B * KW, 4);
-  f->ps_hg = calloc(B * FF, 4); f->ps_hu = calloc(B * FF, 4);
+  f->ps_hg = calloc(B * FF, 4); f->ps_hu = calloc(B * FF, 4); f->ps_rg = calloc(B * (size_t)f->n_expert, 4);
   f->ps_sel = calloc(B * (size_t)f->n_used, sizeof(int)); f->ps_wt = calloc(B * (size_t)f->n_used, 4);
   f->ps_xqe = calloc(B, sizeof(cl_xq)); f->ps_xqq = calloc(B, sizeof(cl_xq)); f->ps_xqff = calloc(B, sizeof(cl_xq));
-  int ok = f->ps_x && f->ps_xn && f->ps_xg && f->ps_hd && f->ps_moe && f->ps_hde && f->ps_q && f->ps_att && f->ps_k && f->ps_v && f->ps_hg && f->ps_hu && f->ps_sel && f->ps_wt && f->ps_xqe && f->ps_xqq && f->ps_xqff;
+  int ok = f->ps_x && f->ps_xn && f->ps_xg && f->ps_hd && f->ps_moe && f->ps_hde && f->ps_q && f->ps_att && f->ps_k && f->ps_v && f->ps_hg && f->ps_hu && f->ps_rg && f->ps_sel && f->ps_wt && f->ps_xqe && f->ps_xqq && f->ps_xqff;
   for (size_t i = 0; ok && i < B; i++) ok = cl_xq_init(&f->ps_xqe[i], f->n_embd) && cl_xq_init(&f->ps_xqq[i], f->n_q) && cl_xq_init(&f->ps_xqff[i], f->n_ff_exp);
   if (!ok) return 1;
   f->ps_cap = (int)B;
   f->ps_ready = 1;
   return 0;
+}
+
+/* The router's dot products for every token of a batch, one task per token: each is 128 or more rows of the layer's hidden width, which in a serial loop was a fifth of the time. */
+typedef struct { cl_fwd *f; const cl_fwd_layer *y; const float *X; float *XN; } route_job;
+static void route_task(void *vc, int b) {
+  route_job *c = vc; cl_fwd *f = c->f; const int E = f->n_embd;
+  float *xn = c->XN + (size_t)b * E;
+  rmsnorm(xn, c->X + (size_t)b * E, c->y->ffn_norm_f, E, f->rms_eps);
+  cl_xq_quantize(&f->ps_xqe[b], xn);
+  float *rg = f->ps_rg + (size_t)b * f->n_expert;
+  for (int e = 0; e < f->n_expert; e++) { const float *r = c->y->router_f + (size_t)e * E; float acc = 0; for (int i = 0; i < E; i++) acc += r[i] * xn[i]; rg[e] = acc; }
 }
 
 /* nb tokens (1 <= nb <= CL_PS_B) through the model together, layer by layer. Every dense weight matrix is multiplied with all nb tokens in one pass over its rows; in a
@@ -692,6 +712,8 @@ static int ps_alloc(cl_fwd *f) {
  * which a token's expert outputs are added differs from a step's, which can change the last bits). `logits` may be NULL when only the state is wanted. */
 static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, size_t errlen) {
   const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, KW = f->n_kvw, NQ = f->n_q, FF = f->n_ff_exp, pos0 = f->pos;
+  if (prof_on < 0) { const char *e = getenv("CLUTOR_PROFILE"); prof_on = e && *e && *e != '0'; }
+  P0();
   float *X = f->ps_x, *XN = f->ps_xn, *Q = f->ps_q, *K = f->ps_k, *V = f->ps_v, *ATT = f->ps_att, *HD = f->ps_hd;
   for (int b = 0; b < nb; b++) {
     float *x = X + (size_t)b * E;
@@ -701,7 +723,9 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
   for (int l = 0; l < f->n_layer; l++) {
     cl_fwd_layer *y = &f->L[l];
     for (int b = 0; b < nb; b++) { rmsnorm(XN + (size_t)b * E, X + (size_t)b * E, y->attn_norm_f, E, f->rms_eps); cl_xq_quantize(&f->ps_xqe[b], XN + (size_t)b * E); }
+    PA(0);
     { cl_mv j[3] = {mvb(&y->wq, XN, E, f->ps_xqe, Q, nb), mvb(&y->wk, XN, E, f->ps_xqe, K, nb), mvb(&y->wv, XN, E, f->ps_xqe, V, nb)}; cl_matvec_batch(j, 3); }
+    PA(1);
     for (int b = 0; b < nb; b++) {
       float *q = Q + (size_t)b * NQ, *k = K + (size_t)b * KW, *v = V + (size_t)b * KW;
       const int pos = pos0 + b;
@@ -714,10 +738,13 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
       float *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
       memcpy(kc, k, (size_t)KW * 4); memcpy(vc, v, (size_t)KW * 4);
     }
-    attend(f, l, Q, ATT, pos0, nb);   /* every token's key and value are stored now; each token attends only to positions up to its own */
+    PA(2);
+    attend(f, l, Q, ATT, pos0, nb);
+    PA(3);   /* every token's key and value are stored now; each token attends only to positions up to its own */
     for (int b = 0; b < nb; b++) cl_xq_quantize(&f->ps_xqq[b], ATT + (size_t)b * NQ);
     { cl_mv j = mvb(&y->wo, ATT, NQ, f->ps_xqq, HD, nb); cl_matvec_batch(&j, 1); }
     for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->resid_scale * HD[i];
+    PA(4);
 
     if (f->dense) {   /* one plain SwiGLU feed-forward */
       float *HG = f->ps_hg, *HU = f->ps_hu;
@@ -731,11 +758,9 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
 
     /* mixture of experts: route every token */
     const int NU = f->n_used;
+    { route_job rj = {f, y, X, XN}; cl_parallel_for(nb, route_task, &rj); }
     for (int b = 0; b < nb; b++) {
-      float *xn = XN + (size_t)b * E;
-      rmsnorm(xn, X + (size_t)b * E, y->ffn_norm_f, E, f->rms_eps);
-      cl_xq_quantize(&f->ps_xqe[b], xn);
-      for (int e = 0; e < f->n_expert; e++) { const float *r = y->router_f + (size_t)e * E; float s = 0; for (int i = 0; i < E; i++) s += r[i] * xn[i]; f->rl[e] = s; }
+      memcpy(f->rl, f->ps_rg + (size_t)b * f->n_expert, (size_t)f->n_expert * sizeof(float));
       memcpy(f->rlogit, f->rl, (size_t)f->n_expert * sizeof(float));
       float mx = f->rl[0];
       for (int e = 1; e < f->n_expert; e++) if (f->rl[e] > mx) mx = f->rl[e];
@@ -760,16 +785,18 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
     if (f->prev_sel) memcpy(f->prev_sel + (size_t)l * NU, f->ps_sel + (size_t)(nb - 1) * NU, (size_t)NU * sizeof(int));
     memset(f->ps_moe, 0, (size_t)nb * E * 4);
 
+    PA(5);
     /* then each chosen expert once, over the tokens that chose it, a few at a time so the store never holds more than a token's worth of requests */
     int todo[4096], n_todo = 0;
     { char seen[4096] = {0}; for (int b = 0; b < nb; b++) for (int k = 0; k < NU; k++) { int e = f->ps_sel[(size_t)b * NU + k]; if (!seen[e]) { seen[e] = 1; todo[n_todo++] = e; } } }
     /* Reads run one group ahead of the compute when the cache has room for two groups (and a few spare slots) at once, so the disk works while the cores multiply. */
     int hnd[4096] = {0}, issued = 0;
-    const int look = f->xs && !getenv("CLUTOR_NO_LOOKAHEAD") && cl_xs_cache_slots(f->xs) >= (uint32_t)(3 * NU);   /* CLUTOR_NO_LOOKAHEAD=1: wait for each group before asking for the next (for comparing) */
+    int depth = 0;   /* groups requested ahead of the one being computed; the cache must hold them all pinned with room to spare. CLUTOR_LOOKAHEAD=k sets it (0 waits for each group before asking for the next) */
+    if (f->xs) { depth = look_default(); const int room = (int)(cl_xs_cache_slots(f->xs) / (uint32_t)NU) - 2; if (depth > room) depth = room < 0 ? 0 : room; }
     for (int g0 = 0; g0 < n_todo; g0 += NU) {
       const int g1 = g0 + NU < n_todo ? g0 + NU : n_todo;
       if (f->xs) {
-        const int want = look ? (g1 + NU < n_todo ? g1 + NU : n_todo) : g1;
+        const int want = g1 + depth * NU < n_todo ? g1 + depth * NU : n_todo;
         while (issued < want) {   /* resident experts first, so they are pinned before a miss can evict them */
           const int h1 = issued + NU < n_todo ? issued + NU : n_todo;
           for (int pass = 0; pass < 2; pass++) for (int i = issued; i < h1; i++) { int here = cl_xs_resident(f->xs, l, todo[i]); if ((pass == 0) == (here != 0)) hnd[i] = cl_xs_request(f->xs, l, todo[i]); }
@@ -777,12 +804,14 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
         }
       }
       for (int i = g0; i < g1; i++) {
+        PA(8);
         const int e = todo[i];
         const uint8_t *Pi = NULL;
         if (f->xs) {
           Pi = cl_xs_wait(f->xs, hnd[i]);
           if (!Pi) { snprintf(err, errlen, "reading expert %d of layer %d from disk failed", e, l); for (int j = i; j < issued; j++) cl_xs_release(f->xs, hnd[j]); return 1; }
         }
+        PA(6);
         /* the tokens that chose this expert, with their weights */
         int who[CL_PS_B]; float wgt[CL_PS_B]; int ni = 0;
         for (int b = 0; b < nb; b++) for (int k = 0; k < NU; k++) if (f->ps_sel[(size_t)b * NU + k] == e) { who[ni] = b; wgt[ni] = f->ps_wt[(size_t)b * NU + k]; ni++; break; }
@@ -791,14 +820,20 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
         cl_xq sub[CL_PS_B];
         for (int t = 0; t < ni; t++) { sub[t] = f->ps_xqe[who[t]]; memcpy(f->ps_xg + (size_t)t * E, XN + (size_t)who[t] * E, (size_t)E * 4); }
         float *HG = f->ps_hg, *HU = f->ps_hu;
+        PA(8);
         { cl_mv j[2] = {{y->gate.type, gp, FF, E, f->ps_xg, sub, HG, ni, (size_t)E, (size_t)FF}, {y->up.type, up, FF, E, f->ps_xg, sub, HU, ni, (size_t)E, (size_t)FF}}; cl_matvec_batch(j, 2); }
+        PA(7);
         for (int t = 0; t < ni; t++) { float *hg = HG + (size_t)t * FF, *hu = HU + (size_t)t * FF; for (int q = 0; q < FF; q++) hg[q] = hg[q] / (1.0f + expf(-hg[q])) * hu[q]; cl_xq_quantize(&f->ps_xqff[t], hg); }
+        PA(8);
         { cl_mv j = {y->down.type, dp, E, FF, HG, f->ps_xqff, f->ps_hde, ni, (size_t)FF, (size_t)E}; cl_matvec_batch(&j, 1); }
+        PA(7);
         for (int t = 0; t < ni; t++) { float *m = f->ps_moe + (size_t)who[t] * E; const float *d = f->ps_hde + (size_t)t * E; for (int q = 0; q < E; q++) m[q] += wgt[t] * d[q]; }
         if (f->xs) cl_xs_release(f->xs, hnd[i]);
       }
     }
+    PA(8);
     for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->resid_scale * f->ps_moe[i];
+    PA(8);
   }
   f->pos += nb;
   if (logits) {
@@ -807,6 +842,7 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
     cl_mv j = mv(&f->output, f->xn, &f->xq_e, logits); cl_matvec_batch(&j, 1);
     if (f->logit_scale != 1.0f) for (int i = 0; i < f->n_vocab; i++) logits[i] /= f->logit_scale;
   }
+  PA(9);
   return 0;
 }
 
@@ -825,6 +861,12 @@ int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err
     int cap = f->ps_cap;
     { const char *e = getenv("CLUTOR_PS_B"); if (e && atoi(e) >= 1 && atoi(e) < f->ps_cap) cap = atoi(e); }
     for (int i = 0; i < n; i += cap) { int nb = n - i < cap ? n - i : cap; if (run_std(f, tokens + i, nb, i + nb == n ? logits : NULL, err, errlen)) return 1; }
+    if (prof_on > 0) {
+      double tot = 0; for (int k = 0; k < 10; k++) tot += prof_t[k];
+      fprintf(stderr, "[profile: %d tokens, %.2f s in the batched path]", n, tot);
+      for (int k = 0; k < 10; k++) { fprintf(stderr, " %s %.2fs (%.0f%%);", prof_name[k], prof_t[k], tot > 0 ? 100 * prof_t[k] / tot : 0); prof_t[k] = 0; }
+      fprintf(stderr, "\n");
+    }
     return 0;
   }
   for (int i = 0; i < n; i += CL_PF_B) { int nb = n - i < CL_PF_B ? n - i : CL_PF_B; run_q35(f, tokens + i, nb, i + nb == n ? logits : NULL); }

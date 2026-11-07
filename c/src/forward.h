@@ -71,7 +71,7 @@ typedef struct {
   cl_xq *pf_xqe, *pf_xqq, *pf_xqss, *pf_xqff;
   /* prompt processing for every architecture but qwen35: scratch for up to CL_PS_B tokens, allocated on first use */
   int ps_ready, ps_cap;
-  float *ps_x, *ps_xn, *ps_xg, *ps_q, *ps_k, *ps_v, *ps_att, *ps_hd, *ps_moe, *ps_hg, *ps_hu, *ps_wt, *ps_hde;
+  float *ps_x, *ps_xn, *ps_xg, *ps_q, *ps_k, *ps_v, *ps_att, *ps_hd, *ps_moe, *ps_hg, *ps_hu, *ps_wt, *ps_hde, *ps_rg;
   int *ps_sel;
   cl_xq *ps_xqe, *ps_xqq, *ps_xqff;
   int locked;              /* the mapped weights are pinned in memory */
@@ -97,6 +97,6 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
  * every other architecture): each weight matrix is read once per batch, and in a mixture-of-experts layer each expert is read once per batch for all the tokens that chose
  * it, so a long prompt costs far fewer passes over the weights (and over the disk) than stepping token by token. Only the last token's output distribution is computed. */
 #define CL_PF_B 32
-#define CL_PS_B 256   /* the most tokens one batch can hold; 64 are used unless the experts are streamed from disk (a bigger batch then shares each read among more tokens) */
+#define CL_PS_B 512   /* the most tokens one batch can hold; 64 are used unless the experts are streamed from disk (a bigger batch then shares each read among more tokens) */
 int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err, size_t errlen);
 #endif

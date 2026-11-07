@@ -13,7 +13,7 @@ import sys
 
 ARCHS = ["olmoe", "qwen3moe", "granitemoe", "qwen2", "llama", "qwen35"]
 BATCHES = ["64", "7", "1"]
-LONG_BATCHES = ["256", "100"]   # a long prompt: a streamed run takes batches up to 256 tokens, so these cross the 64-token size the short prompt cannot reach
+LONG_BATCHES = ["512", "256", "100"]   # a long prompt: a streamed run takes batches up to 512 tokens, so these cross the 64-token size the short prompt cannot reach
 LONG = " ".join(["the cat is in the room and a rat saw the hat on a mat"] * 14)
 MODES = [[], ["--cache-mb", "1"], ["--cache-mb", "1", "--smart", "2,12,0.015"]]
 
