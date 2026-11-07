@@ -817,3 +817,24 @@ html, body, .app, .main { background: var(--bg); }
 .reasoning, .jobstrip, .websearch { margin-bottom: 12px; }
 .meta { margin-top: 12px; }
 .sources { margin-top: 10px; }
+
+/* ---- sidebar header: one grid. Icons and the mark are centred on x = 27, labels start at x = 48 ---- */
+.side-brand { gap: 10px; padding: 6px 8px 8px; }
+.side-brand .logo { width: 22px; height: 22px; }
+.avatar { width: 22px; height: 22px; font-size: 11px; }
+.account { gap: 10px; padding-left: 6px; }
+
+/* ---- rounded: the buttons, the chat and the prompt box. Compact controls are pills, send and stop are circles, standard buttons and rows 10px; the message box and the chat content 14px. Dialogs and cards stay square. ---- */
+:root[data-theme] .btn, :root[data-theme] .btn.small, :root[data-theme] .picker-btn, :root[data-theme] .nav-item, :root[data-theme] .nav-item.primary, :root[data-theme] .side-btn,
+:root[data-theme] .conv, :root[data-theme] .menu-item, :root[data-theme] .tool-tab, :root[data-theme] .mode-icon, :root[data-theme] .mode-icons, :root[data-theme] .icon-btn,
+:root[data-theme] .ring-btn, :root[data-theme] .plus-btn, :root[data-theme] .segmented button, :root[data-theme] .file-list button, :root[data-theme] .attach button,
+:root[data-theme] .dhead-close, :root[data-theme] .snav .sgroup button, :root[data-theme] .new-chat { border-radius: 10px; }
+:root[data-theme] .toggle, :root[data-theme] .chip, :root[data-theme] .pill, :root[data-theme] .suggestion, :root[data-theme] .seg, :root[data-theme] .seg button,
+:root[data-theme] .source, :root[data-theme] .tool-open, :root[data-theme] .project-chip, :root[data-theme] .model-pill { border-radius: 999px; }
+:root[data-theme] .round, :root[data-theme] .round.stop::before { border-radius: 50%; }
+:root[data-theme] .composer, :root[data-theme] .home .composer, :root[data-theme] .composer-wrap.home .composer { border-radius: 18px; }
+:root[data-theme] .msg.user .prompt { border-radius: 18px 18px 6px 18px; }
+:root[data-theme] .reasoning, :root[data-theme] .notice, :root[data-theme] .jobstrip, :root[data-theme] .websearch, :root[data-theme] .codeblock, :root[data-theme] .md table, :root[data-theme] .error, :root[data-theme] .attach { border-radius: 14px; }
+:root[data-theme] .codeblock { overflow: hidden; }
+:root[data-theme] .codehead { border-radius: 14px 14px 0 0; }
+:root[data-theme] .md code { border-radius: 6px; }
