@@ -13,9 +13,9 @@ export function applyTheme(pref: ThemePref): () => void {
     const t = resolveTheme(pref, mq ? mq.matches : true);
     const root = document.documentElement;
     root.dataset["theme"] = t;
-    root.style.background = t === "dark" ? "#0a0b10" : "#ffffff";
+    root.style.background = t === "dark" ? "#080c1c" : "#ffffff";
     document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", t);
-    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", t === "dark" ? "#0a0b10" : "#ffffff");
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", t === "dark" ? "#080c1c" : "#ffffff");
   };
   apply();
   try { localStorage.setItem(KEY, pref); } catch { /* blocked storage: the choice is remembered by the app's own settings instead */ }
