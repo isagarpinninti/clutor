@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@core/agent/loop";
-import { applyEvent, groupByProject, newSession, reviewable, sessionDot, toolLabel, toSaved, type CodeSession, type Turn } from "./sessions";
+import { applyEvent, applyTurnEvent, currentStage, groupByProject, parsePlan, newSession, reviewable, sessionDot, toolLabel, toSaved, type CodeSession, type Turn } from "./sessions";
 
 const turn = (over: Partial<Turn> = {}): Turn => ({ id: "t", task: "x", created: 1, status: "done", blocks: [], ...over });
 const sess = (over: Partial<CodeSession> = {}): CodeSession => ({ ...newSession("/p/app", 1), ...over });
@@ -57,5 +57,26 @@ describe("saving", () => {
     expect(saved[0]?.turns[0]?.status).toBe("interrupted");
     expect(saved[0]?.turns[1]?.changes).toBeUndefined();
     expect(saved[0]?.turns[1]?.lost).toBe(true);
+  });
+});
+
+describe("the plan and the stages of a task", () => {
+  it("reads a plan with done, active and to-do steps, and lines with no marker", () => {
+    expect(parsePlan("[x] Read the code\n[>] Write index.html\n[ ] Style it\n- [ ] Check it\n2. Ship it\n\n")).toEqual([
+      { text: "Read the code", state: "done" }, { text: "Write index.html", state: "active" }, { text: "Style it", state: "todo" }, { text: "Check it", state: "todo" }, { text: "Ship it", state: "todo" },
+    ]);
+  });
+  it("keeps the plan on the turn when the agent calls update_plan, and shows no block for it", () => {
+    const e = { type: "tool_call", step: 1, name: "update_plan", args: { steps: "[>] One\n[ ] Two" } } as AgentEvent;
+    const t = applyTurnEvent(turn({ status: "running" }), e);
+    expect(t.plan?.map((s) => s.state)).toEqual(["active", "todo"]);
+    expect(t.blocks).toEqual([]);
+  });
+  it("works out the stage from what the agent is doing when there is no plan", () => {
+    const run = (name: string, args: Record<string, unknown>, status: "running" | "ok" = "running"): Turn => turn({ status: "running", blocks: [{ id: "b", kind: "tool", name, label: `${name === "read_file" ? "Read" : "Wrote"} ${String(args["path"])}`, status }] });
+    expect(currentStage(turn({ status: "running" })).stage).toBe("planning");
+    expect(currentStage(run("read_file", { path: "a.ts" }))).toMatchObject({ stage: "exploring", label: "Reading a.ts" });
+    expect(currentStage(run("write_file", { path: "b.ts" }))).toMatchObject({ stage: "writing", label: "Writing b.ts" });
+    expect(currentStage(run("write_file", { path: "b.ts" }, "ok")).seen).toEqual(["writing"]);
   });
 });

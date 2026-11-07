@@ -14,8 +14,11 @@ const REPLY = [
 ].join("");
 
 const SCRIPT = [
+  '{"tool":"update_plan","args":{"steps":"[>] Read the greeting code\\n[ ] Add the exclamation mark\\n[ ] Run the tests"}}',
   '{"tool":"read_file","args":{"path":"src/greet.js"}}',
+  '{"tool":"update_plan","args":{"steps":"[x] Read the greeting code\\n[>] Add the exclamation mark\\n[ ] Run the tests"}}',
   '{"tool":"edit_file","args":{"path":"src/greet.js","old_text":"Hello, ${name}","new_text":"Hello, ${name}!"}}',
+  '{"tool":"update_plan","args":{"steps":"[x] Read the greeting code\\n[x] Add the exclamation mark\\n[>] Run the tests"}}',
   '{"tool":"run_command","args":{"command":"npm test"}}',
   '{"tool":"finish","args":{"summary":"Added the exclamation mark to the greeting. The tests pass."}}',
 ];

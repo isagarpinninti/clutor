@@ -10,8 +10,26 @@ import type { Change } from "./apply";
 export type BlockStatus = "running" | "ok" | "error";
 export type Block =
   | { id: string; kind: "text"; text: string }
-  | { id: string; kind: "note"; text: string; bad?: boolean }
+  | { id: string; kind: "note"; text: string; bad?: boolean; /** How many times in a row this happened. */ count?: number }
   | { id: string; kind: "tool"; name: string; label: string; path?: string; status: BlockStatus; output?: string; patch?: string };
+
+/** One step of the plan the agent wrote for itself (the update_plan tool). */
+export interface PlanStep { text: string; state: "done" | "active" | "todo" }
+
+/** Reads the plan text the model writes: one step a line, "[x]" done, "[>]" in progress, "[ ]" still to do. A line with no marker is a step still to do. */
+export function parsePlan(text: string): PlanStep[] {
+  const steps: PlanStep[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim().replace(/^[-*]\s+/, "");
+    if (!line) continue;
+    const m = /^\[( |x|X|>|-|~)\]\s*(.*)$/.exec(line);
+    const body = (m ? m[2] : line.replace(/^\d+[.)]\s+/, "")) as string;
+    if (!body) continue;
+    const mark = m ? (m[1] as string) : " ";
+    steps.push({ text: body.slice(0, 200), state: mark === "x" || mark === "X" ? "done" : mark === ">" || mark === "~" ? "active" : "todo" });
+  }
+  return steps.slice(0, 12);
+}
 
 export type TurnStatus = "running" | "done" | "stopped" | "failed" | "interrupted";
 
@@ -22,6 +40,10 @@ export interface Turn {
   status: TurnStatus;
   blocks: Block[];
   summary?: string;
+  /** The agent's own plan, kept up to date as it works. */
+  plan?: PlanStep[];
+  /** The task was run in "plan only" mode, so no changes are expected. */
+  planOnly?: boolean;
   /** Proposed changes, kept so they can be applied after a restart. */
   changes?: Change[];
   diffs?: FileDiff[];
@@ -85,10 +107,41 @@ export function applyEvent(blocks: Block[], e: AgentEvent): Block[] {
       const d = e.diffs.find((x) => x.path === b.path);
       return d?.patch ? { ...b, patch: d.patch } : b;
     });
-    case "invalid": return [...blocks, { id: bid(), kind: "note", text: `The model's reply could not be used: ${e.error}`, bad: true }];
+    case "invalid": {
+      const text = e.error === "the reply was not a tool call" ? "The model answered in plain text instead of using a tool, so it was asked again."
+        : e.error === "the reply was cut off" ? "The model's reply was cut off, so it was asked to write smaller files."
+        : `The model's tool call was not valid (${e.error}), so it was asked to fix it.`;
+      const last = blocks[blocks.length - 1];
+      if (last && last.kind === "note" && !last.bad && last.text === text) return [...blocks.slice(0, -1), { ...last, count: (last.count ?? 1) + 1 }];
+      return [...blocks, { id: bid(), kind: "note", text }];
+    }
     case "verify": return [...blocks, { id: bid(), kind: "note", text: `Check “${e.command}” ${e.ran ? (e.ok ? "passed" : "failed") : "was not run"}`, bad: e.ran && !e.ok }];
     default: return blocks;
   }
+}
+
+/** Folds one agent event into a turn: the blocks, and the plan when the agent writes or updates it. */
+export function applyTurnEvent(t: Turn, e: AgentEvent): Turn {
+  if (e.type === "tool_call" && e.name === "update_plan" && typeof e.args["steps"] === "string") {
+    const plan = parsePlan(e.args["steps"]);
+    if (plan.length) return { ...t, plan };
+  }
+  return { ...t, blocks: applyEvent(t.blocks, e) };
+}
+
+export type Stage = "planning" | "exploring" | "writing" | "checking" | "researching";
+const STAGE_OF: Record<string, Stage> = { read_file: "exploring", list_files: "exploring", search: "exploring", repo_map: "exploring", write_file: "writing", edit_file: "writing", delete_file: "writing", run_command: "checking", web_search: "researching", fetch_url: "researching", use_tool: "researching" };
+
+/** What the agent is doing now, from what it is actually doing, for a run that gave no plan: the stage and the line to show. */
+export function currentStage(t: Turn): { stage: Stage; label: string; seen: Stage[] } {
+  const tools = t.blocks.filter((b): b is Extract<Block, { kind: "tool" }> => b.kind === "tool");
+  const seen: Stage[] = [];
+  for (const b of tools) { const st = STAGE_OF[b.name]; if (st && !seen.includes(st)) seen.push(st); }
+  const running = [...tools].reverse().find((b) => b.status === "running");
+  if (running) return { stage: STAGE_OF[running.name] ?? "exploring", label: running.label.replace(/^(Read|Listed|Searched|Wrote|Edited|Deleted|Mapped|Ran|Opened|Used)\b/, (w) => ({ Read: "Reading", Listed: "Listing", Searched: "Searching", Wrote: "Writing", Edited: "Editing", Deleted: "Deleting", Mapped: "Mapping", Ran: "Running", Opened: "Opening", Used: "Using" } as Record<string, string>)[w] ?? w), seen };
+  const lastTool = tools[tools.length - 1];
+  if (!lastTool) return { stage: "planning", label: "Planning the change", seen };
+  return { stage: STAGE_OF[lastTool.name] ?? "exploring", label: "Deciding the next step", seen };
 }
 
 export const lastTurn = (s: CodeSession): Turn | undefined => s.turns[s.turns.length - 1];

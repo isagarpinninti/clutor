@@ -3,7 +3,7 @@ import { applyChanges, ConflictError, undoCheckpoint } from "./apply";
 import type { AgentSession } from "./llm";
 import type { McpManager } from "./mcp";
 import { runCodingTask } from "./runner";
-import { applyEvent, reviewable, type CodeSession, type Turn } from "./sessions";
+import { applyTurnEvent, reviewable, type CodeSession, type Turn } from "./sessions";
 
 /**
  * Runs coding tasks, asks for approvals, and applies or undoes changes. It is the one place that does these things, so the desktop screen and a paired phone behave the same:
@@ -56,7 +56,7 @@ export class AgentController {
     if (this.isRunning(sessionId)) throw new Error("a task is already running in this session");
     const task = text.trim();
     if (!task) throw new Error("the task is empty");
-    const turn: Turn = { id: this.d.id(), task, created: Date.now(), status: "running", blocks: [] };
+    const turn: Turn = { id: this.d.id(), task, created: Date.now(), status: "running", blocks: [], ...(o.perm === "plan" ? { planOnly: true } : {}) };
     const ac = new AbortController();
     this.aborts.set(sessionId, ac);
     this.d.change(sessionId, (x) => ({ ...x, title: x.turns.length ? x.title : this.d.titleFrom(task), updated: Date.now(), turns: [...x.turns, turn] }));
@@ -73,14 +73,14 @@ export class AgentController {
         maxSteps: cfg.maxSteps, contextTokens: cfg.contextTokens, ...(this.d.mcp() ? { mcp: this.d.mcp() as McpManager } : {}),
         approve: (info) => this.approve(sessionId, info, o),
         onContext: (n) => this.patch(sessionId, turn.id, (t) => ({ ...t, context: n })),
-        onEvent: (e) => this.patch(sessionId, turn.id, (t) => ({ ...t, blocks: applyEvent(t.blocks, e) })),
+        onEvent: (e) => this.patch(sessionId, turn.id, (t) => applyTurnEvent(t, e)),
       });
       const changes = o.perm === "plan" ? [] : await out.ws.changeSet();
       const diffs = o.perm === "plan" ? [] : out.result.diffs.filter((x) => x.patch || x.status !== "modified");
       this.d.onUsage({ steps: out.result.steps, tokens: out.result.usage.completionTokens });
       this.patch(sessionId, turn.id, (t) => ({
-        ...t, status: out.result.status === "aborted" ? "stopped" : out.result.status === "error" ? "failed" : "done", summary: out.result.summary,
-        usage: { steps: out.result.steps, tokens: out.result.usage.completionTokens }, ...(out.result.error ? { error: out.result.error } : {}), ...(diffs.length ? { changes, diffs } : {}),
+        ...t, status: out.result.status === "aborted" ? "stopped" : out.result.status === "error" || out.result.status === "stuck" ? "failed" : "done", summary: out.result.summary,
+        usage: { steps: out.result.steps, tokens: out.result.usage.completionTokens }, ...(out.result.status === "stuck" ? { error: "The model kept answering in text and did not use the tools, so nothing was changed. Its last answer is shown above." } : out.result.error ? { error: out.result.error } : {}), ...(diffs.length ? { changes, diffs } : {}),
       }));
     } catch (e) {
       this.patch(sessionId, turn.id, (t) => ({ ...t, status: "failed", error: e instanceof Error ? e.message : String(e) }));

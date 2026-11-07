@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { StreamEvent } from "@engine/stream";
 import type { AgentHost } from "../bridge";
 import { applyChanges } from "./apply";
-import { runCodingTask } from "./runner";
+import { replyTokens, runCodingTask } from "./runner";
 
 /** A model that follows a script, one JSON tool call per reply. */
 function scripted(replies: string[]) {
@@ -68,5 +68,14 @@ describe("runCodingTask", () => {
     expect(result.status).toBe("finished");
     expect(asked).toHaveLength(1);
     expect(asked[0]).toMatch(/web/i);
+  });
+});
+
+describe("how long a reply may be", () => {
+  it("allows a quarter of the context, between 1,024 and 8,192 tokens, so a whole file fits in a tool call", () => {
+    expect(replyTokens(undefined)).toBe(1024);
+    expect(replyTokens(4096)).toBe(1024);
+    expect(replyTokens(16384)).toBe(4096);
+    expect(replyTokens(131072)).toBe(8192);
   });
 });

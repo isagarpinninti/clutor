@@ -58,7 +58,7 @@ export class NativeEngine extends EngineSession {
       toolMode: "json",
       chat: async (messages, opts): Promise<ChatResult> => {
         const msgs: ChatMessage[] = messages.map((m) => ({ role: m.role === "system" ? "system" : m.role === "assistant" ? "assistant" : "user", content: m.content ?? "" }));
-        const r = await this.complete(msgs, { thinking: false, temp: 0.2, max: 1024, ...o, ...(opts?.signal ? { signal: opts.signal } : {}) });
+        const r = await this.complete(msgs, { thinking: false, temp: 0.2, max: Math.max(1024, Math.min(8192, Math.floor(this.ready.nCtx / 4))), ...o, ...(opts?.signal ? { signal: opts.signal } : {}) });   // a whole file written into a tool call is long: a cap of 1,024 tokens cut such replies off
         return { content: r.content, toolCalls: [], finishReason: r.finish, usage: { promptTokens: r.promptTokens, completionTokens: r.completionTokens } };
       },
     };

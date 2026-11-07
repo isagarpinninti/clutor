@@ -29,13 +29,16 @@ export interface CodingTask {
   onEvent: (e: AgentEvent) => void;
 }
 
+/** How long one reply of the model may be. A whole file written into a tool call is long: a cap of 1,024 tokens cut such replies off in the middle, so a quarter of the context is allowed (at most 8,192). */
+export function replyTokens(contextTokens?: number): number { return Math.max(1024, Math.min(8192, Math.floor((contextTokens ?? 4096) / 4))); }
+
 /** Runs the agent on a project folder. Nothing in the folder changes: the result carries the proposed changes, which the caller applies or discards. */
 export async function runCodingTask(t: CodingTask): Promise<{ result: AgentResult; ws: ShadowWorkspace }> {
   const ws = new ShadowWorkspace(hostProject(t.host, t.root));
   const external = t.mcp?.external();
   const result = await runAgent({
-    task: t.task, ws, llm: engineLlm(t.session, t.modelName, t.onContext ? { onContext: t.onContext } : {}),
-    maxSteps: t.maxSteps ?? 20, contextChars: Math.max(12_000, Math.min(600_000, Math.round((t.contextTokens ?? 4096) * 2.5))),
+    task: t.task, ws, llm: engineLlm(t.session, t.modelName, { maxTokens: replyTokens(t.contextTokens), ...(t.onContext ? { onContext: t.onContext } : {}) }),
+    ...(t.planOnly ? { planOnly: true } : {}), maxSteps: t.maxSteps ?? 20, contextChars: Math.max(12_000, Math.min(600_000, Math.round((t.contextTokens ?? 4096) * 2.5))),
     approve: t.approve,
     runCommand: async (plan, command) => {
       const r = await t.host.run(t.root, (await ws.overlayEntries()).map(([path, content]) => ({ path, content })), plan.steps.map((s) => s.argv), 120_000);
