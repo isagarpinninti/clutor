@@ -1,5 +1,6 @@
 /* A disk speed measurement done the way the engine reads: positional reads of the model's own file with the operating system's cache kept out of the way where it can be.
  * The planner uses the result instead of an assumed speed, so "how fast could this go" starts from this computer's disk. */
+#define _GNU_SOURCE
 #include "plat.h"
 #include "chat.h"
 #include <time.h>
