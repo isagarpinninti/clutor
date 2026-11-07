@@ -1,10 +1,13 @@
 import { DialogHeader } from "./DialogHeader";
+import { ModelCheckCard } from "./ModelCheckCard";
 import { useEffect, useState } from "react";
 import { bridge, type CatalogItem, type DownloadProgress, type ModelInfo, type SystemInfo } from "../bridge";
 import { fmtBytes } from "../store";
 import { ChipIcon, DownloadIcon, FolderIcon } from "./icons";
 
 interface Props {
+  /** The context window the check assumes (Settings > Models). */
+  contextTokens: number;
   folders: string[];
   onFolder: (path: string) => void;
   system: SystemInfo | undefined;
@@ -13,11 +16,12 @@ interface Props {
   onClose: () => void;
 }
 
-export function ModelDialog({ folders, onFolder, system, current, onPick, onClose }: Props) {
+export function ModelDialog({ contextTokens, folders, onFolder, system, current, onPick, onClose }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
   const [tab, setTab] = useState<"local" | "get">("local");
+  const [checking, setChecking] = useState<string>();
 
   const refresh = (): void => { void bridge.listModels(folders).then(setModels); };
   useEffect(() => { refresh(); }, [folders]);
@@ -49,11 +53,17 @@ export function ModelDialog({ folders, onFolder, system, current, onPick, onClos
           <div className="list">
             {models.length === 0 ? <p className="empty-hint">No models yet. Open “Get a model”, or put a .gguf file in the models folder.</p> : null}
             {models.map((m) => (
-              <button type="button" key={m.path} className={`row${m.path === current ? " active" : ""}`} onClick={() => { onPick(m); onClose(); }}>
-                <ChipIcon />
-                <span className="row-main"><b>{m.name}</b><small>{fmtBytes(m.bytes)} · {fit(m.bytes)}</small></span>
-                {m.path === current ? <span className="badge">Loaded</span> : null}
-              </button>
+              <div key={m.path} className="model-item">
+                <div className={`row split${m.path === current ? " active" : ""}`}>
+                  <button type="button" className="row-pick" onClick={() => { onPick(m); onClose(); }}>
+                    <ChipIcon />
+                    <span className="row-main"><b>{m.name}</b><small>{fmtBytes(m.bytes)} · {fit(m.bytes)}</small></span>
+                    {m.path === current ? <span className="badge">Loaded</span> : null}
+                  </button>
+                  <button type="button" className="btn small ghost" aria-expanded={checking === m.path} onClick={() => setChecking((c) => (c === m.path ? undefined : m.path))}>Will it run?</button>
+                </div>
+                {checking === m.path && system ? <ModelCheckCard model={m} ramBytes={system.ramBytes} contextTokens={contextTokens} /> : null}
+              </div>
             ))}
             <button type="button" className="row ghost" onClick={() => void chooseFolder()}><FolderIcon /><span className="row-main"><b>{folders[0] ? "Change models folder" : "Choose a models folder"}</b><small>{folders[0] ?? "Pick the folder where your .gguf files are"}</small></span></button>
             <button type="button" className="row ghost" onClick={() => void bridge.revealModels()}><FolderIcon /><span className="row-main"><b>Open models folder</b><small>{system?.modelsDir ?? ""}</small></span></button>

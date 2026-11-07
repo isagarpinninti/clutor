@@ -1,5 +1,6 @@
+import { buildGgufHeader, type SyntheticModelSpec } from "@core/gguf/write";
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
-import type { AgentHost, Bridge, RemoteApi, RemoteDevice, RemoteStatus, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
+import type { AgentHost, Bridge, InspectApi, RemoteApi, RemoteDevice, RemoteStatus, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
 /** A browser preview with no engine: models, downloads and replies are simulated so the interface can be developed and tested without the native shell. */
 
@@ -136,11 +137,22 @@ if (typeof window !== "undefined") {
   };
 }
 
+/** The preview has no files: a pretend model file whose header says it is a large mixture-of-experts model, and a pretend disk. */
+const SPEC_SMALL: SyntheticModelSpec = { arch: "llama", name: "Llama 3.2 1B (preview)", layers: 16, embedding: 2048, heads: 32, kvHeads: 8, contextLength: 131072, expertCount: 0, expertsUsed: 0, expertFfn: 0, denseFfn: 8192, vocab: 128256 };
+const SPEC_BIG: SyntheticModelSpec = { arch: "qwen3moe", name: "Qwen3 235B-A22B (preview)", layers: 94, embedding: 4096, heads: 64, kvHeads: 4, contextLength: 262144, expertCount: 128, expertsUsed: 8, expertFfn: 1536, denseFfn: 0, vocab: 151936, sharedExperts: 0, quantType: 12 };
+const specFor = (path: string): SyntheticModelSpec => (/qwen/i.test(path) ? SPEC_BIG : SPEC_SMALL);
+const mockInspect: InspectApi = {
+  async size(path) { const b = buildGgufHeader(specFor(path)); return b.dataOffset + b.dataSize; },
+  async read(path, offset, length) { const { header } = buildGgufHeader(specFor(path)); return header.subarray(offset, Math.min(header.length, offset + length)); },
+  async diskBench() { await new Promise((r) => setTimeout(r, 600)); return { sequentialBytesPerSec: 2.4e9, scatteredBytesPerSec: 1.1e9, seconds: 4 }; },
+};
+
 export const mockBridge: Bridge = {
   native: false,
   host: mockHost,
   web: mockWeb,
   remote,
+  inspect: mockInspect,
   async system(): Promise<SystemInfo> { return { os: "preview", arch: "browser", ramBytes: 16 * 2 ** 30, cores: 8, modelsDir: "~/.clutor/models" }; },
   async listModels(folders) { return folders?.length ? [...MODELS, { path: `${folders[0]}/Custom-Model-7B-Q4_K_M.gguf`, name: "Custom-Model-7B-Q4_K_M", bytes: 4_400_000_000 }] : MODELS; },
   async catalog() { return CATALOG; },

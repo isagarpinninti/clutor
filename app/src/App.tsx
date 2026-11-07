@@ -382,7 +382,7 @@ export function App() {
       </main>
       </div>
       {settings.onboarded ? null : <Onboarding onDone={(name) => setSettings((s) => ({ ...s, onboarded: true, ...(name ? { userName: name } : {}) }))} />}
-      {dialog === "models" ? <ModelDialog folders={folders} onFolder={(p) => setSettings((s) => ({ ...s, modelsDir: p }))} system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}
+      {dialog === "models" ? <ModelDialog contextTokens={settings.ctx} folders={folders} onFolder={(p) => setSettings((s) => ({ ...s, modelsDir: p }))} system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
       {dialog === "usage" ? <UsageDialog state={state} ramBytes={system?.ramBytes} usage={usage} agent={agentUsage} {...(lastAgentContext ? { agentContext: { used: lastAgentContext, max: state.ready?.nCtx ?? settings.ctx } } : {})} jobs={{ active: activeJobs, done: jobList.filter((j) => j.status === "done").length }} onClose={() => setDialog(null)} /> : null}
       {dialog === "mcp" ? <McpDialog servers={servers} manager={mcp} onChange={setServers} onClose={() => setDialog(null)} /> : null}

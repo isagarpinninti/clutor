@@ -36,6 +36,15 @@ export interface RemoteApi {
   onClose(cb: (client: number) => void): Promise<() => void>;
 }
 
+export interface DiskSpeed { sequentialBytesPerSec: number; scatteredBytesPerSec: number; seconds: number }
+/** Looking at a model file without loading it. */
+export interface InspectApi {
+  size(path: string): Promise<number>;
+  read(path: string, offset: number, length: number): Promise<Uint8Array>;
+  /** Times reading the file (sequential and scattered), about `seconds` in all. */
+  diskBench(path: string, seconds: number): Promise<DiskSpeed>;
+}
+
 export interface RunOutcome { exit_code: number | null; output: string; timed_out: boolean; duration_ms: number }
 export interface McpLaunch { command: string; args: string[]; env: Record<string, string>; cwd?: string }
 
@@ -69,6 +78,7 @@ export interface Bridge {
   readonly host: AgentHost;
   readonly web: WebApi;
   readonly remote: RemoteApi;
+  readonly inspect: InspectApi;
   system(): Promise<SystemInfo>;
   /** The models in the app's folder, the command line's, and any folders you chose. */
   listModels(folders?: string[]): Promise<ModelInfo[]>;

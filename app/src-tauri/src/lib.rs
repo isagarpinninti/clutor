@@ -1,5 +1,6 @@
 mod engine;
 mod models;
+mod inspect;
 mod project;
 mod remote;
 mod web;
@@ -23,6 +24,9 @@ pub fn run() {
             models::model_catalog,
             models::reveal_models,
             models::download_model,
+            inspect::model_size,
+            inspect::model_read,
+            inspect::disk_bench,
             project::project_list,
             project::project_read,
             project::project_write,

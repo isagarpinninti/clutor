@@ -4,7 +4,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { AgentHost, Bridge, RemoteApi, RemoteDevice, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
+import type { AgentHost, Bridge, DiskSpeed, InspectApi, RemoteApi, RemoteDevice, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
 /** The engine runs inside this process (src-tauri links it); its events arrive as Tauri events and its operations go out as commands. */
 class TauriTransport implements Transport {
@@ -80,11 +80,24 @@ const remote: RemoteApi = {
   onClose: (cb) => listen<{ client: number }>("remote-close", (e) => cb(e.payload.client)),
 };
 
+const inspect: InspectApi = {
+  size: (path) => invoke("model_size", { path }),
+  async read(path, offset, length) {
+    const b64 = await invoke<string>("model_read", { path, offset, length });
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  },
+  diskBench: (path, seconds) => invoke<DiskSpeed>("disk_bench", { path, seconds }),
+};
+
 export const tauriBridge: Bridge = {
   native: true,
   host,
   web,
   remote,
+  inspect,
   system: () => invoke<SystemInfo>("system_info"),
   listModels: (folders) => invoke<ModelInfo[]>("list_models", { folders: folders ?? [] }),
   catalog: () => invoke<CatalogItem[]>("model_catalog"),

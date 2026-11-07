@@ -16,7 +16,7 @@ ifeq ($(OS),Windows_NT)
 endif
 # BUILD can point somewhere writable when the source sits in a read-only installed package: make BUILD=$HOME/.clutor/bin
 BUILD ?= build
-SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/quant.c src/meta.c src/xs.c src/forward.c src/tokenizer.c src/stream.c src/chat.c
+SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/quant.c src/meta.c src/xs.c src/forward.c src/tokenizer.c src/stream.c src/chat.c src/bench.c
 BIN = $(BUILD)/clutor-engine$(EXE)
 
 all: $(BIN)
