@@ -695,16 +695,17 @@ body, .app { -webkit-font-smoothing: antialiased; }
 :root { --ease: cubic-bezier(.2, .7, .2, 1); }
 html, body, .app, .main { background: var(--bg); }
 
-/* the mark in motion: solid, one colour; the segments take turns */
+/* the mark in motion: solid, one colour; the cells light up in turn */
 .logo { display: block; flex: none; color: var(--accent); }
 .logo.tile { color: #fff; }
-.logo-spark { transform-box: fill-box; transform-origin: center; }
-.logo.thinking .logo-seg { animation: seg-chase 1.5s linear infinite; animation-delay: calc(var(--i) * -.16s); }
-.logo.thinking .logo-spark, .logo.speaking .logo-spark { animation: spark-beat 1.2s ease-in-out infinite; }
-.logo.speaking .logo-seg { animation: seg-breathe 1.7s ease-in-out infinite; animation-delay: calc(var(--i) * -.09s); }
-@keyframes seg-chase { 0%, 100% { opacity: .28; } 12% { opacity: 1; } 42% { opacity: .28; } }
-@keyframes seg-breathe { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
-@keyframes spark-beat { 0%, 100% { opacity: .55; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.2); } }
+.logo-core { opacity: .24; transition: opacity .3s; }
+.logo.thinking .logo-cell { animation: cell-chase 1.6s ease-in-out infinite; animation-delay: calc(var(--i) * -.32s); }
+.logo.thinking .logo-core { animation: core-beat 1.6s ease-in-out infinite; }
+.logo.speaking .logo-cell { animation: cell-breathe 1.8s ease-in-out infinite; animation-delay: calc(var(--i) * -.1s); }
+.logo.speaking .logo-core { opacity: .5; }
+@keyframes cell-chase { 0%, 100% { opacity: .26; } 14% { opacity: 1; } 40% { opacity: .26; } }
+@keyframes cell-breathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+@keyframes core-beat { 0%, 100% { opacity: .18; } 50% { opacity: .4; } }
 @keyframes text-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
 
 /* sidebar */
@@ -781,7 +782,7 @@ html, body, .app, .main { background: var(--bg); }
 
 @media (prefers-reduced-motion: reduce) {
   .hello, .msg, .suggestion, .tagline { animation: none !important; }
-  .logo .logo-seg, .logo .logo-spark { animation: none !important; }
+  .logo .logo-cell, .logo .logo-core { animation: none !important; }
   .round.stop::before { animation-duration: 3s !important; }
 }
 

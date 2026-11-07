@@ -365,7 +365,7 @@ export function App() {
             </div>
           ) : (
             <div className="home">
-              <div className="hello"><Logo size={48} state={state.status === "loading" || busy ? "thinking" : "idle"} />{state.status === "loading" ? <Thinking label="Loading your model" orb={false} /> : <h2>{greeting(settings.userName)}</h2>}</div>
+              <div className="hello"><Logo size={56} state={state.status === "loading" || busy ? "thinking" : "idle"} />{state.status === "loading" ? <Thinking label="Loading your model" orb={false} /> : <h2>{greeting(settings.userName)}</h2>}</div>
               {state.status === "loading" ? null : <p className="tagline">What would you like to think through?</p>}
               {composer(true)}
               {state.status === "error" ? <p className="home-note err">{state.error}</p> : null}
