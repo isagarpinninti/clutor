@@ -2,7 +2,7 @@
 #include "quant.h"
 #include "kernel.h"
 #include <math.h>
-#include <pthread.h>
+#include "cl_thread.h"
 #include <stdlib.h>
 #include <string.h>
 #include "plat.h"

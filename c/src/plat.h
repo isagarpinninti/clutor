@@ -93,6 +93,52 @@ static inline void *cl_memmem(const void *h, size_t hl, const void *nd, size_t n
   return NULL;
 }
 
+
+/* Windows built with MSVC or clang-cl has no pthreads. The engine uses a small part of them (mutexes, condition variables, creating and joining threads) and a monotonic
+ * clock, so that part is provided here on the Win32 API. MinGW-w64 ships its own pthread.h and uses that. */
+#if !defined(__MINGW32__)
+#include <time.h>
+#define CL_WIN_THREADS 1
+typedef SRWLOCK pthread_mutex_t;
+typedef CONDITION_VARIABLE pthread_cond_t;
+typedef HANDLE pthread_t;
+typedef int pthread_mutexattr_t;
+typedef int pthread_condattr_t;
+typedef int pthread_attr_t;
+static inline int pthread_mutex_init(pthread_mutex_t *m, const pthread_mutexattr_t *a) { (void)a; InitializeSRWLock(m); return 0; }
+static inline int pthread_mutex_lock(pthread_mutex_t *m) { AcquireSRWLockExclusive(m); return 0; }
+static inline int pthread_mutex_unlock(pthread_mutex_t *m) { ReleaseSRWLockExclusive(m); return 0; }
+static inline int pthread_cond_init(pthread_cond_t *c, const pthread_condattr_t *a) { (void)a; InitializeConditionVariable(c); return 0; }
+static inline int pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) { SleepConditionVariableSRW(c, m, INFINITE, 0); return 0; }
+static inline int pthread_cond_signal(pthread_cond_t *c) { WakeConditionVariable(c); return 0; }
+static inline int pthread_cond_broadcast(pthread_cond_t *c) { WakeAllConditionVariable(c); return 0; }
+typedef struct { void *(*fn)(void *); void *arg; } cl_thread_start;
+static DWORD WINAPI cl_thread_main(LPVOID p) { cl_thread_start t = *(cl_thread_start *)p; free(p); t.fn(t.arg); return 0; }
+static inline int pthread_create(pthread_t *t, const pthread_attr_t *a, void *(*fn)(void *), void *arg) {
+  (void)a;
+  cl_thread_start *c = (cl_thread_start *)malloc(sizeof *c);
+  if (!c) return 1;
+  c->fn = fn; c->arg = arg;
+  HANDLE h = CreateThread(NULL, 0, cl_thread_main, c, 0, NULL);
+  if (!h) { free(c); return 1; }
+  *t = h;
+  return 0;
+}
+static inline int pthread_join(pthread_t t, void **ret) { (void)ret; WaitForSingleObject(t, INFINITE); CloseHandle(t); return 0; }
+static inline int pthread_detach(pthread_t t) { CloseHandle(t); return 0; }
+#ifndef CLOCK_MONOTONIC
+#define CLOCK_MONOTONIC 1
+#endif
+static inline int clock_gettime(int id, struct timespec *ts) {
+  (void)id;
+  LARGE_INTEGER f, c;
+  QueryPerformanceFrequency(&f); QueryPerformanceCounter(&c);
+  ts->tv_sec = (time_t)(c.QuadPart / f.QuadPart);
+  ts->tv_nsec = (long)((c.QuadPart % f.QuadPart) * 1000000000LL / f.QuadPart);
+  return 0;
+}
+#endif
+
 #else   /* ---------------------------------------------------------------- POSIX: macOS, Linux, Android */
 #define _GNU_SOURCE
 #include <fcntl.h>

@@ -144,8 +144,11 @@ fn scratch_dir() -> Result<PathBuf, String> {
 fn kill_group(child: &Child) {
     if let Some(pid) = child.id() { unsafe { libc::kill(-(pid as i32), libc::SIGKILL); } }
 }
+/// On Windows a command runs under cmd.exe, so the whole process tree is ended, not only cmd.
 #[cfg(not(unix))]
-fn kill_group(_child: &Child) {}
+fn kill_group(child: &Child) {
+    if let Some(pid) = child.id() { let _ = std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).stdout(Stdio::null()).stderr(Stdio::null()).status(); }
+}
 
 /// Runs the steps (already checked by the command policy in the web view) in a scratch copy of the project that includes the agent's unapplied changes, with a stripped
 /// environment and a time limit. The copy is deleted afterwards. This isolates the project and the environment, not the machine.
@@ -174,6 +177,10 @@ async fn run_in(root: &Path, dir: &Path, overlay: Vec<Overlay>, steps: Vec<Vec<S
         let Some(program) = step.first() else { continue };
         #[cfg(windows)]
         if step.iter().any(|a| a.chars().any(|c| "&|<>^%\"!`".contains(c))) { return Ok((None, "an argument contains a character that is not allowed on Windows".into(), false)); }
+        // Windows programs such as npm are .cmd files, which only cmd.exe can start; the arguments were checked above for anything cmd.exe would interpret.
+        #[cfg(windows)]
+        let mut cmd = { let mut c = Command::new("cmd"); c.arg("/C").arg(program); c };
+        #[cfg(not(windows))]
         let mut cmd = Command::new(program);
         cmd.args(&step[1..]).current_dir(dir).env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -318,7 +325,6 @@ pub async fn term_run(app: AppHandle, state: State<'_, TermState>, id: String, r
 #[tauri::command]
 pub async fn term_kill(state: State<'_, TermState>, id: String) -> Result<(), String> {
     if let Some(c) = state.0.lock().await.get_mut(&id) {
-        #[cfg(unix)]
         kill_group(c);
         let _ = c.start_kill();
     }
@@ -432,6 +438,25 @@ mod tests {
         assert_eq!(r.exit_code, Some(0));
         assert_eq!(r.output.trim(), "new");
         assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "old");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn run_sees_unapplied_changes_and_leaves_the_project_alone_on_windows() {
+        let root = temp("run-win");
+        std::fs::write(root.join("a.txt"), "old").unwrap();
+        let r = project_run(root.to_string_lossy().to_string(), vec![Overlay { path: "a.txt".into(), content: Some("new".into()) }], vec![vec!["type".into(), "a.txt".into()]], 20_000).await.unwrap();
+        assert_eq!(r.exit_code, Some(0), "{}", r.output);
+        assert_eq!(r.output.trim(), "new");
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "old");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn run_stops_at_the_time_limit_on_windows() {
+        let root = temp("limit-win");
+        let r = project_run(root.to_string_lossy().to_string(), vec![], vec![vec!["ping".into(), "-n".into(), "30".into(), "127.0.0.1".into()]], 1500).await.unwrap();
+        assert!(r.timed_out);
     }
 
     #[cfg(unix)]
