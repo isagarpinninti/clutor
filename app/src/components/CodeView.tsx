@@ -10,7 +10,7 @@ import { SidePanel, type PanelTab } from "./SidePanel";
 import { Alert } from "./Alert";
 import { RunProgress } from "./RunProgress";
 import { ToolBlock } from "./ToolBlock";
-import { FolderIcon, SendIcon, StopIcon } from "./icons";
+import { CheckIcon, CopyIcon, EditIcon, FolderIcon, RedoIcon, SendIcon, StopIcon } from "./icons";
 
 export type { Permission };
 const PERMISSIONS: ModeOption<Permission>[] = [
@@ -49,6 +49,10 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
   const [error, setError] = useState<string>();
   const [focusFile, setFocusFile] = useState<string>();
   const [applying, setApplying] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [copied, setCopied] = useState<string | null>(null);
+  const copyTask = (id: string, text: string): void => { void navigator.clipboard?.writeText(text).then(() => { setCopied(id); setTimeout(() => setCopied((c) => (c === id ? null : c)), 1500); }); };
   const end = useRef<HTMLDivElement>(null);
   const last = active ? lastTurn(active) : undefined;
   const running = last?.status === "running";
@@ -104,7 +108,24 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
             {active.turns.length === 0 ? <p className="empty-hint">{ready ? `Describe a change in ${folderName(active.root)}.` : "Load a model first, then describe a change."}</p> : null}
             {active.turns.map((t) => (
               <section key={t.id} className="turn">
-                <div className="msg user"><div className="prompt">{t.task}</div></div>
+                <div className="msg user">
+                  {editing === t.id ? (
+                    <div className="edit-box">
+                      <textarea value={draft} autoFocus rows={Math.min(8, Math.max(2, draft.split("\n").length))} aria-label="Edit your task" onChange={(e) => setDraft(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (draft.trim()) { setEditing(null); retry(draft.trim()); } } if (e.key === "Escape") setEditing(null); }} />
+                      <div className="edit-actions"><button type="button" className="btn small ghost" onClick={() => setEditing(null)}>Cancel</button><button type="button" className="btn small" disabled={!draft.trim()} onClick={() => { setEditing(null); retry(draft.trim()); }}>Save and run</button></div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="prompt">{t.task}</div>
+                      <div className="msg-actions" role="toolbar" aria-label="Task actions">
+                        <button type="button" className="icon-btn tip" data-tip={copied === t.id ? "Copied" : "Copy"} onClick={() => copyTask(t.id, t.task)} aria-label="Copy the task">{copied === t.id ? <CheckIcon /> : <CopyIcon />}</button>
+                        <button type="button" className="icon-btn tip" data-tip="Edit" disabled={running || !ready} onClick={() => { setDraft(t.task); setEditing(t.id); }} aria-label="Edit the task"><EditIcon /></button>
+                        <button type="button" className="icon-btn tip" data-tip="Redo" disabled={running || !ready} onClick={() => retry(t.task)} aria-label="Run this task again"><RedoIcon /></button>
+                      </div>
+                    </>
+                  )}
+                </div>
                 <div className="turn-body">
                   {t.plan?.length ? <RunProgress turn={t} /> : null}
                   {t.blocks.map((b) => b.kind === "text" ? <p key={b.id} className="turn-text">{b.text}</p>
