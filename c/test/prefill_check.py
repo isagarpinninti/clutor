@@ -13,6 +13,8 @@ import sys
 
 ARCHS = ["olmoe", "qwen3moe", "granitemoe", "qwen2", "llama", "qwen35"]
 BATCHES = ["64", "7", "1"]
+LONG_BATCHES = ["256", "100"]   # a long prompt: a streamed run takes batches up to 256 tokens, so these cross the 64-token size the short prompt cannot reach
+LONG = " ".join(["the cat is in the room and a rat saw the hat on a mat"] * 14)
 MODES = [[], ["--cache-mb", "1"], ["--cache-mb", "1", "--smart", "2,12,0.015"]]
 
 
@@ -24,10 +26,10 @@ def main() -> int:
         if not os.path.exists(model):
             print(f"missing {model}")
             return 2
-        for batch in BATCHES:
+        for text, batch in [(prompt, b) for b in BATCHES] + [(LONG, b) for b in LONG_BATCHES]:
             for mode in MODES:
                 env = dict(os.environ, CLUTOR_PS_B=batch)
-                r = subprocess.run([engine, "prefillcheck", model, prompt, "--repeat", "2", *mode], capture_output=True, text=True, env=env)
+                r = subprocess.run([engine, "prefillcheck", model, text, "--repeat", "1" if text is LONG else "2", *mode], capture_output=True, text=True, env=env)
                 if "this model is dense" in r.stderr:   # a dense model has no experts to stream or substitute: the engine refuses these flags, by design
                     continue
                 n += 1

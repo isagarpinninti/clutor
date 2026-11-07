@@ -275,7 +275,7 @@ void cl_fwd_close(cl_fwd *f) {
     free(f->pf_x); free(f->pf_xn); free(f->pf_qkv); free(f->pf_z); free(f->pf_ab); free(f->pf_qg); free(f->pf_k); free(f->pf_v); free(f->pf_att); free(f->pf_hd); free(f->pf_hg); free(f->pf_hu);
   }
   if (f->ps_ready) {
-    for (int i = 0; i < CL_PS_B; i++) { cl_xq_free(&f->ps_xqe[i]); cl_xq_free(&f->ps_xqq[i]); cl_xq_free(&f->ps_xqff[i]); }
+    for (int i = 0; i < f->ps_cap; i++) { cl_xq_free(&f->ps_xqe[i]); cl_xq_free(&f->ps_xqq[i]); cl_xq_free(&f->ps_xqff[i]); }
     free(f->ps_xqe); free(f->ps_xqq); free(f->ps_xqff);
     free(f->ps_x); free(f->ps_xn); free(f->ps_xg); free(f->ps_q); free(f->ps_k); free(f->ps_v); free(f->ps_att); free(f->ps_hd); free(f->ps_moe); free(f->ps_hg); free(f->ps_hu); free(f->ps_wt); free(f->ps_hde); free(f->ps_sel);
   }
@@ -669,9 +669,10 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
 
 /* ---- Prompt processing for the plain transformer architectures (llama, qwen2, olmoe, qwen3moe, granitemoe) ---------------------------------------------------------- */
 
+_Static_assert(CL_PS_B <= CL_MV_MAX, "a prompt batch must fit in one batched product");
 static int ps_alloc(cl_fwd *f) {
   if (f->ps_ready) return 0;
-  const size_t B = CL_PS_B, E = (size_t)f->n_embd, NQ = (size_t)f->n_q, KW = (size_t)f->n_kvw, FF = (size_t)f->n_ff_exp;
+  const size_t B = f->xs ? CL_PS_B : 64, E = (size_t)f->n_embd, NQ = (size_t)f->n_q, KW = (size_t)f->n_kvw, FF = (size_t)f->n_ff_exp;
   f->ps_x = calloc(B * E, 4); f->ps_xn = calloc(B * E, 4); f->ps_xg = calloc(B * E, 4); f->ps_hd = calloc(B * E, 4); f->ps_moe = calloc(B * E, 4); f->ps_hde = calloc(B * E, 4);
   f->ps_q = calloc(B * NQ, 4); f->ps_att = calloc(B * NQ, 4); f->ps_k = calloc(B * KW, 4); f->ps_v = calloc(B * KW, 4);
   f->ps_hg = calloc(B * FF, 4); f->ps_hu = calloc(B * FF, 4);
@@ -680,6 +681,7 @@ static int ps_alloc(cl_fwd *f) {
   int ok = f->ps_x && f->ps_xn && f->ps_xg && f->ps_hd && f->ps_moe && f->ps_hde && f->ps_q && f->ps_att && f->ps_k && f->ps_v && f->ps_hg && f->ps_hu && f->ps_sel && f->ps_wt && f->ps_xqe && f->ps_xqq && f->ps_xqff;
   for (size_t i = 0; ok && i < B; i++) ok = cl_xq_init(&f->ps_xqe[i], f->n_embd) && cl_xq_init(&f->ps_xqq[i], f->n_q) && cl_xq_init(&f->ps_xqff[i], f->n_ff_exp);
   if (!ok) return 1;
+  f->ps_cap = (int)B;
   f->ps_ready = 1;
   return 0;
 }
@@ -761,24 +763,31 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
     /* then each chosen expert once, over the tokens that chose it, a few at a time so the store never holds more than a token's worth of requests */
     int todo[4096], n_todo = 0;
     { char seen[4096] = {0}; for (int b = 0; b < nb; b++) for (int k = 0; k < NU; k++) { int e = f->ps_sel[(size_t)b * NU + k]; if (!seen[e]) { seen[e] = 1; todo[n_todo++] = e; } } }
+    /* Reads run one group ahead of the compute when the cache has room for two groups (and a few spare slots) at once, so the disk works while the cores multiply. */
+    int hnd[4096] = {0}, issued = 0;
+    const int look = f->xs && !getenv("CLUTOR_NO_LOOKAHEAD") && cl_xs_cache_slots(f->xs) >= (uint32_t)(3 * NU);   /* CLUTOR_NO_LOOKAHEAD=1: wait for each group before asking for the next (for comparing) */
     for (int g0 = 0; g0 < n_todo; g0 += NU) {
       const int g1 = g0 + NU < n_todo ? g0 + NU : n_todo;
-      int hnd[64] = {0};
-      const uint8_t *P[64] = {0};
       if (f->xs) {
-        for (int pass = 0; pass < 2; pass++) for (int i = g0; i < g1; i++) { int here = cl_xs_resident(f->xs, l, todo[i]); if ((pass == 0) == (here != 0)) hnd[i - g0] = cl_xs_request(f->xs, l, todo[i]); }
+        const int want = look ? (g1 + NU < n_todo ? g1 + NU : n_todo) : g1;
+        while (issued < want) {   /* resident experts first, so they are pinned before a miss can evict them */
+          const int h1 = issued + NU < n_todo ? issued + NU : n_todo;
+          for (int pass = 0; pass < 2; pass++) for (int i = issued; i < h1; i++) { int here = cl_xs_resident(f->xs, l, todo[i]); if ((pass == 0) == (here != 0)) hnd[i] = cl_xs_request(f->xs, l, todo[i]); }
+          issued = h1;
+        }
       }
       for (int i = g0; i < g1; i++) {
         const int e = todo[i];
+        const uint8_t *Pi = NULL;
         if (f->xs) {
-          P[i - g0] = cl_xs_wait(f->xs, hnd[i - g0]);
-          if (!P[i - g0]) { snprintf(err, errlen, "reading expert %d of layer %d from disk failed", e, l); for (int j = i - g0; j < g1 - g0; j++) cl_xs_release(f->xs, hnd[j]); return 1; }
+          Pi = cl_xs_wait(f->xs, hnd[i]);
+          if (!Pi) { snprintf(err, errlen, "reading expert %d of layer %d from disk failed", e, l); for (int j = i; j < issued; j++) cl_xs_release(f->xs, hnd[j]); return 1; }
         }
         /* the tokens that chose this expert, with their weights */
         int who[CL_PS_B]; float wgt[CL_PS_B]; int ni = 0;
         for (int b = 0; b < nb; b++) for (int k = 0; k < NU; k++) if (f->ps_sel[(size_t)b * NU + k] == e) { who[ni] = b; wgt[ni] = f->ps_wt[(size_t)b * NU + k]; ni++; break; }
-        const uint8_t *gp = f->xs ? P[i - g0] : y->gate.p + (size_t)e * y->gate_slab, *up = f->xs ? P[i - g0] + y->gate_slab : y->up.p + (size_t)e * y->up_slab;
-        const uint8_t *dp = f->xs ? P[i - g0] + y->gate_slab + y->up_slab : y->down.p + (size_t)e * y->down_slab;
+        const uint8_t *gp = f->xs ? Pi : y->gate.p + (size_t)e * y->gate_slab, *up = f->xs ? Pi + y->gate_slab : y->up.p + (size_t)e * y->up_slab;
+        const uint8_t *dp = f->xs ? Pi + y->gate_slab + y->up_slab : y->down.p + (size_t)e * y->down_slab;
         cl_xq sub[CL_PS_B];
         for (int t = 0; t < ni; t++) { sub[t] = f->ps_xqe[who[t]]; memcpy(f->ps_xg + (size_t)t * E, XN + (size_t)who[t] * E, (size_t)E * 4); }
         float *HG = f->ps_hg, *HU = f->ps_hu;
@@ -786,7 +795,7 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
         for (int t = 0; t < ni; t++) { float *hg = HG + (size_t)t * FF, *hu = HU + (size_t)t * FF; for (int q = 0; q < FF; q++) hg[q] = hg[q] / (1.0f + expf(-hg[q])) * hu[q]; cl_xq_quantize(&f->ps_xqff[t], hg); }
         { cl_mv j = {y->down.type, dp, E, FF, HG, f->ps_xqff, f->ps_hde, ni, (size_t)FF, (size_t)E}; cl_matvec_batch(&j, 1); }
         for (int t = 0; t < ni; t++) { float *m = f->ps_moe + (size_t)who[t] * E; const float *d = f->ps_hde + (size_t)t * E; for (int q = 0; q < E; q++) m[q] += wgt[t] * d[q]; }
-        if (f->xs) cl_xs_release(f->xs, hnd[i - g0]);
+        if (f->xs) cl_xs_release(f->xs, hnd[i]);
       }
     }
     for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->resid_scale * f->ps_moe[i];
@@ -813,8 +822,8 @@ int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err
       return 0;
     }
     /* CLUTOR_PS_B=k (1..CL_PS_B) shrinks the batch, so the tests can cross many batch boundaries with short prompts */
-    int cap = CL_PS_B;
-    { const char *e = getenv("CLUTOR_PS_B"); if (e && atoi(e) >= 1 && atoi(e) < CL_PS_B) cap = atoi(e); }
+    int cap = f->ps_cap;
+    { const char *e = getenv("CLUTOR_PS_B"); if (e && atoi(e) >= 1 && atoi(e) < f->ps_cap) cap = atoi(e); }
     for (int i = 0; i < n; i += cap) { int nb = n - i < cap ? n - i : cap; if (run_std(f, tokens + i, nb, i + nb == n ? logits : NULL, err, errlen)) return 1; }
     return 0;
   }

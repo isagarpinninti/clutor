@@ -26,6 +26,8 @@ void cl_xq_free(cl_xq *q);
 void cl_xq_quantize(cl_xq *q, const float *x);
 
 /* One matrix-vector product: out[r] = dot(row r of W, x). K-quant weights use `xq` and integer arithmetic; other types use the float `xf`. */
+/* The most tokens one batched product can hold (cl_mv.nb). */
+#define CL_MV_MAX 256
 typedef struct { uint32_t type; const void *w; int rows, cols; const float *xf; const cl_xq *xq; float *out;
   /* Several inputs against the same weights (prompt processing): nb > 1 makes `xq` an array of nb vectors, `xf` nb vectors spaced xf_stride floats apart, and
    * `out` nb results spaced out_stride floats apart. Each weight row is read once and multiplied with all nb inputs, so the weights are streamed once per batch. */

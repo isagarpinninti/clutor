@@ -13,7 +13,7 @@ import json, math, random, struct, subprocess, sys
 # Two tiny architectures. olmoe: full-width QK-norm, equal head counts, raw softmax weights. qwen3moe: grouped-query attention, head_dim larger than
 # embedding / heads, per-head QK-norm with one shared weight, and chosen weights renormalised to sum to 1.
 E, FF, NEXP, USED, LAYERS = 256, 256, 8, 2, 2
-ARCH, HEADS, KVH, HD, PRE, EPS, THETA, CTX = "olmoe", 4, 4, 64, "olmo", 1e-5, 10000.0, 64
+ARCH, HEADS, KVH, HD, PRE, EPS, THETA, CTX = "olmoe", 4, 4, 64, "olmo", 1e-5, 10000.0, 512
 NQ = NKV = E
 QKPH = NORMTOP = False
 QKMODE, ROPEPAIRS, ATTN_SCALE, EMB_SCALE, RES_SCALE, LOGIT_SCALE = 1, False, None, 1.0, 1.0, 1.0   # QKMODE: 0 none, 1 whole vector, 2 per head

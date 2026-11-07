@@ -277,9 +277,11 @@ int cl_chat_run(cl_chat *c, const char *line) {
       flush_event(c); free(ids); free(text); goto done;
     }
     double t0 = now_s();
+    cl_xs_stats a0 = f->xs ? cl_xs_get_stats(f->xs) : (cl_xs_stats){0};
     int fed = 0, cut = 0;
     while (fed < n) {
-      int nb = n - fed < CL_PF_B ? n - fed : CL_PF_B;
+      const int piece = f->xs && !f->hybrid ? CL_PS_B : CL_PF_B;   /* streamed experts: a bigger piece shares each disk read among more tokens */
+      int nb = n - fed < piece ? n - fed : piece;
       if (cl_fwd_prefill(f, ids + fed, nb, fed + nb == n ? c->logits : NULL, err, sizeof err)) { ev_error(c, err); c->have_logits = 0; cut = 1; break; }
       for (int i = 0; i < nb; i++) c->hist[c->nhist++] = ids[fed + i];
       fed += nb;
@@ -289,7 +291,13 @@ int cl_chat_run(cl_chat *c, const char *line) {
       }
     }
     c->have_logits = !cut && fed > 0;
-    ob_fmt(&c->out, "{\"ev\":\"appended\",\"tokens\":%d,\"requested\":%d,\"pos\":%d,\"seconds\":%.3f,\"cancelled\":%s}", fed, n, f->pos, now_s() - t0, cut ? "true" : "false");
+    ob_fmt(&c->out, "{\"ev\":\"appended\",\"tokens\":%d,\"requested\":%d,\"pos\":%d,\"seconds\":%.3f,\"cancelled\":%s", fed, n, f->pos, now_s() - t0, cut ? "true" : "false");
+    if (f->xs) {   /* what the prompt cost in disk reads: the hit rate, the bytes read, and how long the compute thread sat waiting for them */
+      cl_xs_stats a1 = cl_xs_get_stats(f->xs);
+      uint64_t acc = a1.accesses - a0.accesses, hit = a1.hits - a0.hits;
+      ob_fmt(&c->out, ",\"cache\":{\"hitRate\":%.4f,\"gbRead\":%.4f,\"waitSeconds\":%.3f}", acc ? (double)hit / (double)acc : 0.0, (double)((a1.demand_bytes + a1.prefetch_bytes) - (a0.demand_bytes + a0.prefetch_bytes)) / 1e9, (double)(a1.wait_ns - a0.wait_ns) / 1e9);
+    }
+    ob_put(&c->out, "}", 1);
     flush_event(c);
     free(ids); free(text);
   } else if (!strcmp(op, "generate")) {

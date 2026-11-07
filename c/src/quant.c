@@ -456,7 +456,7 @@ static int float_math(void) {
 static void do_rows(const cl_mv *j, int r0, int r1) {
   uint32_t t = j->type;
   const cl_xq *xq = float_math() ? NULL : j->xq;
-  const int nb = j->nb > 1 ? (j->nb > 64 ? 64 : j->nb) : 1;
+  const int nb = j->nb > 1 ? (j->nb > CL_MV_MAX ? CL_MV_MAX : j->nb) : 1;   /* callers never ask for more (forward.c asserts it); the clamp only keeps a bad batch from overrunning acc[] */
   uint64_t rb = cl_row_bytes(t, (uint64_t)j->cols);
   const uint8_t *w = j->w;
   float *out = j->out;
@@ -465,7 +465,7 @@ static void do_rows(const cl_mv *j, int r0, int r1) {
   if (nb > 1 && xq && (t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K)) {
     /* The batch is walked in tiles of CL_TILE tokens: a weight row is re-read for each tile (from the processor's cache, it is only a few KB), but the tile's activations stay in
      * the fastest cache, which is where a large batch used to lose most of its speed. */
-    float sums[64];
+    float sums[CL_TILE];
     for (int b0 = 0; b0 < nb; b0 += CL_TILE) {
       const int nt = nb - b0 < CL_TILE ? nb - b0 : CL_TILE;
       for (int r = r0; r < r1; r++) {
@@ -484,7 +484,7 @@ static void do_rows(const cl_mv *j, int r0, int r1) {
   else if (t == CL_T_Q6_K && xq) for (int r = r0; r < r1; r++) { const b_q6_K *row = (const b_q6_K *)(const void *)(w + (size_t)r * rb); for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = dot_q6_K(j->cols / 256, row, xq[b].b); }
   else {   /* any other type (or exact float math): dequantize a block at a time and use the float vectors */
     uint32_t bl = cl_type_block(t), bb = cl_type_bytes(t);
-    float buf[256], acc[64];
+    float buf[256], acc[CL_MV_MAX];
     for (int r = r0; r < r1; r++) {
       const uint8_t *row = w + (size_t)r * rb;
       for (int b = 0; b < nb; b++) acc[b] = 0;
