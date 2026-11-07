@@ -34,6 +34,8 @@ jobs:
       - run: npm run engine:chat
       # The batched prompt path equals token-by-token stepping on every architecture, mapped and streamed, at several batch sizes.
       - run: npm run engine:prefill
+      # A model that does not fit in memory streams its experts by itself; a dense one refuses and says why.
+      - run: npm run engine:autostream
       # @clutor/cli type-checks against the built @clutor/core, so build first.
       - run: npm run build
       - run: npm run typecheck

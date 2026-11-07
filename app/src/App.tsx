@@ -273,7 +273,7 @@ export function App() {
   useEffect(() => { if (!conversations.some((c) => c.id === activeId) && conversations[0]) setActiveId(conversations[0].id); }, [conversations, activeId]);
 
   const ready = state.status === "ready";
-  const note = state.ready?.locked ? "pinned" : state.unpinned ? "not pinned" : undefined;
+  const note = state.ready?.autoStream ? "streaming from disk" : state.ready?.locked ? "pinned" : state.unpinned ? "not pinned" : undefined;
   const loadedIsWanted = !!wanted && state.model?.path === wanted.path;
   const picker = <ModelPicker current={wanted} folders={folders} same={settings.sameModel !== false} onSame={(v) => setSettings((s) => ({ ...s, sameModel: v, ...(v ? {} : { models: { chat: s.model, code: s.model } }) }))} status={loadedIsWanted ? state.status : state.status === "loading" ? "loading" : "idle"} note={note} onPick={pickModel} onMore={() => setDialog("models")} />;
   const usage = chatUsage(active?.messages ?? [], state.ready?.nCtx ?? settings.ctx);
@@ -365,15 +365,15 @@ export function App() {
             </div>
           ) : (
             <div className="home">
-              <div className="mark"><Logo size={64} state={state.status === "loading" || busy ? "thinking" : "idle"} /></div>
-              {state.status === "loading" ? <div className="loading-wait"><Thinking label="Loading your model" orb={false} /></div> : <><h2>{greeting(settings.userName)}</h2><p className="tagline">What would you like to think through?</p></>}
+              <div className="hello"><Logo size={48} state={state.status === "loading" || busy ? "thinking" : "idle"} />{state.status === "loading" ? <Thinking label="Loading your model" orb={false} /> : <h2>{greeting(settings.userName)}</h2>}</div>
+              {state.status === "loading" ? null : <p className="tagline">What would you like to think through?</p>}
               {composer(true)}
               {state.status === "error" ? <p className="home-note err">{state.error}</p> : null}
               {!haveModel && state.status !== "loading" ? (
                 <div className="home-note"><p>Choose a model to start. Clutor runs it on your own hardware, with its own engine.</p><button type="button" className="btn" onClick={() => setDialog("models")}>Choose a model</button></div>
               ) : state.status === "loading" ? <p className="home-note">Mapping the weights into memory. A large model can take a while the first time.</p> : (
                 <div className="suggest">
-                  {settings.suggestions ? SUGGESTIONS.map((s) => <button type="button" key={s.label} className="suggestion" onClick={() => setPrefill((p) => ({ text: s.text, n: (p?.n ?? 0) + 1 }))}><b>{s.label}</b><span>{s.hint}</span></button>) : null}
+                  {settings.suggestions ? SUGGESTIONS.map((s) => <button type="button" key={s.label} className="suggestion" title={s.hint} onClick={() => setPrefill((p) => ({ text: s.text, n: (p?.n ?? 0) + 1 }))}><b>{s.label}</b></button>) : null}
                 </div>
               )}
             </div>

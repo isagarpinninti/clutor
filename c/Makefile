@@ -124,4 +124,7 @@ clean:
 PREFILL_PROMPT = the cat is in the room and a rat
 prefill-test: $(BIN) golden-files
 	@python3 test/prefill_check.py $(BIN) build "$(PREFILL_PROMPT)"
-.PHONY: fuzz golden golden-files golden-paths chat-test prefill-test verify-llama all test test-paths test-avx2 sanitize clean
+# A model that does not fit in memory streams its experts by itself (the tests pretend the machine is tiny); a dense one refuses and says why.
+auto-stream-test: $(BIN) golden-files
+	@python3 test/auto_stream.py $(BIN) build
+.PHONY: fuzz golden golden-files golden-paths chat-test prefill-test auto-stream-test verify-llama all test test-paths test-avx2 sanitize clean

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 
 import { fmtBytes } from "../store";
 import { MAX_FILES, readAttachment, type Attachment } from "../attachments";
 import { PlusMenu } from "./PlusMenu";
-import { CloseIcon, FileIcon, SendIcon, StopIcon } from "./icons";
+import { CloseIcon, FileIcon, GlobeIcon, SendIcon, StopIcon, ThinkIcon } from "./icons";
 
 interface Props {
   busy: boolean;
@@ -103,8 +103,8 @@ export function Composer({ busy, disabled, placeholder, thinking, onThinking, br
             { id: "browse", label: "Browse the web", hint: "Look things up first; your message goes to a search service", checked: browse, onSelect: () => onBrowse(!browse) },
             { id: "bg", label: "Run in the background", hint: "Keeps generating while you do other things (Ctrl+Enter)", disabled: !canSend, onSelect: background },
           ]} />
-          <button type="button" className={`toggle${thinking ? " on" : ""}`} aria-pressed={thinking} onClick={() => onThinking(!thinking)} title="Let thinking models reason before answering (slower, often better)">Think</button>
-          <button type="button" className={`toggle${browse ? " on" : ""}`} aria-pressed={browse} onClick={() => onBrowse(!browse)} title="Look things up on the web first; your message goes to a search service">Browse</button>
+          <button type="button" className={`toggle${thinking ? " on" : ""}`} aria-pressed={thinking} onClick={() => onThinking(!thinking)} title="Let thinking models reason before answering (slower, often better)"><ThinkIcon />Think</button>
+          <button type="button" className={`toggle${browse ? " on" : ""}`} aria-pressed={browse} onClick={() => onBrowse(!browse)} title="Look things up on the web first; your message goes to a search service"><GlobeIcon />Browse</button>
           <span className="spacer" />
           {picker}
           {busy

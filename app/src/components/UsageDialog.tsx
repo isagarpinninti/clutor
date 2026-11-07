@@ -57,7 +57,7 @@ export function UsagePanel({ state, ramBytes, usage, agent, jobs, agentContext }
       <Table rows={[
         ["Model", state.model?.name ?? "none loaded"],
         ...(state.model ? [["File size", `${fmtBytes(state.model.bytes)}${share !== undefined ? ` · ${share}% of memory` : ""}`] as [string, string]] : []),
-        ...(state.ready ? [["In memory", state.ready.locked ? "pinned" : state.unpinned ? "not pinned (large model)" : "not pinned"] as [string, string]] : []),
+        ...(state.ready ? [["In memory", state.ready.autoStream ? "streaming from disk (too big to fit)" : state.ready.locked ? "pinned" : state.unpinned ? "not pinned (large model)" : "not pinned"] as [string, string]] : []),
         ...(state.loadMs ? [["Load time", `${(state.loadMs / 1000).toFixed(1)} s`] as [string, string]] : []),
       ]} />
 

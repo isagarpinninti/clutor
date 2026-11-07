@@ -43,3 +43,6 @@ export const BackIcon = () => I(<path d="m14.5 6.5-5.5 5.5 5.5 5.5" />);
 export const ForwardIcon = () => I(<path d="m9.5 6.5 5.5 5.5-5.5 5.5" />);
 export const UserIcon = () => I(<><circle cx="12" cy="8.5" r="3.5" /><path d="M5 19c.6-3.3 3.4-5 7-5s6.4 1.7 7 5" /></>);
 export const PhoneIcon = () => I(<><rect x="7" y="3.5" width="10" height="17" rx="2.6" /><path d="M10.5 17.5h3" /></>);
+
+/** Think: an atom, orbits around a nucleus. */
+export const ThinkIcon = () => I(<><ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(60 12 12)" /><ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(-60 12 12)" /><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none" /></>);

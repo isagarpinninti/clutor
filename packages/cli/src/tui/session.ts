@@ -7,7 +7,7 @@ import type { ChatMessage, StreamEvent } from "./stream";
  * Nothing in this file touches the operating system, so the graphical app runs the same code.
  */
 
-export interface NativeReady { arch: string; name: string; nCtx: number; nVocab: number; nLayer: number; threads: number; streaming: boolean; locked?: boolean; addBos: boolean; template: string;
+export interface NativeReady { arch: string; name: string; nCtx: number; nVocab: number; nLayer: number; threads: number; streaming: boolean; /** True when the model did not fit in memory and the engine chose to stream its experts from disk by itself. */ autoStream?: boolean; locked?: boolean; addBos: boolean; template: string;
   /** The longest context the model was trained for, and the memory the attention cache takes per token (both from the engine). */
   nCtxTrain?: number; kvBytesPerToken?: number }
 

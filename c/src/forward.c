@@ -233,9 +233,25 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   }
   if (!f->kc || !f->vc || !f->x || !f->xn || !f->q || !f->k || !f->v || !f->att || !f->scores || !f->moe || !f->hg || !f->hu || !f->hd || !f->rl || !f->rlogit) { snprintf(err, errlen, "out of memory"); goto fail; }
   if (f->dense && opts && (opts->cache_bytes || opts->smart.enabled)) { snprintf(err, errlen, "this model is dense (it has no experts), so there is nothing to stream or substitute: --cache-mb and --smart apply to mixture-of-experts models only"); goto fail; }
-  { const uint64_t ram = cl_phys_mem();
+  cl_fwd_opts auto_opts;
+  { uint64_t ram = cl_phys_mem();
+    { const char *fake = getenv("CLUTOR_FAKE_RAM_BYTES"); if (fake && atoll(fake) > 0) ram = (uint64_t)atoll(fake); }   /* for the tests: pretend the machine is small */
     if ((!opts || !opts->cache_bytes) && ram > 0 && f->map_size > (size_t)(ram / 10 * 8)) {
-      snprintf(err, errlen, "the model file (%.1f GiB) is larger than 80%% of this machine's memory (%.1f GiB): mapping it whole would thrash; %s", f->map_size / 1073741824.0, (double)ram / 1073741824.0, f->dense ? "a dense model has no experts to stream, so it needs enough memory for the whole file" : "stream its experts with --cache-mb N"); goto fail;
+      if (f->dense) { snprintf(err, errlen, "the model file (%.1f GiB) is larger than 80%% of this machine's memory (%.1f GiB): mapping it whole would thrash; a dense model has no experts to stream, so it needs enough memory for the whole file", f->map_size / 1073741824.0, (double)ram / 1073741824.0); goto fail; }
+      /* A mixture-of-experts model that does not fit streams its experts from disk, and picks the settings that measured best (Qwen3-30B-A3B Q4_K_M on a 16 GiB, 8-core Mac: a cache of
+       * half the memory gave twice the speed of a quarter, and 70% was slower again, because the cache then competes with the system for memory). */
+      uint64_t experts = 0;
+      for (int l = 0; l < f->n_layer; l++) experts += (uint64_t)f->n_expert * (f->L[l].gate_slab + f->L[l].up_slab + f->L[l].down_slab);
+      auto_opts = opts ? *opts : (cl_fwd_opts){0};
+      uint64_t want = ram / 100 * 45;
+      if (want < ((uint64_t)256 << 20)) want = (uint64_t)256 << 20;
+      if (want > experts) want = experts;   /* a cache bigger than all the experts would be wasted */
+      auto_opts.cache_bytes = want;
+      if (!auto_opts.io_threads) auto_opts.io_threads = 4;
+      if (!auto_opts.prefetch) auto_opts.prefetch = 2;
+      auto_opts.os_bypass = 1;
+      opts = &auto_opts;
+      f->auto_stream = 1;
     } }
   if (opts && opts->smart.enabled && !opts->cache_bytes) { snprintf(err, errlen, "--smart needs --cache-mb: it substitutes experts that are already in the cache"); goto fail; }
   if (opts && opts->cache_bytes) {
@@ -266,7 +282,41 @@ fail:
   return 1;
 }
 
+/* A float dot product with eight independent running sums, so the compiler can use the vector unit (a single sum in order cannot be vectorised without changing the answer). Both
+ * the one-token path and the batched prompt path use it for the router, so they still agree to the last bit. */
+static float dotf(const float *a, const float *b, int n) {
+  float s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0, s7 = 0;
+  int i = 0;
+  for (; i + 8 <= n; i += 8) { s0 += a[i] * b[i]; s1 += a[i + 1] * b[i + 1]; s2 += a[i + 2] * b[i + 2]; s3 += a[i + 3] * b[i + 3]; s4 += a[i + 4] * b[i + 4]; s5 += a[i + 5] * b[i + 5]; s6 += a[i + 6] * b[i + 6]; s7 += a[i + 7] * b[i + 7]; }
+  float t = ((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7));
+  for (; i < n; i++) t += a[i] * b[i];
+  return t;
+}
+
+/* CLUTOR_PROFILE=1: where the time of the batched prompt path goes, printed to stderr after each prompt (for finding the next thing to speed up). Costs two clock reads per section. */
+static int look_default(void) { const char *e = getenv("CLUTOR_LOOKAHEAD"); return e && *e ? atoi(e) : 1; }
+static double prof_t[10];
+static int prof_on = -1;
+static const char *const prof_name[10] = {"norm+quantize", "q/k/v products", "bias, rope, store K/V", "attention", "output product", "routing", "waiting for experts", "expert products", "expert other", "final norm + logits"};
+static double prof_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9; }
+#define P0() double _pt = prof_on > 0 ? prof_now() : 0
+#define PA(i) do { if (prof_on > 0) { double _n = prof_now(); prof_t[i] += _n - _pt; _pt = _n; } } while (0)
+/* ... and the same for one token at a time (generation), printed when the session closes */
+static double prof_d[10];
+static long prof_steps;
+#define PD0() double _pd = prof_on > 0 ? prof_now() : 0
+#define PD(i) do { if (prof_on > 0) { double _n = prof_now(); prof_d[i] += _n - _pd; _pd = _n; } } while (0)
+
+static void prof_report(void) {
+  if (prof_on <= 0 || prof_steps == 0) return;
+  double tot = 0; for (int k = 0; k < 10; k++) tot += prof_d[k];
+  fprintf(stderr, "[decode profile: %ld tokens, %.2f s, %.0f ms per token]", prof_steps, tot, 1000 * tot / (double)prof_steps);
+  for (int k = 0; k < 10; k++) { fprintf(stderr, " %s %.0f ms (%.0f%%);", prof_name[k], 1000 * prof_d[k] / (double)prof_steps, tot > 0 ? 100 * prof_d[k] / tot : 0); prof_d[k] = 0; }
+  fprintf(stderr, "\n"); prof_steps = 0;
+}
+
 void cl_fwd_close(cl_fwd *f) {
+  prof_report();
   if (f->L) for (int l = 0; l < f->n_layer; l++) { free(f->L[l].attn_norm_f); free(f->L[l].ffn_norm_f); free(f->L[l].bq_f); free(f->L[l].bk_f); free(f->L[l].bv_f); free(f->L[l].qn_f); free(f->L[l].kn_f); free(f->L[l].router_f); free(f->L[l].ssm_a_f); free(f->L[l].ssm_dt_f); free(f->L[l].ssm_norm_f); free(f->L[l].conv_f); }
   free(f->L); free(f->out_norm_f); free(f->rope_factors); free(f->conv_state); free(f->ssm_st); free(f->qg); free(f->qkv); free(f->cvo); free(f->zbuf); free(f->ab);
   if (f->hybrid) {
@@ -517,6 +567,9 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
   if (token < 0 || token >= f->n_vocab) { snprintf(err, errlen, "token %d is outside the vocabulary", token); return 1; }
   if (f->pos >= f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
   const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos, KW = f->n_kvw;
+  if (prof_on < 0) { const char *e = getenv("CLUTOR_PROFILE"); prof_on = e && *e && *e != '0'; }
+  PD0();
+  if (prof_on > 0) prof_steps++;
   cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)token * cl_row_bytes(f->tok_embd.type, (uint64_t)E), f->x, E);
   if (f->hybrid) { run_q35(f, &token, 1, logits); return 0; }
   if (f->embed_scale != 1.0f) for (int i = 0; i < E; i++) f->x[i] *= f->embed_scale;
@@ -528,7 +581,9 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     if (f->xs && f->prefetch == 1 && l + 1 < f->n_layer) for (int k = 0; k < f->prefetch_n; k++) { int e = f->prev_sel[(l + 1) * f->n_used + k]; cl_xs_prefetch(f->xs, l + 1, e); f->pred_sel[(l + 1) * f->n_used + k] = e; }
     rmsnorm(f->xn, f->x, y->attn_norm_f, E, f->rms_eps);
     cl_xq_quantize(&f->xq_e, f->xn);
+    PD(0);
     { cl_mv j[3] = {mv(&y->wq, f->xn, &f->xq_e, f->q), mv(&y->wk, f->xn, &f->xq_e, f->k), mv(&y->wv, f->xn, &f->xq_e, f->v)}; cl_matvec_batch(j, 3); }
+    PD(1);
     if (f->qkv_bias) {   /* qwen2: the projections carry biases */
       for (int i = 0; i < f->n_q; i++) f->q[i] += y->bq_f[i];
       for (int i = 0; i < f->n_kvw; i++) { f->k[i] += y->bk_f[i]; f->v[i] += y->bv_f[i]; }
@@ -545,10 +600,13 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->k + h * hd, hd, pos, f->rope_base, f->rope_factors);
     float *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
     memcpy(kc, f->k, (size_t)KW * 4); memcpy(vc, f->v, (size_t)KW * 4);
+    PD(2);
     attend(f, l, f->q, f->att, pos, 1);
+    PD(3);
     cl_xq_quantize(&f->xq_q, f->att);
     { cl_mv j = mv(&y->wo, f->att, &f->xq_q, f->hd); cl_matvec_batch(&j, 1); }
     for (int i = 0; i < E; i++) f->x[i] += f->resid_scale * f->hd[i];
+    PD(4);
 
     if (f->dense) {   /* one plain SwiGLU feed-forward instead of a router and experts */
       const int FF = f->n_ff_exp;
@@ -567,7 +625,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     if (f->xs && f->prefetch == 2 && l + 1 < f->n_layer) {
       const cl_fwd_layer *nx = &f->L[l + 1];
       rmsnorm(f->xn, f->x, nx->ffn_norm_f, E, f->rms_eps);
-      for (int e = 0; e < f->n_expert; e++) { const float *r = nx->router_f + (size_t)e * E; float a = 0; for (int i = 0; i < E; i++) a += r[i] * f->xn[i]; f->rl[e] = a; }
+      for (int e = 0; e < f->n_expert; e++) f->rl[e] = dotf(nx->router_f + (size_t)e * E, f->xn, E);
       char taken[4096] = {0};
       for (int k = 0; k < f->prefetch_n; k++) {
         int best = -1;
@@ -578,12 +636,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
 
     /* mixture of experts */
     rmsnorm(f->xn, f->x, y->ffn_norm_f, E, f->rms_eps);
-    for (int e = 0; e < f->n_expert; e++) {
-      const float *r = y->router_f + (size_t)e * E;
-      float s = 0;
-      for (int i = 0; i < E; i++) s += r[i] * f->xn[i];
-      f->rl[e] = s;
-    }
+    for (int e = 0; e < f->n_expert; e++) f->rl[e] = dotf(y->router_f + (size_t)e * E, f->xn, E);
     memcpy(f->rlogit, f->rl, (size_t)f->n_expert * sizeof(float));
     if (route && route->logits) memcpy(route->logits + (size_t)l * f->n_expert, f->rl, (size_t)f->n_expert * sizeof(float));
     float mx = f->rl[0];
@@ -619,6 +672,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     if (f->norm_topk) { float z = 0; for (int k = 0; k < f->n_used; k++) z += wt[k]; if (z > 0) for (int k = 0; k < f->n_used; k++) wt[k] /= z; }   /* qwen3moe: the chosen weights sum to 1 */
     f->expert_slots += (uint64_t)f->n_used;
     if (route) for (int k = 0; k < f->n_used; k++) { route->experts[l * f->n_used + k] = sel[k]; route->weights[l * f->n_used + k] = wt[k]; }
+    PD(5);
     memset(f->moe, 0, (size_t)E * 4);
     cl_xq_quantize(&f->xq_e, f->xn);   /* every selected expert reads the same normalised input */
     int hnd[64];
@@ -635,6 +689,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
         if (!P[k]) { snprintf(err, errlen, "reading expert %d of layer %d from disk failed", sel[k], l); for (int j = 0; j < f->n_used; j++) cl_xs_release(f->xs, hnd[j]); return 1; }
       } else P[k] = y->gate.p + (size_t)sel[k] * y->gate_slab;   /* mapped file: the three matrices sit in three fused tensors */
     }
+    PD(6);
     /* all experts' gate and up products in one batch, then all down products in another: two thread hand-offs per layer, not sixteen */
     cl_mv j[64];
     const size_t FF = (size_t)f->n_ff_exp;
@@ -643,7 +698,9 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
       j[2 * k] = (cl_mv){y->gate.type, g, f->n_ff_exp, E, f->xn, &f->xq_e, f->hg + k * FF, 1, 0, 0};
       j[2 * k + 1] = (cl_mv){y->up.type, u, f->n_ff_exp, E, f->xn, &f->xq_e, f->hu + k * FF, 1, 0, 0};
     }
+    PD(8);
     cl_matvec_batch(j, 2 * f->n_used);
+    PD(7);
     for (int k = 0; k < f->n_used; k++) {
       float *hg = f->hg + k * FF, *hu = f->hu + k * FF;
       for (size_t i = 0; i < FF; i++) hg[i] = hg[i] / (1.0f + expf(-hg[i])) * hu[i];   /* silu(gate) * up */
@@ -651,7 +708,9 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
       const uint8_t *d = f->xs ? P[k] + y->gate_slab + y->up_slab : y->down.p + (size_t)sel[k] * y->down_slab;
       j[k] = (cl_mv){y->down.type, d, E, f->n_ff_exp, hg, &f->xq_ffk[k], f->hd + (size_t)k * E, 1, 0, 0};
     }
+    PD(8);
     cl_matvec_batch(j, f->n_used);
+    PD(7);
     for (int k = 0; k < f->n_used; k++) {
       const float *hd = f->hd + (size_t)k * E;
       for (int i = 0; i < E; i++) f->moe[i] += wt[k] * hd[i];
@@ -659,25 +718,19 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     }
     if (f->prev_sel) memcpy(f->prev_sel + l * f->n_used, sel, (size_t)f->n_used * sizeof(int));
     for (int i = 0; i < E; i++) f->x[i] += f->resid_scale * f->moe[i];
+    PD(8);
   }
   rmsnorm(f->xn, f->x, f->out_norm_f, E, f->rms_eps);
   cl_xq_quantize(&f->xq_e, f->xn);
   { cl_mv j = mv(&f->output, f->xn, &f->xq_e, logits); cl_matvec_batch(&j, 1); }
   if (f->logit_scale != 1.0f) for (int i = 0; i < f->n_vocab; i++) logits[i] /= f->logit_scale;
+  PD(9);
   f->pos++;
   return 0;
 }
 
 /* ---- Prompt processing for the plain transformer architectures (llama, qwen2, olmoe, qwen3moe, granitemoe) ---------------------------------------------------------- */
 
-/* CLUTOR_PROFILE=1: where the time of the batched prompt path goes, printed to stderr after each prompt (for finding the next thing to speed up). Costs two clock reads per section. */
-static int look_default(void) { const char *e = getenv("CLUTOR_LOOKAHEAD"); return e && *e ? atoi(e) : 1; }
-static double prof_t[10];
-static int prof_on = -1;
-static const char *const prof_name[10] = {"norm+quantize", "q/k/v products", "bias, rope, store K/V", "attention", "output product", "routing", "waiting for experts", "expert products", "expert other", "final norm + logits"};
-static double prof_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9; }
-#define P0() double _pt = prof_on > 0 ? prof_now() : 0
-#define PA(i) do { if (prof_on > 0) { double _n = prof_now(); prof_t[i] += _n - _pt; _pt = _n; } } while (0)
 _Static_assert(CL_PS_B <= CL_MV_MAX, "a prompt batch must fit in one batched product");
 static int ps_alloc(cl_fwd *f) {
   if (f->ps_ready) return 0;
@@ -703,7 +756,7 @@ static void route_task(void *vc, int b) {
   rmsnorm(xn, c->X + (size_t)b * E, c->y->ffn_norm_f, E, f->rms_eps);
   cl_xq_quantize(&f->ps_xqe[b], xn);
   float *rg = f->ps_rg + (size_t)b * f->n_expert;
-  for (int e = 0; e < f->n_expert; e++) { const float *r = c->y->router_f + (size_t)e * E; float acc = 0; for (int i = 0; i < E; i++) acc += r[i] * xn[i]; rg[e] = acc; }
+  for (int e = 0; e < f->n_expert; e++) rg[e] = dotf(c->y->router_f + (size_t)e * E, xn, E);
 }
 
 /* nb tokens (1 <= nb <= CL_PS_B) through the model together, layer by layer. Every dense weight matrix is multiplied with all nb tokens in one pass over its rows; in a

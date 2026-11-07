@@ -75,6 +75,7 @@ typedef struct {
   int *ps_sel;
   cl_xq *ps_xqe, *ps_xqq, *ps_xqff;
   int locked;              /* the mapped weights are pinned in memory */
+  int auto_stream;         /* the model did not fit in memory and no cache size was given, so the engine chose to stream its experts */
   int pos;                 /* tokens already in the KV cache */
 } cl_fwd;
 

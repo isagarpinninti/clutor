@@ -2,10 +2,10 @@
 :root, :root[data-theme="dark"] {
   color-scheme: dark;
   --ink-rgb: 255 255 255; --shade-rgb: 0 0 0;
-  --g0: #080c1c; --g1: #0f152c; --g2: #18203e; --g3: #222c50; --g4: #2e3960; --g5: #3a4670; --g6: #505d85; --g7: #67739b; --g8: #7d8ab0; --g9: #8f9bbe; --g10: #a2adcc; --g11: #b4beda; --g12: #c5cee5; --g13: #d7def1; --g14: #e8eefc; --g15: #f6f8ff;
+  --g0: #0e1118; --g1: #161a24; --g2: #212634; --g3: #2c3244; --g4: #394054; --g5: #464e64; --g6: #596278; --g7: #6d758c; --g8: #8089a0; --g9: #929ab0; --g10: #a4acc0; --g11: #b6bdd0; --g12: #c7cddd; --g13: #d7dcea; --g14: #e8ecf7; --g15: #f6f8fc;
   --bg: var(--g0); --panel: var(--g0); --panel-2: var(--g1); --card: var(--g1); --text: var(--g14); --muted: var(--g8); --line: var(--g2);
   --accent: #6b8cff; --accent-2: #8f7bff; --accent-ink: #ffffff; --accent-soft: rgb(91 128 255 / .18); --danger: #ff8f86; --ok: #7ee2a8; --warn: #e6b450;
-  --code-bg: var(--g1); --code-head: var(--g2); --shadow: 0 0 0 transparent; --glow: radial-gradient(90% 55% at 50% -12%, rgb(77 107 254 / .26), transparent 62%), radial-gradient(60% 40% at 100% 0%, rgb(124 92 255 / .12), transparent 60%); --link: #86b4ff;
+  --code-bg: var(--g1); --code-head: var(--g2); --shadow: 0 0 0 transparent; --glow: radial-gradient(90% 55% at 50% -12%, rgb(77 107 254 / .16), transparent 62%), radial-gradient(60% 40% at 100% 0%, rgb(124 92 255 / .08), transparent 60%); --link: #86b4ff;
   --hl-kw: #c4a8ff; --hl-str: #8fe0ad; --hl-num: #f3b887; --hl-com: #7a8090; --hl-fn: #8ab8ff; --hl-ty: #7fd8e0;
   --on-brand: #ffffff; --brand: linear-gradient(135deg, #4facfe 0%, #4d6bfe 52%, #7c5cff 100%);
   --r: 8px; --r-lg: 18px;
@@ -800,3 +800,17 @@ html, body, .app { background: var(--bg); }
 .logo-model { transition: opacity .4s; }
 .logo.thinking .logo-model { animation: model-glow 2.4s ease-in-out infinite; }
 @keyframes model-glow { 0%, 100% { opacity: .25; } 50% { opacity: .55; } }
+
+/* ===== Home in the calm, centred style: the mark beside the greeting, a wide message box with outlined pills, starters as quiet chips ===== */
+.hello { display: flex; align-items: center; justify-content: center; gap: 14px; animation: fade-in .5s var(--ease) both; }
+.hello .logo { filter: drop-shadow(0 8px 20px color-mix(in srgb, #4d6bfe 45%, transparent)); }
+.hello h2 { margin: 0; font-size: 27px; }
+.tagline { margin: -6px 0 8px; font-size: 14.5px; }
+:root[data-theme] .home .composer { border-radius: 22px; padding: 16px 16px 12px 20px; background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 7%, var(--g1)), var(--g1) 55%); }
+.toggle { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px 0 10px; }
+.toggle svg { width: 15px; height: 15px; }
+.suggest { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+:root[data-theme] .suggestion { height: 32px; padding: 0 14px; border-radius: 999px; flex-direction: row; align-items: center; background: transparent; font-size: 13px; }
+.suggestion b { font-weight: 500; color: var(--muted); }
+:root[data-theme] .suggestion:hover b { color: var(--text); }
+@media (max-width: 560px) { .hello h2 { font-size: 22px; } .hello .logo { width: 38px; height: 38px; } }
