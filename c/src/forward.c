@@ -274,6 +274,11 @@ void cl_fwd_close(cl_fwd *f) {
     free(f->pf_xqe); free(f->pf_xqq); free(f->pf_xqss); free(f->pf_xqff);
     free(f->pf_x); free(f->pf_xn); free(f->pf_qkv); free(f->pf_z); free(f->pf_ab); free(f->pf_qg); free(f->pf_k); free(f->pf_v); free(f->pf_att); free(f->pf_hd); free(f->pf_hg); free(f->pf_hu);
   }
+  if (f->ps_ready) {
+    for (int i = 0; i < CL_PS_B; i++) { cl_xq_free(&f->ps_xqe[i]); cl_xq_free(&f->ps_xqq[i]); cl_xq_free(&f->ps_xqff[i]); }
+    free(f->ps_xqe); free(f->ps_xqq); free(f->ps_xqff);
+    free(f->ps_x); free(f->ps_xn); free(f->ps_xg); free(f->ps_q); free(f->ps_k); free(f->ps_v); free(f->ps_att); free(f->ps_hd); free(f->ps_moe); free(f->ps_hg); free(f->ps_hu); free(f->ps_wt); free(f->ps_hde); free(f->ps_sel);
+  }
   free(f->logits_buf); free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
   cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_q); cl_xq_free(&f->xq_ff);
   if (f->xq_ffk) for (int k = 0; k < f->n_used; k++) cl_xq_free(&f->xq_ffk[k]);
@@ -336,6 +341,54 @@ static void l2norm(float *x, int n, float eps) {
   for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
   float s = 1.0f / sqrtf((float)ss + eps);
   for (int i = 0; i < n; i++) x[i] *= s;
+}
+
+/* ---- Attention for one head of one token, as a task for the thread pool ---------------------------------------------------------------------------------------------- */
+typedef struct { cl_fwd *f; int l; const float *Q; float *ATT; int pos0; } attn_job;
+static _Thread_local float *tl_scores;
+static _Thread_local int tl_scores_cap;
+static float *scores_for(int need) {
+  if (tl_scores_cap < need) {
+    free(tl_scores);
+    tl_scores = (float *)malloc((size_t)need * sizeof(float));
+    if (!tl_scores) { fprintf(stderr, "out of memory (attention scratch)\n"); abort(); }
+    tl_scores_cap = need;
+  }
+  return tl_scores;
+}
+/* Task i is head i % n_head of token i / n_head (token 0 is the one at position pos0). Reads the key/value cache up to that token's own position, so the tasks do not depend on each other. */
+static void attn_task(void *vp, int i) {
+  const attn_job *a = (const attn_job *)vp;
+  const cl_fwd *f = a->f;
+  const int H = f->n_head, hd = f->head_dim, KW = f->n_kvw, GROUP = H / f->n_head_kv, NQ = f->n_q;
+  const int b = i / H, h = i % H, pos = a->pos0 + b;
+  const float *qh = a->Q + (size_t)b * NQ + (size_t)h * hd;
+  float *oh = a->ATT + (size_t)b * NQ + (size_t)h * hd;
+  float *sc = scores_for(pos + 1);
+  const int kvo = (h / GROUP) * hd;
+  float mx = -INFINITY;
+  for (int t = 0; t <= pos; t++) {
+    const float *kt = f->kc + ((size_t)a->l * f->n_ctx_max + t) * KW + kvo;
+    float s = 0;
+    for (int d = 0; d < hd; d++) s += qh[d] * kt[d];
+    sc[t] = s * f->attn_scale;
+    if (sc[t] > mx) mx = sc[t];
+  }
+  float sum = 0;
+  for (int t = 0; t <= pos; t++) { sc[t] = expf(sc[t] - mx); sum += sc[t]; }
+  memset(oh, 0, (size_t)hd * 4);
+  for (int t = 0; t <= pos; t++) {
+    const float *vt = f->vc + ((size_t)a->l * f->n_ctx_max + t) * KW + kvo;
+    const float p = sc[t] / sum;
+    for (int d = 0; d < hd; d++) oh[d] += p * vt[d];
+  }
+}
+/* nb tokens' attention, in parallel when there is enough work to be worth waking the threads (a short context with few heads is faster on one thread). */
+static void attend(cl_fwd *f, int l, const float *Q, float *ATT, int pos0, int nb) {
+  attn_job a = {f, l, Q, ATT, pos0};
+  const int n = nb * f->n_head;
+  if ((long)(pos0 + nb) * n >= 6000) cl_parallel_for(n, attn_task, &a);
+  else for (int i = 0; i < n; i++) attn_task(&a, i);
 }
 
 /* A product of one weight matrix with nb inputs at once: xf rows are `in` floats apart, results `rows` apart. */
@@ -462,7 +515,7 @@ static int run_q35(cl_fwd *f, const int *tok, int nb, float *logits) {
 int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *err, size_t errlen) {
   if (token < 0 || token >= f->n_vocab) { snprintf(err, errlen, "token %d is outside the vocabulary", token); return 1; }
   if (f->pos >= f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
-  const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos, KW = f->n_kvw, GROUP = f->n_head / f->n_head_kv;
+  const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos, KW = f->n_kvw;
   cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)token * cl_row_bytes(f->tok_embd.type, (uint64_t)E), f->x, E);
   if (f->hybrid) { run_q35(f, &token, 1, logits); return 0; }
   if (f->embed_scale != 1.0f) for (int i = 0; i < E; i++) f->x[i] *= f->embed_scale;
@@ -491,28 +544,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->k + h * hd, hd, pos, f->rope_base, f->rope_factors);
     float *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
     memcpy(kc, f->k, (size_t)KW * 4); memcpy(vc, f->v, (size_t)KW * 4);
-    const float scale = f->attn_scale;
-    for (int h = 0; h < H; h++) {
-      const float *qh = f->q + h * hd;
-      const int kvo = (h / GROUP) * hd;   /* grouped-query attention: GROUP query heads share one key/value head */
-      float mx = -INFINITY;
-      for (int t = 0; t <= pos; t++) {
-        const float *kt = f->kc + ((size_t)l * f->n_ctx_max + t) * KW + kvo;
-        float s = 0;
-        for (int i = 0; i < hd; i++) s += qh[i] * kt[i];
-        f->scores[t] = s * scale;
-        if (f->scores[t] > mx) mx = f->scores[t];
-      }
-      float sum = 0;
-      for (int t = 0; t <= pos; t++) { f->scores[t] = expf(f->scores[t] - mx); sum += f->scores[t]; }
-      float *oh = f->att + h * hd;
-      memset(oh, 0, (size_t)hd * 4);
-      for (int t = 0; t <= pos; t++) {
-        const float *vt = f->vc + ((size_t)l * f->n_ctx_max + t) * KW + kvo;
-        float p = f->scores[t] / sum;
-        for (int i = 0; i < hd; i++) oh[i] += p * vt[i];
-      }
-    }
+    attend(f, l, f->q, f->att, pos, 1);
     cl_xq_quantize(&f->xq_q, f->att);
     { cl_mv j = mv(&y->wo, f->att, &f->xq_q, f->hd); cl_matvec_batch(&j, 1); }
     for (int i = 0; i < E; i++) f->x[i] += f->resid_scale * f->hd[i];
@@ -635,14 +667,155 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
   return 0;
 }
 
+/* ---- Prompt processing for the plain transformer architectures (llama, qwen2, olmoe, qwen3moe, granitemoe) ---------------------------------------------------------- */
+
+static int ps_alloc(cl_fwd *f) {
+  if (f->ps_ready) return 0;
+  const size_t B = CL_PS_B, E = (size_t)f->n_embd, NQ = (size_t)f->n_q, KW = (size_t)f->n_kvw, FF = (size_t)f->n_ff_exp;
+  f->ps_x = calloc(B * E, 4); f->ps_xn = calloc(B * E, 4); f->ps_xg = calloc(B * E, 4); f->ps_hd = calloc(B * E, 4); f->ps_moe = calloc(B * E, 4); f->ps_hde = calloc(B * E, 4);
+  f->ps_q = calloc(B * NQ, 4); f->ps_att = calloc(B * NQ, 4); f->ps_k = calloc(B * KW, 4); f->ps_v = calloc(B * KW, 4);
+  f->ps_hg = calloc(B * FF, 4); f->ps_hu = calloc(B * FF, 4);
+  f->ps_sel = calloc(B * (size_t)f->n_used, sizeof(int)); f->ps_wt = calloc(B * (size_t)f->n_used, 4);
+  f->ps_xqe = calloc(B, sizeof(cl_xq)); f->ps_xqq = calloc(B, sizeof(cl_xq)); f->ps_xqff = calloc(B, sizeof(cl_xq));
+  int ok = f->ps_x && f->ps_xn && f->ps_xg && f->ps_hd && f->ps_moe && f->ps_hde && f->ps_q && f->ps_att && f->ps_k && f->ps_v && f->ps_hg && f->ps_hu && f->ps_sel && f->ps_wt && f->ps_xqe && f->ps_xqq && f->ps_xqff;
+  for (size_t i = 0; ok && i < B; i++) ok = cl_xq_init(&f->ps_xqe[i], f->n_embd) && cl_xq_init(&f->ps_xqq[i], f->n_q) && cl_xq_init(&f->ps_xqff[i], f->n_ff_exp);
+  if (!ok) return 1;
+  f->ps_ready = 1;
+  return 0;
+}
+
+/* nb tokens (1 <= nb <= CL_PS_B) through the model together, layer by layer. Every dense weight matrix is multiplied with all nb tokens in one pass over its rows; in a
+ * mixture-of-experts layer each token picks its experts as it would alone, then each chosen expert is read once and run over all the tokens that chose it. The attention
+ * for each token still looks only at earlier positions, in order. Gives the same results as nb calls to cl_fwd_step (the integer dot products are exact; only the order in
+ * which a token's expert outputs are added differs from a step's, which can change the last bits). `logits` may be NULL when only the state is wanted. */
+static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, size_t errlen) {
+  const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, KW = f->n_kvw, NQ = f->n_q, FF = f->n_ff_exp, pos0 = f->pos;
+  float *X = f->ps_x, *XN = f->ps_xn, *Q = f->ps_q, *K = f->ps_k, *V = f->ps_v, *ATT = f->ps_att, *HD = f->ps_hd;
+  for (int b = 0; b < nb; b++) {
+    float *x = X + (size_t)b * E;
+    cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)tok[b] * cl_row_bytes(f->tok_embd.type, (uint64_t)E), x, E);
+    if (f->embed_scale != 1.0f) for (int i = 0; i < E; i++) x[i] *= f->embed_scale;
+  }
+  for (int l = 0; l < f->n_layer; l++) {
+    cl_fwd_layer *y = &f->L[l];
+    for (int b = 0; b < nb; b++) { rmsnorm(XN + (size_t)b * E, X + (size_t)b * E, y->attn_norm_f, E, f->rms_eps); cl_xq_quantize(&f->ps_xqe[b], XN + (size_t)b * E); }
+    { cl_mv j[3] = {mvb(&y->wq, XN, E, f->ps_xqe, Q, nb), mvb(&y->wk, XN, E, f->ps_xqe, K, nb), mvb(&y->wv, XN, E, f->ps_xqe, V, nb)}; cl_matvec_batch(j, 3); }
+    for (int b = 0; b < nb; b++) {
+      float *q = Q + (size_t)b * NQ, *k = K + (size_t)b * KW, *v = V + (size_t)b * KW;
+      const int pos = pos0 + b;
+      if (f->qkv_bias) { for (int i = 0; i < NQ; i++) q[i] += y->bq_f[i]; for (int i = 0; i < KW; i++) { k[i] += y->bk_f[i]; v[i] += y->bv_f[i]; } }
+      if (f->qk_mode == 0) { /* no QK-norm */ }
+      else if (f->qk_per_head) { for (int h = 0; h < H; h++) rmsnorm(q + h * hd, q + h * hd, y->qn_f, hd, f->rms_eps); for (int h = 0; h < KVH; h++) rmsnorm(k + h * hd, k + h * hd, y->kn_f, hd, f->rms_eps); }
+      else { rmsnorm(q, q, y->qn_f, NQ, f->rms_eps); rmsnorm(k, k, y->kn_f, KW, f->rms_eps); }
+      for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(q + h * hd, hd, pos, f->rope_base, f->rope_factors);
+      for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(k + h * hd, hd, pos, f->rope_base, f->rope_factors);
+      float *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
+      memcpy(kc, k, (size_t)KW * 4); memcpy(vc, v, (size_t)KW * 4);
+    }
+    attend(f, l, Q, ATT, pos0, nb);   /* every token's key and value are stored now; each token attends only to positions up to its own */
+    for (int b = 0; b < nb; b++) cl_xq_quantize(&f->ps_xqq[b], ATT + (size_t)b * NQ);
+    { cl_mv j = mvb(&y->wo, ATT, NQ, f->ps_xqq, HD, nb); cl_matvec_batch(&j, 1); }
+    for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->resid_scale * HD[i];
+
+    if (f->dense) {   /* one plain SwiGLU feed-forward */
+      float *HG = f->ps_hg, *HU = f->ps_hu;
+      for (int b = 0; b < nb; b++) { rmsnorm(XN + (size_t)b * E, X + (size_t)b * E, y->ffn_norm_f, E, f->rms_eps); cl_xq_quantize(&f->ps_xqe[b], XN + (size_t)b * E); }
+      { cl_mv j[2] = {mvb(&y->gate, XN, E, f->ps_xqe, HG, nb), mvb(&y->up, XN, E, f->ps_xqe, HU, nb)}; cl_matvec_batch(j, 2); }
+      for (int b = 0; b < nb; b++) { float *hg = HG + (size_t)b * FF, *hu = HU + (size_t)b * FF; for (int i = 0; i < FF; i++) hg[i] = hg[i] / (1.0f + expf(-hg[i])) * hu[i]; cl_xq_quantize(&f->ps_xqff[b], hg); }
+      { cl_mv j = mvb(&y->down, HG, FF, f->ps_xqff, HD, nb); cl_matvec_batch(&j, 1); }
+      for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->resid_scale * HD[i];
+      continue;
+    }
+
+    /* mixture of experts: route every token */
+    const int NU = f->n_used;
+    for (int b = 0; b < nb; b++) {
+      float *xn = XN + (size_t)b * E;
+      rmsnorm(xn, X + (size_t)b * E, y->ffn_norm_f, E, f->rms_eps);
+      cl_xq_quantize(&f->ps_xqe[b], xn);
+      for (int e = 0; e < f->n_expert; e++) { const float *r = y->router_f + (size_t)e * E; float s = 0; for (int i = 0; i < E; i++) s += r[i] * xn[i]; f->rl[e] = s; }
+      memcpy(f->rlogit, f->rl, (size_t)f->n_expert * sizeof(float));
+      float mx = f->rl[0];
+      for (int e = 1; e < f->n_expert; e++) if (f->rl[e] > mx) mx = f->rl[e];
+      double sum = 0;
+      for (int e = 0; e < f->n_expert; e++) { f->rl[e] = expf(f->rl[e] - mx); sum += f->rl[e]; }
+      for (int e = 0; e < f->n_expert; e++) f->rl[e] = (float)(f->rl[e] / sum);
+      int *sel = f->ps_sel + (size_t)b * NU; float *wt = f->ps_wt + (size_t)b * NU;
+      if (f->smart.enabled) {
+        struct { cl_xs *xs; int layer; } rc = {f->xs, l};
+        cl_route_result rr;
+        if (cl_route(f->rlogit, f->n_expert, NU, &f->smart, resident_cb, &rc, &rr)) { snprintf(err, errlen, "bad SMART-ROUTE settings"); return 1; }
+        for (int k = 0; k < NU; k++) { sel[k] = rr.selected[k]; wt[k] = f->rl[sel[k]]; }
+        f->subs += (uint64_t)rr.substituted; f->dropped_mass += rr.dropped_mass;
+        if (rr.max_delta > f->max_delta) f->max_delta = rr.max_delta;
+      } else {
+        char used[4096] = {0};
+        for (int k = 0; k < NU; k++) { int best = -1; for (int e = 0; e < f->n_expert; e++) if (!used[e] && (best < 0 || f->rl[e] > f->rl[best])) best = e; used[best] = 1; sel[k] = best; wt[k] = f->rl[best]; }
+      }
+      if (f->norm_topk) { float z = 0; for (int k = 0; k < NU; k++) z += wt[k]; if (z > 0) for (int k = 0; k < NU; k++) wt[k] /= z; }
+      f->expert_slots += (uint64_t)NU;
+    }
+    if (f->prev_sel) memcpy(f->prev_sel + (size_t)l * NU, f->ps_sel + (size_t)(nb - 1) * NU, (size_t)NU * sizeof(int));
+    memset(f->ps_moe, 0, (size_t)nb * E * 4);
+
+    /* then each chosen expert once, over the tokens that chose it, a few at a time so the store never holds more than a token's worth of requests */
+    int todo[4096], n_todo = 0;
+    { char seen[4096] = {0}; for (int b = 0; b < nb; b++) for (int k = 0; k < NU; k++) { int e = f->ps_sel[(size_t)b * NU + k]; if (!seen[e]) { seen[e] = 1; todo[n_todo++] = e; } } }
+    for (int g0 = 0; g0 < n_todo; g0 += NU) {
+      const int g1 = g0 + NU < n_todo ? g0 + NU : n_todo;
+      int hnd[64] = {0};
+      const uint8_t *P[64] = {0};
+      if (f->xs) {
+        for (int pass = 0; pass < 2; pass++) for (int i = g0; i < g1; i++) { int here = cl_xs_resident(f->xs, l, todo[i]); if ((pass == 0) == (here != 0)) hnd[i - g0] = cl_xs_request(f->xs, l, todo[i]); }
+      }
+      for (int i = g0; i < g1; i++) {
+        const int e = todo[i];
+        if (f->xs) {
+          P[i - g0] = cl_xs_wait(f->xs, hnd[i - g0]);
+          if (!P[i - g0]) { snprintf(err, errlen, "reading expert %d of layer %d from disk failed", e, l); for (int j = i - g0; j < g1 - g0; j++) cl_xs_release(f->xs, hnd[j]); return 1; }
+        }
+        /* the tokens that chose this expert, with their weights */
+        int who[CL_PS_B]; float wgt[CL_PS_B]; int ni = 0;
+        for (int b = 0; b < nb; b++) for (int k = 0; k < NU; k++) if (f->ps_sel[(size_t)b * NU + k] == e) { who[ni] = b; wgt[ni] = f->ps_wt[(size_t)b * NU + k]; ni++; break; }
+        const uint8_t *gp = f->xs ? P[i - g0] : y->gate.p + (size_t)e * y->gate_slab, *up = f->xs ? P[i - g0] + y->gate_slab : y->up.p + (size_t)e * y->up_slab;
+        const uint8_t *dp = f->xs ? P[i - g0] + y->gate_slab + y->up_slab : y->down.p + (size_t)e * y->down_slab;
+        cl_xq sub[CL_PS_B];
+        for (int t = 0; t < ni; t++) { sub[t] = f->ps_xqe[who[t]]; memcpy(f->ps_xg + (size_t)t * E, XN + (size_t)who[t] * E, (size_t)E * 4); }
+        float *HG = f->ps_hg, *HU = f->ps_hu;
+        { cl_mv j[2] = {{y->gate.type, gp, FF, E, f->ps_xg, sub, HG, ni, (size_t)E, (size_t)FF}, {y->up.type, up, FF, E, f->ps_xg, sub, HU, ni, (size_t)E, (size_t)FF}}; cl_matvec_batch(j, 2); }
+        for (int t = 0; t < ni; t++) { float *hg = HG + (size_t)t * FF, *hu = HU + (size_t)t * FF; for (int q = 0; q < FF; q++) hg[q] = hg[q] / (1.0f + expf(-hg[q])) * hu[q]; cl_xq_quantize(&f->ps_xqff[t], hg); }
+        { cl_mv j = {y->down.type, dp, E, FF, HG, f->ps_xqff, f->ps_hde, ni, (size_t)FF, (size_t)E}; cl_matvec_batch(&j, 1); }
+        for (int t = 0; t < ni; t++) { float *m = f->ps_moe + (size_t)who[t] * E; const float *d = f->ps_hde + (size_t)t * E; for (int q = 0; q < E; q++) m[q] += wgt[t] * d[q]; }
+        if (f->xs) cl_xs_release(f->xs, hnd[i - g0]);
+      }
+    }
+    for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->resid_scale * f->ps_moe[i];
+  }
+  f->pos += nb;
+  if (logits) {
+    rmsnorm(f->xn, X + (size_t)(nb - 1) * E, f->out_norm_f, E, f->rms_eps);
+    cl_xq_quantize(&f->xq_e, f->xn);
+    cl_mv j = mv(&f->output, f->xn, &f->xq_e, logits); cl_matvec_batch(&j, 1);
+    if (f->logit_scale != 1.0f) for (int i = 0; i < f->n_vocab; i++) logits[i] /= f->logit_scale;
+  }
+  return 0;
+}
+
 int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err, size_t errlen) {
   if (n < 1) { snprintf(err, errlen, "nothing to feed"); return 1; }
   if (f->pos + n > f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
   for (int i = 0; i < n; i++) if (tokens[i] < 0 || tokens[i] >= f->n_vocab) { snprintf(err, errlen, "token %d is outside the vocabulary", tokens[i]); return 1; }
   if (!f->hybrid) {
-    if (!f->logits_buf) f->logits_buf = malloc((size_t)f->n_vocab * 4);
-    if (!f->logits_buf) { snprintf(err, errlen, "out of memory"); return 1; }
-    for (int i = 0; i < n; i++) if (cl_fwd_step(f, tokens[i], i == n - 1 && logits ? logits : f->logits_buf, NULL, err, errlen)) return 1;
+    if (n == 1 || getenv("CLUTOR_STEP_PREFILL") || ps_alloc(f)) {   /* one token is just a step; CLUTOR_STEP_PREFILL=1 forces the old token-by-token path, the reference the batched one is tested against */
+      if (!f->logits_buf) f->logits_buf = malloc((size_t)f->n_vocab * 4);
+      if (!f->logits_buf) { snprintf(err, errlen, "out of memory"); return 1; }
+      for (int i = 0; i < n; i++) if (cl_fwd_step(f, tokens[i], i == n - 1 && logits ? logits : f->logits_buf, NULL, err, errlen)) return 1;
+      return 0;
+    }
+    /* CLUTOR_PS_B=k (1..CL_PS_B) shrinks the batch, so the tests can cross many batch boundaries with short prompts */
+    int cap = CL_PS_B;
+    { const char *e = getenv("CLUTOR_PS_B"); if (e && atoi(e) >= 1 && atoi(e) < CL_PS_B) cap = atoi(e); }
+    for (int i = 0; i < n; i += cap) { int nb = n - i < cap ? n - i : cap; if (run_std(f, tokens + i, nb, i + nb == n ? logits : NULL, err, errlen)) return 1; }
     return 0;
   }
   for (int i = 0; i < n; i += CL_PF_B) { int nb = n - i < CL_PF_B ? n - i : CL_PF_B; run_q35(f, tokens + i, nb, i + nb == n ? logits : NULL); }

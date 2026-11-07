@@ -32,6 +32,8 @@ jobs:
       - run: npm run engine:golden
       # The chat protocol the terminal UI uses, on every architecture, against the engine's own greedy decoding.
       - run: npm run engine:chat
+      # The batched prompt path equals token-by-token stepping on every architecture, mapped and streamed, at several batch sizes.
+      - run: npm run engine:prefill
       # @clutor/cli type-checks against the built @clutor/core, so build first.
       - run: npm run build
       - run: npm run typecheck

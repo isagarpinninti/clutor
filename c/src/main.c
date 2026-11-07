@@ -525,6 +525,39 @@ static int cmd_diskbench(int argc, char **argv) {
   return 0;
 }
 
+/* prefillcheck <model.gguf> PROMPT [flags]: runs the prompt token by token and again through the batched prompt path, from the same start, and compares the last token's logits.
+ * Prints one JSON object and exits 1 if they differ by more than --tol (default 0.02 on logits of a few units: the paths agree to the last bits, so this is a wide margin).
+ * With --repeat N the prompt is repeated N times (to cross batch boundaries). The same flags as `logits` (--cache-mb, --smart, ...) apply, so streaming is covered too. */
+static int cmd_prefillcheck(int argc, char **argv) {
+  if (argc < 2) { fprintf(stderr, "usage: clutor-engine prefillcheck <model.gguf> PROMPT [--repeat N] [--tol X]\n"); return 2; }
+  char err[256];
+  cl_meta meta; uint8_t *map; size_t ms; cl_tok *tok;
+  if (load_tok(argv[0], &meta, &map, &ms, &tok)) return 1;
+  size_t len = strlen(argv[1]);
+  int rep = (int)num(argc, argv, "--repeat", 1); if (rep < 1) rep = 1;
+  int cap = (int)len * rep + 16 + rep;
+  int32_t *ids = malloc((size_t)cap * sizeof *ids);
+  int n = 0;
+  if (cl_tok_add_bos(tok) && cl_tok_bos(tok) >= 0) ids[n++] = cl_tok_bos(tok);
+  for (int r = 0; r < rep; r++) { int k = cl_tok_encode(tok, argv[1], len, 1, ids + n, cap - n); if (k < 0) { fprintf(stderr, "could not tokenize the prompt\n"); return 1; } n += k; }
+  cl_fwd f; cl_fwd_opts fo = fwd_opts(argc, argv);
+  if (cl_fwd_open(&f, argv[0], n + 8, &fo, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
+  float *la = malloc((size_t)f.n_vocab * 4), *lb = malloc((size_t)f.n_vocab * 4);
+  double t0 = now_s();
+  for (int i = 0; i < n; i++) if (cl_fwd_step(&f, ids[i], la, NULL, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
+  double t_step = now_s() - t0;
+  cl_fwd_reset(&f);
+  t0 = now_s();
+  if (cl_fwd_prefill(&f, ids, n, lb, err, sizeof err)) { fprintf(stderr, "%s\n", err); return 1; }
+  double t_batch = now_s() - t0;
+  double maxd = 0; int ia = 0, ib = 0;
+  for (int i = 0; i < f.n_vocab; i++) { double d = fabs((double)la[i] - lb[i]); if (d > maxd) maxd = d; if (la[i] > la[ia]) ia = i; if (lb[i] > lb[ib]) ib = i; }
+  double tol = num(argc, argv, "--tol", 0.02);
+  int ok = maxd <= tol && ia == ib;
+  printf("{\"tokens\":%d,\"maxAbsLogitDiff\":%.6g,\"sameTopToken\":%s,\"stepSeconds\":%.3f,\"batchSeconds\":%.3f,\"ok\":%s}\n", n, maxd, ia == ib ? "true" : "false", t_step, t_batch, ok ? "true" : "false");
+  return ok ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) { usage(); return 2; }
   if (!strcmp(argv[1], "--version")) { puts(VERSION); return 0; }
@@ -536,6 +569,7 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[1], "logits")) return cmd_logits(argc - 2, argv + 2);
   if (!strcmp(argv[1], "stream")) return cmd_stream(argc - 2, argv + 2);
   if (!strcmp(argv[1], "diskbench")) return cmd_diskbench(argc - 2, argv + 2);
+  if (!strcmp(argv[1], "prefillcheck")) return cmd_prefillcheck(argc - 2, argv + 2);
   usage();
   return strcmp(argv[1], "--help") ? 2 : 0;
 }

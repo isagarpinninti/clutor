@@ -69,6 +69,11 @@ typedef struct {
   /* qwen35 prompt processing: scratch for up to CL_PF_B tokens at once (the weights are streamed once per batch, not once per token) */
   float *pf_x, *pf_xn, *pf_qkv, *pf_z, *pf_ab, *pf_qg, *pf_k, *pf_v, *pf_att, *pf_hd, *pf_hg, *pf_hu;
   cl_xq *pf_xqe, *pf_xqq, *pf_xqss, *pf_xqff;
+  /* prompt processing for every architecture but qwen35: scratch for up to CL_PS_B tokens, allocated on first use */
+  int ps_ready;
+  float *ps_x, *ps_xn, *ps_xg, *ps_q, *ps_k, *ps_v, *ps_att, *ps_hd, *ps_moe, *ps_hg, *ps_hu, *ps_wt, *ps_hde;
+  int *ps_sel;
+  cl_xq *ps_xqe, *ps_xqq, *ps_xqff;
   int locked;              /* the mapped weights are pinned in memory */
   int pos;                 /* tokens already in the KV cache */
 } cl_fwd;
@@ -88,8 +93,10 @@ void cl_fwd_close(cl_fwd *f);
 void cl_fwd_reset(cl_fwd *f);
 /* Runs one token at position f->pos (then advances it). Writes n_vocab logits. `route` may be NULL, else it must hold n_layer*n_used entries. */
 int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *err, size_t errlen);
-/* Feeds n tokens. `logits` (n_vocab floats, may be NULL) receives the distribution after the LAST one. A qwen35 model reads the tokens in batches of up to
- * CL_PF_B, so a long prompt costs far fewer passes over the weights; every other architecture simply steps token by token. */
+/* Feeds n tokens. `logits` (n_vocab floats, may be NULL) receives the distribution after the LAST one. Tokens are processed in batches (CL_PF_B for qwen35, CL_PS_B for
+ * every other architecture): each weight matrix is read once per batch, and in a mixture-of-experts layer each expert is read once per batch for all the tokens that chose
+ * it, so a long prompt costs far fewer passes over the weights (and over the disk) than stepping token by token. Only the last token's output distribution is computed. */
 #define CL_PF_B 32
+#define CL_PS_B 64
 int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err, size_t errlen);
 #endif

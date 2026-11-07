@@ -13,7 +13,7 @@ fn main() {
     match arch.as_str() {
         // Every Apple-silicon Mac and every Android phone of the last several years has the int8 dot-product instruction the kernels use.
         "aarch64" => { b.flag_if_supported("-march=armv8.2-a+dotprod"); }
-        "x86_64" => { b.flag_if_supported("-mavx2"); b.flag_if_supported("-mfma"); }
+        "x86_64" => { b.flag_if_supported("-mavx2"); b.flag_if_supported("-mfma"); b.flag_if_supported("-mf16c"); }
         _ => {}
     }
     b.compile("clutor_engine");

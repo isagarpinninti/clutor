@@ -5,7 +5,7 @@ ifeq ($(shell uname -m),arm64)
   CFLAGS += -mcpu=native
 endif
 ifeq ($(shell uname -m),x86_64)
-  CFLAGS += -mavx2
+  CFLAGS += -mavx2 -mf16c
 endif
 LDLIBS = -lm -lpthread
 # Windows (MSYS2 MinGW-w64): GNU C for the POSIX names MinGW declares, FMA with AVX2, and the process-memory library for peak memory.
@@ -43,7 +43,7 @@ ifeq ($(shell uname -m),arm64)
 	./build/test-neon $(FIXTURE)
 endif
 test-avx2: build
-	$(CC) -arch x86_64 $(PATH_FLAGS) -mavx2 $(TEST_SRC) -o build/test-avx2 $(LDLIBS)
+	$(CC) -arch x86_64 $(PATH_FLAGS) -mavx2 -mf16c $(TEST_SRC) -o build/test-avx2 $(LDLIBS)
 	arch -x86_64 ./build/test-avx2 $(FIXTURE)
 
 # Golden test: a tiny generated OLMoE with random K-quant weights, checked against an independent pure-Python forward pass (needs only python3).
@@ -110,9 +110,18 @@ sanitize: build
 	$(CC) -O1 -g -std=c11 -fsanitize=address,undefined -fno-omit-frame-pointer $(SRC) src/main.c -o build/engine-asan $(LDLIBS)
 	$(CC) -O1 -g -std=c11 -fsanitize=thread $(SRC) src/main.c -o build/engine-tsan $(LDLIBS)
 	@if [ -n "$(SMALL)" ]; then ./build/engine-asan $(SAN_RUN) >/dev/null && ./build/engine-tsan $(SAN_RUN) >/dev/null && echo "sanitizers clean on $(SMALL)"; else echo "(set SMALL=<moe.gguf> to also run the streaming engine under the sanitizers)"; fi
+	@$(MAKE) --no-print-directory golden-files >/dev/null
+	@# the thread pool and the batched prompt path (attention across threads, experts grouped across tokens) on every architecture: a data race or a memory error fails the run
+	@python3 test/prefill_check.py build/engine-asan build "$(PREFILL_PROMPT)"
+	@python3 test/prefill_check.py build/engine-tsan build "$(PREFILL_PROMPT)"
 # Compares tokenization, logits and routing with llama.cpp (needs llama-server and llama-tokenize on PATH): make verify-llama MODEL=path/to/olmoe.gguf
 verify-llama: $(BIN)
 	python3 test/verify_llama.py $(MODEL) --engine $(BIN)
 clean:
 	rm -rf build
-.PHONY: fuzz golden golden-files golden-paths chat-test verify-llama all test test-paths test-avx2 sanitize clean
+# The batched prompt path against stepping token by token, on every architecture, with the batch cut at 64, 7 and 1 tokens (so a short prompt crosses many batch boundaries),
+# mapped and streamed from disk, with and without SMART-ROUTE. The logits must agree (they are bit for bit equal today; the check allows 0.02).
+PREFILL_PROMPT = the cat is in the room and a rat
+prefill-test: $(BIN) golden-files
+	@python3 test/prefill_check.py $(BIN) build "$(PREFILL_PROMPT)"
+.PHONY: fuzz golden golden-files golden-paths chat-test prefill-test verify-llama all test test-paths test-avx2 sanitize clean

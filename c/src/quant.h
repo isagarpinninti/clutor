@@ -31,6 +31,8 @@ typedef struct { uint32_t type; const void *w; int rows, cols; const float *xf; 
    * `out` nb results spaced out_stride floats apart. Each weight row is read once and multiplied with all nb inputs, so the weights are streamed once per batch. */
   int nb; size_t xf_stride, out_stride; } cl_mv;
 /* Runs several products at once, their rows split into chunks over the thread pool. */
+/* Runs fn(ctx, i) for i in [0, n) on the same threads as the matrix products, and returns when all are done. The calls may run in any order and at the same time. */
+void cl_parallel_for(int n, void (*fn)(void *ctx, int i), void *ctx);
 void cl_matvec_batch(const cl_mv *jobs, int n);
 /* 1 when the weights of this type are multiplied with integer arithmetic (and so need `xq`). */
 int cl_type_integer_dot(uint32_t type);
