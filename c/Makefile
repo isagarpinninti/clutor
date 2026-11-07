@@ -28,8 +28,11 @@ $(BIN): $(SRC) src/main.c $(wildcard src/*.h)
 build/test_engine: build $(SRC) test/test_engine.c $(wildcard src/*.h)
 	$(CC) $(CFLAGS) -Isrc $(SRC) test/test_engine.c -o $@ $(LDLIBS)
 FIXTURE = ../packages/core/test/fixtures/stories260K.gguf
-test: build/test_engine
+build/test_attention: build $(SRC) test/test_attention.c $(wildcard src/*.h)
+	$(CC) $(CFLAGS) -Isrc test/test_attention.c $(filter-out src/forward.c,$(SRC)) -o $@ $(LDLIBS)
+test: build/test_engine build/test_attention
 	./build/test_engine $(FIXTURE)
+	./build/test_attention
 
 # The kernel has one source and several compile-time paths. `make test` runs the one this machine picks; this builds and runs the others:
 # portable C (everywhere), NEON without the dot-product instruction (arm64), and AVX2 cross-built for x86_64 and run through Rosetta if it can.

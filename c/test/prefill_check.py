@@ -15,6 +15,9 @@ ARCHS = ["olmoe", "qwen3moe", "granitemoe", "qwen2", "llama", "qwen35"]
 BATCHES = ["64", "7", "1"]
 LONG_BATCHES = ["512", "256", "100"]   # a long prompt: a streamed run takes batches up to 512 tokens, so these cross the 64-token size the short prompt cannot reach
 LONG = " ".join(["the cat is in the room and a rat saw the hat on a mat"] * 14)
+# The long-context attention for one token (grouped heads, chunks of positions) is switched on for short contexts by a short chunk. It must give the same answers as the plain per-head path
+# (test/test_attention.c checks the numbers against a double-precision reference); a random tiny model amplifies float rounding, so these runs allow a wider tolerance.
+ATT_CHUNKS = ["16", "7"]
 MODES = [[], ["--cache-mb", "1"], ["--cache-mb", "1", "--smart", "2,12,0.015"]]
 
 
@@ -26,10 +29,13 @@ def main() -> int:
         if not os.path.exists(model):
             print(f"missing {model}")
             return 2
-        for text, batch in [(prompt, b) for b in BATCHES] + [(LONG, b) for b in LONG_BATCHES]:
+        for text, batch, extra in [(prompt, b, {}) for b in BATCHES] + [(LONG, b, {}) for b in LONG_BATCHES] + [(LONG, "256", {"CLUTOR_ATT_CHUNK": c}) for c in ATT_CHUNKS]:
             for mode in MODES:
-                env = dict(os.environ, CLUTOR_PS_B=batch)
-                r = subprocess.run([engine, "prefillcheck", model, text, "--repeat", "1" if text is LONG else "2", *mode], capture_output=True, text=True, env=env)
+                env = dict(os.environ, CLUTOR_PS_B=batch, **extra)
+                # The batching logic is checked bit for bit with the same attention code on both sides; the grouped long-context attention is checked in its own runs below.
+                if extra: env.pop("CLUTOR_PLAIN_ATTENTION", None)
+                else: env["CLUTOR_PLAIN_ATTENTION"] = "1"
+                r = subprocess.run([engine, "prefillcheck", model, text, "--repeat", "1" if text is LONG else "2", *mode, *(["--tol", "0.1"] if extra else [])], capture_output=True, text=True, env=env)
                 if "this model is dense" in r.stderr:   # a dense model has no experts to stream or substitute: the engine refuses these flags, by design
                     continue
                 n += 1
@@ -43,7 +49,7 @@ def main() -> int:
                     ok = False
                     last = f"{last} [exit code {r.returncode}] {r.stderr.strip().splitlines()[0] if r.stderr.strip() else ''}"
                 if not ok:
-                    bad.append(f"{arch} batch={batch} {' '.join(mode)}: {last or r.stderr.strip()}")
+                    bad.append(f"{arch} batch={batch} {extra or ''} {' '.join(mode)}: {last or r.stderr.strip()}")
     if bad:
         print("\n".join("FAIL " + b for b in bad))
         return 1

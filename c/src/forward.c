@@ -282,17 +282,6 @@ fail:
   return 1;
 }
 
-/* A float dot product with eight independent running sums, so the compiler can use the vector unit (a single sum in order cannot be vectorised without changing the answer). Both
- * the one-token path and the batched prompt path use it for the router, so they still agree to the last bit. */
-static float dotf(const float *a, const float *b, int n) {
-  float s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0, s7 = 0;
-  int i = 0;
-  for (; i + 8 <= n; i += 8) { s0 += a[i] * b[i]; s1 += a[i + 1] * b[i + 1]; s2 += a[i + 2] * b[i + 2]; s3 += a[i + 3] * b[i + 3]; s4 += a[i + 4] * b[i + 4]; s5 += a[i + 5] * b[i + 5]; s6 += a[i + 6] * b[i + 6]; s7 += a[i + 7] * b[i + 7]; }
-  float t = ((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7));
-  for (; i < n; i++) t += a[i] * b[i];
-  return t;
-}
-
 /* CLUTOR_PROFILE=1: where the time of the batched prompt path goes, printed to stderr after each prompt (for finding the next thing to speed up). Costs two clock reads per section. */
 static int look_default(void) { const char *e = getenv("CLUTOR_LOOKAHEAD"); return e && *e ? atoi(e) : 1; }
 static double prof_t[10];
@@ -330,7 +319,7 @@ void cl_fwd_close(cl_fwd *f) {
     free(f->ps_xqe); free(f->ps_xqq); free(f->ps_xqff);
     free(f->ps_x); free(f->ps_xn); free(f->ps_xg); free(f->ps_q); free(f->ps_k); free(f->ps_v); free(f->ps_att); free(f->ps_hd); free(f->ps_moe); free(f->ps_hg); free(f->ps_hu); free(f->ps_rg); free(f->ps_wt); free(f->ps_hde); free(f->ps_sel);
   }
-  free(f->logits_buf); free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
+  free(f->attn_part); free(f->logits_buf); free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
   cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_q); cl_xq_free(&f->xq_ff);
   if (f->xq_ffk) for (int k = 0; k < f->n_used; k++) cl_xq_free(&f->xq_ffk[k]);
   free(f->xq_ffk);
@@ -407,6 +396,17 @@ static float *scores_for(int need) {
   }
   return tl_scores;
 }
+/* A float dot product with eight independent running sums, so the compiler can use the vector unit (a single sum in order cannot be vectorised without changing the answer). Both
+ * the one-token path and the batched prompt path use it for the router, so they still agree to the last bit. */
+static float dotf(const float *a, const float *b, int n) {
+  float s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0, s7 = 0;
+  int i = 0;
+  for (; i + 8 <= n; i += 8) { s0 += a[i] * b[i]; s1 += a[i + 1] * b[i + 1]; s2 += a[i + 2] * b[i + 2]; s3 += a[i + 3] * b[i + 3]; s4 += a[i + 4] * b[i + 4]; s5 += a[i + 5] * b[i + 5]; s6 += a[i + 6] * b[i + 6]; s7 += a[i + 7] * b[i + 7]; }
+  float t = ((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7));
+  for (; i < n; i++) t += a[i] * b[i];
+  return t;
+}
+
 /* Task i is head i % n_head of token i / n_head (token 0 is the one at position pos0). Reads the key/value cache up to that token's own position, so the tasks do not depend on each other. */
 static void attn_task(void *vp, int i) {
   const attn_job *a = (const attn_job *)vp;
@@ -420,9 +420,7 @@ static void attn_task(void *vp, int i) {
   float mx = -INFINITY;
   for (int t = 0; t <= pos; t++) {
     const float *kt = f->kc + ((size_t)a->l * f->n_ctx_max + t) * KW + kvo;
-    float s = 0;
-    for (int d = 0; d < hd; d++) s += qh[d] * kt[d];
-    sc[t] = s * f->attn_scale;
+    sc[t] = dotf(qh, kt, hd) * f->attn_scale;
     if (sc[t] > mx) mx = sc[t];
   }
   float sum = 0;
@@ -434,8 +432,118 @@ static void attn_task(void *vp, int i) {
     for (int d = 0; d < hd; d++) oh[d] += p * vt[d];
   }
 }
+/* ---- One token's attention over a long context ----
+ * A model with grouped-query attention (several query heads share one key/value head) reads the same keys and values once per query head if each head is its own task: with
+ * eight heads to a group, eight times the memory traffic, which at a few thousand tokens is most of the time. Here a task is one key/value head over one chunk of positions:
+ * each key and each value is read once and used by every query head of the group. The chunks of a head are then combined with the usual rescaling by their maxima, so the result is
+ * the same softmax. A chunk is ATT_CHUNK positions, which also gives enough tasks to keep every thread busy. */
+#define ATT_CHUNK 256
+#define ATT_MAXGROUP 16
+/* The chunk length: ATT_CHUNK, or a shorter one set with CLUTOR_ATT_CHUNK (the tests use it to make short contexts take the long-context path). */
+static int att_chunk(void) { static int v; if (!v) { const char *e = getenv("CLUTOR_ATT_CHUNK"); v = e && atoi(e) >= 1 && atoi(e) <= ATT_CHUNK ? atoi(e) : ATT_CHUNK; } return v; }
+/* From how many positions the grouped version is used: 64 (measured: it is as fast as one task per head at 32 and faster from there up). CLUTOR_ATT_MIN overrides. */
+static int att_min(void) { static int v = -1; if (v < 0) { const char *e = getenv("CLUTOR_ATT_MIN"); v = e && atoi(e) >= 1 ? atoi(e) : (2 * att_chunk() < 64 ? 2 * att_chunk() : 64); } return v; }
+typedef struct { const cl_fwd *f; int l, pos, G, GROUP, nchunk, chunk; const float *Q; float *ATT; float *part; } gattn_job;
+static inline size_t gpart_stride(int GROUP, int hd) { return (size_t)GROUP * (2 + (size_t)hd); }   /* per task: max and sum for each head, then each head's partial output */
+
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+/* Four dot products against one query at once: the query is loaded once for four keys, and eight independent sums hide the latency of the multiply-adds. n is a multiple of 8. */
+static inline void dot4(const float *q, const float *k0, const float *k1, const float *k2, const float *k3, int n, float *out) {
+  float32x4_t a0 = vdupq_n_f32(0), a1 = a0, a2 = a0, a3 = a0, b0 = a0, b1 = a0, b2 = a0, b3 = a0;
+  for (int i = 0; i < n; i += 8) {
+    const float32x4_t qa = vld1q_f32(q + i), qb = vld1q_f32(q + i + 4);
+    a0 = vfmaq_f32(a0, qa, vld1q_f32(k0 + i)); b0 = vfmaq_f32(b0, qb, vld1q_f32(k0 + i + 4));
+    a1 = vfmaq_f32(a1, qa, vld1q_f32(k1 + i)); b1 = vfmaq_f32(b1, qb, vld1q_f32(k1 + i + 4));
+    a2 = vfmaq_f32(a2, qa, vld1q_f32(k2 + i)); b2 = vfmaq_f32(b2, qb, vld1q_f32(k2 + i + 4));
+    a3 = vfmaq_f32(a3, qa, vld1q_f32(k3 + i)); b3 = vfmaq_f32(b3, qb, vld1q_f32(k3 + i + 4));
+  }
+  out[0] = vaddvq_f32(vaddq_f32(a0, b0)); out[1] = vaddvq_f32(vaddq_f32(a1, b1)); out[2] = vaddvq_f32(vaddq_f32(a2, b2)); out[3] = vaddvq_f32(vaddq_f32(a3, b3));
+}
+/* o += p0 * v0 + p1 * v1 + p2 * v2 + p3 * v3: the output is loaded and stored once for four values. n is a multiple of 4. */
+static inline void axpy4(float *o, const float *v0, const float *v1, const float *v2, const float *v3, float p0, float p1, float p2, float p3, int n) {
+  for (int d = 0; d < n; d += 4) {
+    float32x4_t x = vld1q_f32(o + d);
+    x = vfmaq_n_f32(x, vld1q_f32(v0 + d), p0); x = vfmaq_n_f32(x, vld1q_f32(v1 + d), p1); x = vfmaq_n_f32(x, vld1q_f32(v2 + d), p2); x = vfmaq_n_f32(x, vld1q_f32(v3 + d), p3);
+    vst1q_f32(o + d, x);
+  }
+}
+#define CL_ATT_BLOCK4 1
+#endif
+
+static void gattn_chunk(void *vp, int i) {
+  const gattn_job *a = (const gattn_job *)vp;
+  const cl_fwd *f = a->f;
+  const int hd = f->head_dim, KW = f->n_kvw, GROUP = a->GROUP, g = i / a->nchunk, c = i % a->nchunk;
+  const int t0 = c * a->chunk, t1 = a->pos + 1 < t0 + a->chunk ? a->pos + 1 : t0 + a->chunk, n = t1 - t0;
+  float *out = a->part + (size_t)i * gpart_stride(GROUP, hd), *m = out, *lsum = out + GROUP, *o = out + 2 * GROUP;
+  const float *kbase = f->kc + ((size_t)a->l * f->n_ctx_max) * KW + (size_t)g * hd, *vbase = f->vc + ((size_t)a->l * f->n_ctx_max) * KW + (size_t)g * hd;
+  float sc[ATT_MAXGROUP][ATT_CHUNK];
+  const float *q[ATT_MAXGROUP];
+  for (int j = 0; j < GROUP; j++) { q[j] = a->Q + (size_t)(g * GROUP + j) * hd; m[j] = -INFINITY; lsum[j] = 0; }
+  int t = 0;
+#ifdef CL_ATT_BLOCK4
+  if ((hd & 7) == 0) for (; t + 4 <= n; t += 4) {
+    const float *k0 = kbase + (size_t)(t0 + t) * KW, *k1 = k0 + KW, *k2 = k1 + KW, *k3 = k2 + KW;
+    for (int j = 0; j < GROUP; j++) {
+      float d4[4]; dot4(q[j], k0, k1, k2, k3, hd, d4);
+      for (int u = 0; u < 4; u++) { const float sv = d4[u] * f->attn_scale; sc[j][t + u] = sv; if (sv > m[j]) m[j] = sv; }
+    }
+  }
+#endif
+  for (; t < n; t++) {
+    const float *kt = kbase + (size_t)(t0 + t) * KW;
+    for (int j = 0; j < GROUP; j++) { const float sv = dotf(q[j], kt, hd) * f->attn_scale; sc[j][t] = sv; if (sv > m[j]) m[j] = sv; }
+  }
+  memset(o, 0, (size_t)GROUP * hd * sizeof(float));
+  for (int j = 0; j < GROUP; j++) { float sum = 0; for (int t = 0; t < n; t++) { const float e = expf(sc[j][t] - m[j]); sc[j][t] = e; sum += e; } lsum[j] = sum; }
+  int u = 0;
+#ifdef CL_ATT_BLOCK4
+  if ((hd & 3) == 0) for (; u + 4 <= n; u += 4) {
+    const float *v0 = vbase + (size_t)(t0 + u) * KW, *v1 = v0 + KW, *v2 = v1 + KW, *v3 = v2 + KW;
+    for (int j = 0; j < GROUP; j++) axpy4(o + (size_t)j * hd, v0, v1, v2, v3, sc[j][u], sc[j][u + 1], sc[j][u + 2], sc[j][u + 3], hd);
+  }
+#endif
+  for (; u < n; u++) {
+    const float *vt = vbase + (size_t)(t0 + u) * KW;
+    for (int j = 0; j < GROUP; j++) { const float p = sc[j][u]; float *oj = o + (size_t)j * hd; for (int d = 0; d < hd; d++) oj[d] += p * vt[d]; }
+  }
+}
+
+static void gattn_combine(void *vp, int h) {   /* one query head: merge its chunks */
+  const gattn_job *a = (const gattn_job *)vp;
+  const int hd = a->f->head_dim, GROUP = a->GROUP, g = h / GROUP, j = h % GROUP;
+  const size_t st = gpart_stride(GROUP, hd);
+  float M = -INFINITY;
+  for (int c = 0; c < a->nchunk; c++) { const float mc = a->part[((size_t)g * a->nchunk + c) * st + j]; if (mc > M) M = mc; }
+  float L = 0;
+  float *oh = a->ATT + (size_t)h * hd;
+  memset(oh, 0, (size_t)hd * sizeof(float));
+  for (int c = 0; c < a->nchunk; c++) {
+    const float *p = a->part + ((size_t)g * a->nchunk + c) * st;
+    const float w = expf(p[j] - M);
+    L += w * p[GROUP + j];
+    const float *oc = p + 2 * GROUP + (size_t)j * hd;
+    for (int d = 0; d < hd; d++) oh[d] += w * oc[d];
+  }
+  const float inv = 1.0f / L;
+  for (int d = 0; d < hd; d++) oh[d] *= inv;
+}
+
 /* nb tokens' attention, in parallel when there is enough work to be worth waking the threads (a short context with few heads is faster on one thread). */
 static void attend(cl_fwd *f, int l, const float *Q, float *ATT, int pos0, int nb) {
+  const int GROUP = f->n_head / (f->n_head_kv > 0 ? f->n_head_kv : 1);
+  if (nb == 1 && GROUP >= 2 && GROUP <= ATT_MAXGROUP && pos0 + 1 >= att_min() && !getenv("CLUTOR_PLAIN_ATTENTION")) {
+    const int G = f->n_head_kv, chunk = att_chunk(), nchunk = (pos0 + 1 + chunk - 1) / chunk;
+    const size_t need = (size_t)G * nchunk * gpart_stride(GROUP, f->head_dim);
+    if (f->attn_part_cap < need) { float *np = realloc(f->attn_part, need * sizeof(float)); if (np) { f->attn_part = np; f->attn_part_cap = need; } }
+    if (f->attn_part_cap >= need) {
+      gattn_job a = {f, l, pos0, G, GROUP, nchunk, chunk, Q, ATT, f->attn_part};
+      cl_parallel_for(G * nchunk, gattn_chunk, &a);
+      cl_parallel_for(f->n_head, gattn_combine, &a);
+      return;
+    }
+  }
   attn_job a = {f, l, Q, ATT, pos0};
   const int n = nb * f->n_head;
   if ((long)(pos0 + nb) * n >= 6000) cl_parallel_for(n, attn_task, &a);

@@ -29,8 +29,8 @@ export interface CodingTask {
   onEvent: (e: AgentEvent) => void;
 }
 
-/** How long one reply of the model may be. A whole file written into a tool call is long: a cap of 1,024 tokens cut such replies off in the middle, so a quarter of the context is allowed (at most 8,192). */
-export function replyTokens(contextTokens?: number): number { return Math.max(1024, Math.min(8192, Math.floor((contextTokens ?? 4096) / 4))); }
+/** How long one reply of the model may be. A whole file written into a tool call is long: a cap of 1,024 tokens cut such replies off in the middle, so a quarter of the context is allowed (at most 4,096: a model that rambles would otherwise keep going for many minutes). */
+export function replyTokens(contextTokens?: number): number { return Math.max(1024, Math.min(4096, Math.floor((contextTokens ?? 4096) / 4))); }
 
 /** Runs the agent on a project folder. Nothing in the folder changes: the result carries the proposed changes, which the caller applies or discards. */
 export async function runCodingTask(t: CodingTask): Promise<{ result: AgentResult; ws: ShadowWorkspace }> {

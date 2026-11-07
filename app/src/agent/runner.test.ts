@@ -72,10 +72,10 @@ describe("runCodingTask", () => {
 });
 
 describe("how long a reply may be", () => {
-  it("allows a quarter of the context, between 1,024 and 8,192 tokens, so a whole file fits in a tool call", () => {
+  it("allows a quarter of the context, between 1,024 and 4,096 tokens, so a whole file fits in a tool call", () => {
     expect(replyTokens(undefined)).toBe(1024);
     expect(replyTokens(4096)).toBe(1024);
     expect(replyTokens(16384)).toBe(4096);
-    expect(replyTokens(131072)).toBe(8192);
+    expect(replyTokens(131072)).toBe(4096);
   });
 });

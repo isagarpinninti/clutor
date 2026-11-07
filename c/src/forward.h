@@ -74,6 +74,7 @@ typedef struct {
   float *ps_x, *ps_xn, *ps_xg, *ps_q, *ps_k, *ps_v, *ps_att, *ps_hd, *ps_moe, *ps_hg, *ps_hu, *ps_wt, *ps_hde, *ps_rg;
   int *ps_sel;
   cl_xq *ps_xqe, *ps_xqq, *ps_xqff;
+  float *attn_part; size_t attn_part_cap;   /* partial results of the one-token attention, one per (key/value head, chunk of positions) */
   int locked;              /* the mapped weights are pinned in memory */
   int auto_stream;         /* the model did not fit in memory and no cache size was given, so the engine chose to stream its experts */
   int pos;                 /* tokens already in the KV cache */

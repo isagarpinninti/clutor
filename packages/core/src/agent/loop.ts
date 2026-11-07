@@ -245,6 +245,10 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
 
     if (finished !== undefined) {
       summary = finished;
+      if (!o.planOnly) {   // the model was sent back and still named files it never made: say so, rather than let the claim stand
+        const missing = await missingFiles(`${o.task}\n${finished}`, o.ws);
+        if (missing.length) summary = `${summary}\n\nNote: these files were named but were not created: ${missing.join(", ")}.`;
+      }
       if (o.verifyCommand && o.ws.size > 0 && o.runCommand) {
         const r = await executeTool(ctx, "run_command", { command: o.verifyCommand });
         const ran = r.command?.approved === true;

@@ -61,6 +61,7 @@ describe("agent loop: claims of files that do not exist", () => {
     const r = await runAgent({ task: "make b.css", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})) });
     expect(r.status).toBe("finished");
     expect(r.steps).toBe(4);
+    expect(r.summary).toContain("these files were named but were not created: b.css");
   });
   it("does not check a plan-only run, whose plan names files it has not written", async () => {
     const m = llm([() => say("read_file", { path: "a.ts" }), () => say("finish", { summary: "Plan: add b.ts and c.ts." })]);
