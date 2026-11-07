@@ -105,6 +105,8 @@ typedef HANDLE pthread_t;
 typedef int pthread_mutexattr_t;
 typedef int pthread_condattr_t;
 typedef int pthread_attr_t;
+#define PTHREAD_MUTEX_INITIALIZER SRWLOCK_INIT
+#define PTHREAD_COND_INITIALIZER CONDITION_VARIABLE_INIT
 static inline int pthread_mutex_init(pthread_mutex_t *m, const pthread_mutexattr_t *a) { (void)a; InitializeSRWLock(m); return 0; }
 static inline int pthread_mutex_lock(pthread_mutex_t *m) { AcquireSRWLockExclusive(m); return 0; }
 static inline int pthread_mutex_unlock(pthread_mutex_t *m) { ReleaseSRWLockExclusive(m); return 0; }
