@@ -201,6 +201,25 @@ static void test_kernel(void) {
     }
     CHECK(bad == 0, "half to single conversion: the fast path equals the reference for all 65,536 values");
   }
+  { /* single to half (the key/value cache is stored this way): the fast path equals the software reference, every half value survives the round trip, and the rule is round to nearest even */
+    int bad = 0, trips = 0, ties = 0;
+    for (uint32_t h = 0; h < 65536; h++) { const float a = cl_f16_to_f32_soft((uint16_t)h); if (!isnan(a) && cl_f32_to_f16_soft(a) != (uint16_t)h) trips++; }
+    uint32_t seed = 12345u;
+    for (int i = 0; i < 4000000; i++) {
+      seed = seed * 1664525u + 1013904223u;
+      uint32_t bits = seed;
+      if (i % 3 == 0) bits = (seed & 0x80000000u) | ((((seed >> 23) % 60u) + 90u) << 23) | (seed & 0x7fffffu);   /* around the half range, where the rounding happens */
+      float f; memcpy(&f, &bits, sizeof f);
+      const uint16_t a = cl_f32_to_f16(f), b = cl_f32_to_f16_soft(f);
+      if (isnan(f) ? ((a & 0x7c00u) != 0x7c00u || !(a & 0x3ffu)) : a != b) bad++;
+    }
+    /* ties: halfway between two halves goes to the even one (1 + 2^-11 is halfway between 1 and 1 + 2^-10) */
+    if (cl_f32_to_f16_soft(1.0f + ldexpf(1.0f, -11)) != 0x3c00u) ties++;
+    if (cl_f32_to_f16_soft(1.0f + 3.0f * ldexpf(1.0f, -11)) != 0x3c02u) ties++;
+    if (cl_f32_to_f16_soft(65520.0f) != 0x7c00u || cl_f32_to_f16_soft(65519.0f) != 0x7bffu) ties++;   /* overflow to infinity starts halfway above the largest half */
+    if (cl_f32_to_f16_soft(ldexpf(1.0f, -25)) != 0x0000u || cl_f32_to_f16_soft(ldexpf(1.5f, -25)) != 0x0001u) ties++;   /* the smallest subnormal, and halfway below it */
+    CHECK(bad == 0 && trips == 0 && ties == 0, "single to half conversion: fast path equals the reference on 4 million values, every half round-trips, ties go to even");
+  }
   CHECK(cl_f16_to_f32(0x3c00) == 1.0f && cl_f16_to_f32(0xc000) == -2.0f && cl_f16_to_f32(0x3555) > 0.333f && cl_f16_to_f32(0x3555) < 0.3334f, "half floats: 1, -2, one third");
   CHECK(cl_f16_to_f32(0x0001) == ldexpf(1.0f, -24) && cl_f16_to_f32(0x0200) == ldexpf(1.0f, -15) && isinf(cl_f16_to_f32(0x7c00)) && isnan(cl_f16_to_f32(0x7e00)), "half floats: subnormal, infinity, NaN");
   CHECK(sizeof(cl_block_q4_0) == 18 && sizeof(cl_block_q8_0) == 36, "block sizes");

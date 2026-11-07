@@ -47,7 +47,7 @@ typedef struct {
   cl_w tok_embd, output;
   float *out_norm_f;
   cl_fwd_layer *L;
-  float *kc, *vc;          /* [layer][position][n_head_kv * head_dim] */
+  uint16_t *kc, *vc;       /* the key/value cache, stored as half-precision floats (half the memory and half the traffic of single precision): [layer][position][n_head_kv * head_dim] */
   float *x, *xn, *q, *k, *v, *att, *scores, *logits_buf, *moe, *hg, *hu, *hd, *rl;
   cl_xq xq_e, xq_q, xq_ff, *xq_ffk;       /* the current activation vector, quantized for the integer dot products */
   cl_xs *xs;               /* when set, experts come from disk through the cache instead of from the mapped file */

@@ -1,12 +1,16 @@
 #define _GNU_SOURCE
 #include "forward.h"
 #include "quant.h"
+#include "kernel.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "plat.h"
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+#include <arm_neon.h>
+#endif
 
 static const cl_tensor *find(const cl_model *m, const char *name) {
   for (uint64_t i = 0; i < m->n_tensors; i++) if (!strcmp(m->tensors[i].name, name)) return &m->tensors[i];
@@ -210,7 +214,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   if (!f->hybrid) f->n_kv_layers = f->n_layer;
   size_t kvn = (size_t)f->n_kv_layers * f->n_ctx_max * f->n_kvw;
   size_t E = (size_t)f->n_embd;
-  f->kc = calloc(kvn, sizeof(float)); f->vc = calloc(kvn, sizeof(float));
+  f->kc = calloc(kvn, sizeof(uint16_t)); f->vc = calloc(kvn, sizeof(uint16_t));
   f->x = calloc(E, 4); f->xn = calloc(E, 4); f->q = calloc((size_t)f->n_q, 4); f->k = calloc((size_t)f->n_kvw, 4); f->v = calloc((size_t)f->n_kvw, 4); f->att = calloc((size_t)f->n_q, 4);
   f->scores = calloc((size_t)f->n_ctx_max, 4); f->moe = calloc(E, 4); f->hg = calloc((size_t)f->n_ff_exp * (size_t)(f->n_used + NU), 4); f->hu = calloc((size_t)f->n_ff_exp * (size_t)(f->n_used + NU), 4); f->hd = calloc(E * (size_t)(f->n_used + NU), 4);
   f->rl = calloc((size_t)f->n_expert + 1, 4); f->rlogit = calloc((size_t)f->n_expert + 1, 4);
@@ -396,6 +400,49 @@ static float *scores_for(int need) {
   }
   return tl_scores;
 }
+/* ---- The key/value cache is half precision ----
+ * Reading a key or a value converts it to single precision on the way into the multiply-add (one instruction per four values on Arm and with F16C on x86), so attention
+ * moves half the bytes. Storing rounds to nearest even; the reference model in test/tiny_olmoe.py rounds the same way. */
+static void kv_store(uint16_t *dst, const float *src, int n) {
+  int i = 0;
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+  for (; i + 4 <= n; i += 4) { const float16x4_t h = vcvt_f16_f32(vld1q_f32(src + i)); vst1_u16(dst + i, vreinterpret_u16_f16(h)); }
+#endif
+  for (; i < n; i++) dst[i] = cl_f32_to_f16(src[i]);
+}
+/* sum of a[i] * b[i] where b is half precision, with eight independent sums so the compiler or the vector code can keep the unit busy */
+static float dotf_h(const float *a, const uint16_t *b, int n) {
+  int i = 0;
+  float t = 0;
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+  float32x4_t s0 = vdupq_n_f32(0), s1 = s0;
+  for (; i + 8 <= n; i += 8) {
+    const float16x8_t h = vreinterpretq_f16_u16(vld1q_u16(b + i));
+    s0 = vfmaq_f32(s0, vld1q_f32(a + i), vcvt_f32_f16(vget_low_f16(h)));
+    s1 = vfmaq_f32(s1, vld1q_f32(a + i + 4), vcvt_high_f32_f16(h));
+  }
+  t = vaddvq_f32(vaddq_f32(s0, s1));
+#else
+  float s[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  for (; i + 8 <= n; i += 8) for (int u = 0; u < 8; u++) s[u] += a[i + u] * cl_f16_to_f32(b[i + u]);
+  t = ((s[0] + s[1]) + (s[2] + s[3])) + ((s[4] + s[5]) + (s[6] + s[7]));
+#endif
+  for (; i < n; i++) t += a[i] * cl_f16_to_f32(b[i]);
+  return t;
+}
+/* o[i] += p * v[i] where v is half precision */
+static void axpy_h(float *o, const uint16_t *v, float p, int n) {
+  int i = 0;
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+  for (; i + 8 <= n; i += 8) {
+    const float16x8_t h = vreinterpretq_f16_u16(vld1q_u16(v + i));
+    vst1q_f32(o + i, vfmaq_n_f32(vld1q_f32(o + i), vcvt_f32_f16(vget_low_f16(h)), p));
+    vst1q_f32(o + i + 4, vfmaq_n_f32(vld1q_f32(o + i + 4), vcvt_high_f32_f16(h), p));
+  }
+#endif
+  for (; i < n; i++) o[i] += p * cl_f16_to_f32(v[i]);
+}
+
 /* A float dot product with eight independent running sums, so the compiler can use the vector unit (a single sum in order cannot be vectorised without changing the answer). Both
  * the one-token path and the batched prompt path use it for the router, so they still agree to the last bit. */
 static float dotf(const float *a, const float *b, int n) {
@@ -419,17 +466,16 @@ static void attn_task(void *vp, int i) {
   const int kvo = (h / GROUP) * hd;
   float mx = -INFINITY;
   for (int t = 0; t <= pos; t++) {
-    const float *kt = f->kc + ((size_t)a->l * f->n_ctx_max + t) * KW + kvo;
-    sc[t] = dotf(qh, kt, hd) * f->attn_scale;
+    const uint16_t *kt = f->kc + ((size_t)a->l * f->n_ctx_max + t) * KW + kvo;
+    sc[t] = dotf_h(qh, kt, hd) * f->attn_scale;
     if (sc[t] > mx) mx = sc[t];
   }
   float sum = 0;
   for (int t = 0; t <= pos; t++) { sc[t] = expf(sc[t] - mx); sum += sc[t]; }
   memset(oh, 0, (size_t)hd * 4);
   for (int t = 0; t <= pos; t++) {
-    const float *vt = f->vc + ((size_t)a->l * f->n_ctx_max + t) * KW + kvo;
-    const float p = sc[t] / sum;
-    for (int d = 0; d < hd; d++) oh[d] += p * vt[d];
+    const uint16_t *vt = f->vc + ((size_t)a->l * f->n_ctx_max + t) * KW + kvo;
+    axpy_h(oh, vt, sc[t] / sum, hd);
   }
 }
 /* ---- One token's attention over a long context ----
@@ -446,26 +492,31 @@ static int att_min(void) { static int v = -1; if (v < 0) { const char *e = geten
 typedef struct { const cl_fwd *f; int l, pos, G, GROUP, nchunk, chunk; const float *Q; float *ATT; float *part; } gattn_job;
 static inline size_t gpart_stride(int GROUP, int hd) { return (size_t)GROUP * (2 + (size_t)hd); }   /* per task: max and sum for each head, then each head's partial output */
 
-#if defined(__ARM_NEON)
-#include <arm_neon.h>
-/* Four dot products against one query at once: the query is loaded once for four keys, and eight independent sums hide the latency of the multiply-adds. n is a multiple of 8. */
-static inline void dot4(const float *q, const float *k0, const float *k1, const float *k2, const float *k3, int n, float *out) {
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+/* Four dot products against one query at once, with the four keys in half precision: the query is loaded once for four keys, and eight independent sums hide the latency of the
+ * multiply-adds. n is a multiple of 8. */
+static inline void dot4(const float *q, const uint16_t *k0, const uint16_t *k1, const uint16_t *k2, const uint16_t *k3, int n, float *out) {
   float32x4_t a0 = vdupq_n_f32(0), a1 = a0, a2 = a0, a3 = a0, b0 = a0, b1 = a0, b2 = a0, b3 = a0;
   for (int i = 0; i < n; i += 8) {
     const float32x4_t qa = vld1q_f32(q + i), qb = vld1q_f32(q + i + 4);
-    a0 = vfmaq_f32(a0, qa, vld1q_f32(k0 + i)); b0 = vfmaq_f32(b0, qb, vld1q_f32(k0 + i + 4));
-    a1 = vfmaq_f32(a1, qa, vld1q_f32(k1 + i)); b1 = vfmaq_f32(b1, qb, vld1q_f32(k1 + i + 4));
-    a2 = vfmaq_f32(a2, qa, vld1q_f32(k2 + i)); b2 = vfmaq_f32(b2, qb, vld1q_f32(k2 + i + 4));
-    a3 = vfmaq_f32(a3, qa, vld1q_f32(k3 + i)); b3 = vfmaq_f32(b3, qb, vld1q_f32(k3 + i + 4));
+    const float16x8_t h0 = vreinterpretq_f16_u16(vld1q_u16(k0 + i)), h1 = vreinterpretq_f16_u16(vld1q_u16(k1 + i)), h2 = vreinterpretq_f16_u16(vld1q_u16(k2 + i)), h3 = vreinterpretq_f16_u16(vld1q_u16(k3 + i));
+    a0 = vfmaq_f32(a0, qa, vcvt_f32_f16(vget_low_f16(h0))); b0 = vfmaq_f32(b0, qb, vcvt_high_f32_f16(h0));
+    a1 = vfmaq_f32(a1, qa, vcvt_f32_f16(vget_low_f16(h1))); b1 = vfmaq_f32(b1, qb, vcvt_high_f32_f16(h1));
+    a2 = vfmaq_f32(a2, qa, vcvt_f32_f16(vget_low_f16(h2))); b2 = vfmaq_f32(b2, qb, vcvt_high_f32_f16(h2));
+    a3 = vfmaq_f32(a3, qa, vcvt_f32_f16(vget_low_f16(h3))); b3 = vfmaq_f32(b3, qb, vcvt_high_f32_f16(h3));
   }
   out[0] = vaddvq_f32(vaddq_f32(a0, b0)); out[1] = vaddvq_f32(vaddq_f32(a1, b1)); out[2] = vaddvq_f32(vaddq_f32(a2, b2)); out[3] = vaddvq_f32(vaddq_f32(a3, b3));
 }
-/* o += p0 * v0 + p1 * v1 + p2 * v2 + p3 * v3: the output is loaded and stored once for four values. n is a multiple of 4. */
-static inline void axpy4(float *o, const float *v0, const float *v1, const float *v2, const float *v3, float p0, float p1, float p2, float p3, int n) {
-  for (int d = 0; d < n; d += 4) {
-    float32x4_t x = vld1q_f32(o + d);
-    x = vfmaq_n_f32(x, vld1q_f32(v0 + d), p0); x = vfmaq_n_f32(x, vld1q_f32(v1 + d), p1); x = vfmaq_n_f32(x, vld1q_f32(v2 + d), p2); x = vfmaq_n_f32(x, vld1q_f32(v3 + d), p3);
-    vst1q_f32(o + d, x);
+/* o += p0 * v0 + p1 * v1 + p2 * v2 + p3 * v3 with the values in half precision: the output is loaded and stored once for four values. n is a multiple of 8. */
+static inline void axpy4(float *o, const uint16_t *v0, const uint16_t *v1, const uint16_t *v2, const uint16_t *v3, float p0, float p1, float p2, float p3, int n) {
+  for (int d = 0; d < n; d += 8) {
+    const float16x8_t h0 = vreinterpretq_f16_u16(vld1q_u16(v0 + d)), h1 = vreinterpretq_f16_u16(vld1q_u16(v1 + d)), h2 = vreinterpretq_f16_u16(vld1q_u16(v2 + d)), h3 = vreinterpretq_f16_u16(vld1q_u16(v3 + d));
+    float32x4_t x = vld1q_f32(o + d), y = vld1q_f32(o + d + 4);
+    x = vfmaq_n_f32(x, vcvt_f32_f16(vget_low_f16(h0)), p0); y = vfmaq_n_f32(y, vcvt_high_f32_f16(h0), p0);
+    x = vfmaq_n_f32(x, vcvt_f32_f16(vget_low_f16(h1)), p1); y = vfmaq_n_f32(y, vcvt_high_f32_f16(h1), p1);
+    x = vfmaq_n_f32(x, vcvt_f32_f16(vget_low_f16(h2)), p2); y = vfmaq_n_f32(y, vcvt_high_f32_f16(h2), p2);
+    x = vfmaq_n_f32(x, vcvt_f32_f16(vget_low_f16(h3)), p3); y = vfmaq_n_f32(y, vcvt_high_f32_f16(h3), p3);
+    vst1q_f32(o + d, x); vst1q_f32(o + d + 4, y);
   }
 }
 #define CL_ATT_BLOCK4 1
@@ -477,14 +528,14 @@ static void gattn_chunk(void *vp, int i) {
   const int hd = f->head_dim, KW = f->n_kvw, GROUP = a->GROUP, g = i / a->nchunk, c = i % a->nchunk;
   const int t0 = c * a->chunk, t1 = a->pos + 1 < t0 + a->chunk ? a->pos + 1 : t0 + a->chunk, n = t1 - t0;
   float *out = a->part + (size_t)i * gpart_stride(GROUP, hd), *m = out, *lsum = out + GROUP, *o = out + 2 * GROUP;
-  const float *kbase = f->kc + ((size_t)a->l * f->n_ctx_max) * KW + (size_t)g * hd, *vbase = f->vc + ((size_t)a->l * f->n_ctx_max) * KW + (size_t)g * hd;
+  const uint16_t *kbase = f->kc + ((size_t)a->l * f->n_ctx_max) * KW + (size_t)g * hd, *vbase = f->vc + ((size_t)a->l * f->n_ctx_max) * KW + (size_t)g * hd;
   float sc[ATT_MAXGROUP][ATT_CHUNK];
   const float *q[ATT_MAXGROUP];
   for (int j = 0; j < GROUP; j++) { q[j] = a->Q + (size_t)(g * GROUP + j) * hd; m[j] = -INFINITY; lsum[j] = 0; }
   int t = 0;
 #ifdef CL_ATT_BLOCK4
   if ((hd & 7) == 0) for (; t + 4 <= n; t += 4) {
-    const float *k0 = kbase + (size_t)(t0 + t) * KW, *k1 = k0 + KW, *k2 = k1 + KW, *k3 = k2 + KW;
+    const uint16_t *k0 = kbase + (size_t)(t0 + t) * KW, *k1 = k0 + KW, *k2 = k1 + KW, *k3 = k2 + KW;
     for (int j = 0; j < GROUP; j++) {
       float d4[4]; dot4(q[j], k0, k1, k2, k3, hd, d4);
       for (int u = 0; u < 4; u++) { const float sv = d4[u] * f->attn_scale; sc[j][t + u] = sv; if (sv > m[j]) m[j] = sv; }
@@ -492,21 +543,21 @@ static void gattn_chunk(void *vp, int i) {
   }
 #endif
   for (; t < n; t++) {
-    const float *kt = kbase + (size_t)(t0 + t) * KW;
-    for (int j = 0; j < GROUP; j++) { const float sv = dotf(q[j], kt, hd) * f->attn_scale; sc[j][t] = sv; if (sv > m[j]) m[j] = sv; }
+    const uint16_t *kt = kbase + (size_t)(t0 + t) * KW;
+    for (int j = 0; j < GROUP; j++) { const float sv = dotf_h(q[j], kt, hd) * f->attn_scale; sc[j][t] = sv; if (sv > m[j]) m[j] = sv; }
   }
   memset(o, 0, (size_t)GROUP * hd * sizeof(float));
   for (int j = 0; j < GROUP; j++) { float sum = 0; for (int t = 0; t < n; t++) { const float e = expf(sc[j][t] - m[j]); sc[j][t] = e; sum += e; } lsum[j] = sum; }
   int u = 0;
 #ifdef CL_ATT_BLOCK4
-  if ((hd & 3) == 0) for (; u + 4 <= n; u += 4) {
-    const float *v0 = vbase + (size_t)(t0 + u) * KW, *v1 = v0 + KW, *v2 = v1 + KW, *v3 = v2 + KW;
+  if ((hd & 7) == 0) for (; u + 4 <= n; u += 4) {
+    const uint16_t *v0 = vbase + (size_t)(t0 + u) * KW, *v1 = v0 + KW, *v2 = v1 + KW, *v3 = v2 + KW;
     for (int j = 0; j < GROUP; j++) axpy4(o + (size_t)j * hd, v0, v1, v2, v3, sc[j][u], sc[j][u + 1], sc[j][u + 2], sc[j][u + 3], hd);
   }
 #endif
   for (; u < n; u++) {
-    const float *vt = vbase + (size_t)(t0 + u) * KW;
-    for (int j = 0; j < GROUP; j++) { const float p = sc[j][u]; float *oj = o + (size_t)j * hd; for (int d = 0; d < hd; d++) oj[d] += p * vt[d]; }
+    const uint16_t *vt = vbase + (size_t)(t0 + u) * KW;
+    for (int j = 0; j < GROUP; j++) axpy_h(o + (size_t)j * hd, vt, sc[j][u], hd);
   }
 }
 
@@ -604,17 +655,15 @@ static void attn_token(cl_fwd *f, const cl_fwd_layer *y, int pos, float *qg, flo
   const int H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, KW = f->n_kvw, GROUP = H / KVH;
   for (int h = 0; h < H; h++) { float *qh = qg + (size_t)h * 2 * hd; rmsnorm(qh, qh, y->qn_f, hd, f->rms_eps); rope_neox(qh, f->rope_dim, pos, f->rope_base, NULL); }
   for (int h = 0; h < KVH; h++) { float *kh = k + (size_t)h * hd; rmsnorm(kh, kh, y->kn_f, hd, f->rms_eps); rope_neox(kh, f->rope_dim, pos, f->rope_base, NULL); }
-  float *kc = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW;
-  memcpy(kc, k, (size_t)KW * 4); memcpy(vc, v, (size_t)KW * 4);
+  uint16_t *kc = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW;
+  kv_store(kc, k, KW); kv_store(vc, v, KW);
   for (int h = 0; h < H; h++) {
     const float *qh = qg + (size_t)h * 2 * hd, *gate = qh + hd;
     const int kvo = (h / GROUP) * hd;
     float mx = -INFINITY;
     for (int t = 0; t <= pos; t++) {
-      const float *kt = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
-      float sc = 0;
-      for (int i = 0; i < hd; i++) sc += qh[i] * kt[i];
-      f->scores[t] = sc * f->attn_scale;
+      const uint16_t *kt = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
+      f->scores[t] = dotf_h(qh, kt, hd) * f->attn_scale;
       if (f->scores[t] > mx) mx = f->scores[t];
     }
     float sum = 0;
@@ -622,9 +671,8 @@ static void attn_token(cl_fwd *f, const cl_fwd_layer *y, int pos, float *qg, flo
     float *oh = att + h * hd;
     memset(oh, 0, (size_t)hd * 4);
     for (int t = 0; t <= pos; t++) {
-      const float *vt = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
-      const float p = f->scores[t] / sum;
-      for (int i = 0; i < hd; i++) oh[i] += p * vt[i];
+      const uint16_t *vt = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
+      axpy_h(oh, vt, f->scores[t] / sum, hd);
     }
     for (int i = 0; i < hd; i++) oh[i] *= sigmoidf(gate[i]);
   }
@@ -706,8 +754,8 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     }
     for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->q + h * hd, hd, pos, f->rope_base, f->rope_factors);
     for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->k + h * hd, hd, pos, f->rope_base, f->rope_factors);
-    float *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
-    memcpy(kc, f->k, (size_t)KW * 4); memcpy(vc, f->v, (size_t)KW * 4);
+    uint16_t *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
+    kv_store(kc, f->k, KW); kv_store(vc, f->v, KW);
     PD(2);
     attend(f, l, f->q, f->att, pos, 1);
     PD(3);
@@ -896,8 +944,8 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
       else { rmsnorm(q, q, y->qn_f, NQ, f->rms_eps); rmsnorm(k, k, y->kn_f, KW, f->rms_eps); }
       for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(q + h * hd, hd, pos, f->rope_base, f->rope_factors);
       for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(k + h * hd, hd, pos, f->rope_base, f->rope_factors);
-      float *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
-      memcpy(kc, k, (size_t)KW * 4); memcpy(vc, v, (size_t)KW * 4);
+      uint16_t *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
+      kv_store(kc, k, KW); kv_store(vc, v, KW);
     }
     PA(2);
     attend(f, l, Q, ATT, pos0, nb);

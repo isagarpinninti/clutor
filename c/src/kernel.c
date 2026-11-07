@@ -38,6 +38,28 @@ float cl_f16_to_f32_soft(uint16_t h) {
   return f;
 }
 
+uint16_t cl_f32_to_f16_soft(float f) {
+  uint32_t x;
+  memcpy(&x, &f, sizeof x);
+  const uint32_t sign = (x >> 16) & 0x8000u;
+  const uint32_t exp = (x >> 23) & 0xffu, man = x & 0x7fffffu;
+  if (exp == 0xffu) return (uint16_t)(sign | 0x7c00u | (man ? (0x200u | (man >> 13)) : 0u));   /* infinity, or NaN (kept a NaN) */
+  int e = (int)exp - 127 + 15;
+  if (e >= 31) return (uint16_t)(sign | 0x7c00u);   /* too large: infinity */
+  if (e <= 0) {                                      /* subnormal or zero */
+    if (e < -10) return (uint16_t)sign;
+    uint32_t m = (man | 0x800000u) >> (1 - e);
+    const uint32_t rem = (man | 0x800000u) & ((1u << (14 - e)) - 1u), half = 1u << (13 - e);
+    uint32_t r = m >> 13;
+    if (rem > half || (rem == half && (r & 1u))) r++;
+    return (uint16_t)(sign | r);
+  }
+  uint32_t r = ((uint32_t)e << 10) | (man >> 13);
+  const uint32_t rem = man & 0x1fffu;
+  if (rem > 0x1000u || (rem == 0x1000u && (r & 1u))) r++;   /* round to nearest, ties to even; a carry into the exponent is correct */
+  return (uint16_t)(sign | r);
+}
+
 void cl_quantize_q8_0(const float *x, cl_block_q8_0 *y, int n) {
   for (int b = 0; b < n / CL_QK; b++) {
     float amax = 0;
