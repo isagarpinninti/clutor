@@ -8,7 +8,7 @@ export function Spark({ size = 22 }: { size?: number }) {
 }
 
 /** The wait indicator: the asterisk, a shimmering word (cycling through a few, or the label you give it), and how long it has been. */
-export function Thinking({ label }: { label?: string }) {
+export function Thinking({ label, orb = true }: { label?: string; orb?: boolean }) {
   const [verb, setVerb] = useState(0);
   const [secs, setSecs] = useState(0);
   useEffect(() => {
@@ -19,7 +19,7 @@ export function Thinking({ label }: { label?: string }) {
   }, [label]);
   return (
     <div className="thinking" role="status" aria-live="polite">
-      <Spark />
+      {orb ? <Spark /> : null}
       <span className="shimmer" key={label ?? verb}>{label ?? VERBS[verb]}…</span>
       {secs >= 2 ? <span className="elapsed">{secs}s</span> : null}
     </div>

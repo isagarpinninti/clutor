@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { groupByProject, sessionDot, type CodeSession } from "../agent/sessions";
 import type { Conversation } from "../store";
+import { Logo } from "./Logo";
 import { ChevronIcon, ClockIcon, GaugeIcon, GearIcon, PlusIcon, SearchIcon, TrashIcon } from "./icons";
 
 interface Props {
@@ -61,8 +62,9 @@ export function Sidebar(p: Props) {
     <>
       <div className={`scrim${p.open ? " show" : ""}`} onClick={p.onClose} aria-hidden="true" />
       <aside className={`sidebar${p.open ? " open" : ""}${p.collapsed ? " collapsed" : ""}`} aria-label="Sidebar">
+        <div className="side-brand"><Logo size={26} /><span>Clutor</span></div>
         <div className="side-nav">
-          <button type="button" className="nav-item" onClick={p.mode === "code" ? p.onNewCode : p.onNew}><PlusIcon /><span>New</span></button>
+          <button type="button" className="nav-item primary" onClick={p.mode === "code" ? p.onNewCode : p.onNew}><PlusIcon /><span>{p.mode === "code" ? "New session" : "New chat"}</span></button>
           {searching || q ? (
             <label className="nav-item searchrow"><SearchIcon /><input ref={searchBox} value={q} onChange={(e) => setQ(e.target.value)} onBlur={() => { if (!q) setSearching(false); }} placeholder="Search" aria-label="Search" /></label>
           ) : <button type="button" className="nav-item" onClick={() => { setSearching(true); setTimeout(() => searchBox.current?.focus(), 0); }}><SearchIcon /><span>Search</span><kbd>⌘K</kbd></button>}

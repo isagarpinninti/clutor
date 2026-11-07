@@ -25,9 +25,9 @@ function CodeBlock({ children }: { children?: ReactNode }) {
 }
 
 /** A model's Markdown reply: GitHub-style tables and task lists, syntax-coloured code with a copy button. Raw HTML in the reply is shown as text, never run. */
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+export const Markdown = memo(function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
   return (
-    <div className="md">
+    <div className={`md${streaming ? " streaming" : ""}`}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]} components={{ pre: CodeBlock as never, a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer noopener">{children}</a> }}>
         {text}
       </ReactMarkdown>

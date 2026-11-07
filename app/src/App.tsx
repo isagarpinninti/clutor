@@ -1,3 +1,4 @@
+import { applyTheme } from "./theme";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ModelInfo, type SystemInfo } from "./bridge";
 import { streamReply, toChatMessages } from "./chat";
@@ -33,10 +34,10 @@ import { modelForMode, loadConversations, loadSettings, saveConversations, saveS
 const newConversation = (): Conversation => ({ id: uid(), title: "New chat", updated: Date.now(), messages: [] });
 
 const SUGGESTIONS = [
-  { label: "Explain something", text: "Explain how a mixture-of-experts model works, in simple terms." },
-  { label: "Write code", text: "Write a function that " },
-  { label: "Summarise", text: "Summarise the following text in five bullet points:\n\n" },
-  { label: "Look something up", text: "What are the latest developments in " },
+  { label: "Explain something", hint: "How a mixture-of-experts model works", text: "Explain how a mixture-of-experts model works, in simple terms." },
+  { label: "Write code", hint: "A function, a script, a fix", text: "Write a function that " },
+  { label: "Summarise", hint: "Long text in five bullets", text: "Summarise the following text in five bullet points:\n\n" },
+  { label: "Look something up", hint: "With the web, if Browse is on", text: "What are the latest developments in " },
 ];
 const greeting = (name?: string): string => { const h = new Date().getHours(); const base = h < 5 ? "Burning the midnight oil" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"; return name ? `${base}, ${name}` : h < 5 ? `${base}?` : base; };
 
@@ -76,6 +77,7 @@ export function App() {
   const newCodeSession = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) createSession(p); };
   const deleteSession = (id: string): void => { setCodeSessions((all) => all.filter((s) => s.id !== id)); if (id === codeId) setCodeId(""); };
   useEffect(() => { try { (document.documentElement.style as CSSStyleDeclaration & { zoom: string }).zoom = ({ small: "0.92", medium: "1", large: "1.1" } as const)[settings.textSize]; } catch { /* unsupported */ } }, [settings.textSize]);
+  useEffect(() => applyTheme(settings.theme ?? "dark"), [settings.theme]);
   const mac = bridge.native && /Mac/i.test(navigator.userAgent);
   // Back and forward move between the places you opened (a chat or a coding session), like a browser.
   const hist = useRef<{ stack: string[]; i: number; skip: boolean }>({ stack: [], i: -1, skip: false });
@@ -363,15 +365,15 @@ export function App() {
             </div>
           ) : (
             <div className="home">
-              <div className="mark"><Logo size={48} /></div>
-              {state.status === "loading" ? <div className="loading-wait"><Thinking label="Loading your model" /></div> : <h2>{greeting(settings.userName)}</h2>}
+              <div className="mark"><Logo size={64} state={state.status === "loading" || busy ? "thinking" : "idle"} /></div>
+              {state.status === "loading" ? <div className="loading-wait"><Thinking label="Loading your model" orb={false} /></div> : <><h2>{greeting(settings.userName)}</h2><p className="tagline">What would you like to think through?</p></>}
               {composer(true)}
               {state.status === "error" ? <p className="home-note err">{state.error}</p> : null}
               {!haveModel && state.status !== "loading" ? (
                 <div className="home-note"><p>Choose a model to start. Clutor runs it on your own hardware, with its own engine.</p><button type="button" className="btn" onClick={() => setDialog("models")}>Choose a model</button></div>
               ) : state.status === "loading" ? <p className="home-note">Mapping the weights into memory. A large model can take a while the first time.</p> : (
                 <div className="suggest">
-                  {settings.suggestions ? SUGGESTIONS.map((s) => <button type="button" key={s.label} className="suggestion" onClick={() => setPrefill((p) => ({ text: s.text, n: (p?.n ?? 0) + 1 }))}>{s.label}</button>) : null}
+                  {settings.suggestions ? SUGGESTIONS.map((s) => <button type="button" key={s.label} className="suggestion" onClick={() => setPrefill((p) => ({ text: s.text, n: (p?.n ?? 0) + 1 }))}><b>{s.label}</b><span>{s.hint}</span></button>) : null}
                 </div>
               )}
             </div>

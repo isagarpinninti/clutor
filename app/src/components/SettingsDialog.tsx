@@ -133,7 +133,7 @@ export function SettingsDialog({ settings, onChange, system, modelName, servers,
 
             {sec === "appearance" ? (
               <>
-                <Row title="Theme" hint="Clutor is dark only."><span className="badge">Dark</span></Row>
+                <Row title="Theme" hint="Follow the system, or always dark or light."><Segmented label="Theme" value={settings.theme ?? "dark"} options={[{ id: "dark", label: "Dark" }, { id: "light", label: "Light" }, { id: "system", label: "System" }]} onChange={(v) => set("theme", v)} /></Row>
                 <Row title="Text size" hint="Scales the whole interface."><Segmented label="Text size" value={settings.textSize} options={[{ id: "small", label: "Small" }, { id: "medium", label: "Medium" }, { id: "large", label: "Large" }]} onChange={(v) => set("textSize", v)} /></Row>
                 <Row title="Suggestions on the chat home screen" hint="A few starter prompts under the message box."><Switch on={settings.suggestions} onChange={(v) => set("suggestions", v)} label="Suggestions" /></Row>
               </>

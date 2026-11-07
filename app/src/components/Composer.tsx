@@ -103,8 +103,8 @@ export function Composer({ busy, disabled, placeholder, thinking, onThinking, br
             { id: "browse", label: "Browse the web", hint: "Look things up first; your message goes to a search service", checked: browse, onSelect: () => onBrowse(!browse) },
             { id: "bg", label: "Run in the background", hint: "Keeps generating while you do other things (Ctrl+Enter)", disabled: !canSend, onSelect: background },
           ]} />
-          {thinking ? <button type="button" className="pill" onClick={() => onThinking(false)} title="Turn off">Think <CloseIcon /></button> : null}
-          {browse ? <button type="button" className="pill" onClick={() => onBrowse(false)} title="Turn off">Browse <CloseIcon /></button> : null}
+          <button type="button" className={`toggle${thinking ? " on" : ""}`} aria-pressed={thinking} onClick={() => onThinking(!thinking)} title="Let thinking models reason before answering (slower, often better)">Think</button>
+          <button type="button" className={`toggle${browse ? " on" : ""}`} aria-pressed={browse} onClick={() => onBrowse(!browse)} title="Look things up on the web first; your message goes to a search service">Browse</button>
           <span className="spacer" />
           {picker}
           {busy

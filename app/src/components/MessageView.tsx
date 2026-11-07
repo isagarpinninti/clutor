@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Msg } from "../store";
 import { Markdown } from "./Markdown";
 import { CheckIcon, CloseIcon, CopyIcon, FileIcon } from "./icons";
@@ -10,21 +10,28 @@ import { JobStrip, type JobAction } from "./JobStrip";
 
 export function MessageView({ msg, streaming, showReasoning, job, position, onJobAction }: { msg: Msg; streaming: boolean; showReasoning: boolean; job?: Job | undefined; position?: number; onJobAction?: (id: string, a: JobAction) => void }) {
   const [copied, setCopied] = useState(false);
+  // How long the model thought: measured while this message is on screen (a message loaded from history just says "Thought process", because the time was never saved).
+  const thoughtFrom = useRef<number | undefined>(undefined);
+  const [thought, setThought] = useState<number | undefined>();
+  useEffect(() => {
+    if (streaming && msg.reasoning && !msg.content && thoughtFrom.current === undefined) thoughtFrom.current = Date.now();
+    if (thoughtFrom.current !== undefined && thought === undefined && (msg.content || !streaming)) setThought(Math.max(1, Math.round((Date.now() - thoughtFrom.current) / 1000)));
+  }, [streaming, msg.reasoning, msg.content, thought]);
   if (msg.role === "user") return <div className="msg user"><div className="who">You</div><div className="prompt">{msg.content}{msg.files?.length ? <div className="attach-row sent">{msg.files.map((f) => <span key={f.name} className="attach"><FileIcon /><span className="attach-name">{f.name}</span>{f.truncated ? <small>cut to fit</small> : null}</span>)}</div> : null}</div></div>;
   const s = msg.stats;
   const copy = (): void => { void navigator.clipboard?.writeText(msg.content).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); };
   return (
     <div className="msg assistant">
-      <div className="who"><Logo size={22} /><span>Clutor</span></div>
+      <div className="who"><Logo size={28} state={streaming || job?.status === "running" ? (msg.content ? "speaking" : "thinking") : "idle"} /><span>Clutor</span></div>
       <div className="body">
         {msg.reasoning ? (
           <details className="reasoning" open={showReasoning}>
-            <summary>{streaming && !msg.content ? "Thinking…" : "Thought process"}</summary>
+            <summary className={streaming && !msg.content ? "live" : ""}>{streaming && !msg.content ? "Thinking" : thought !== undefined ? `Thought for ${thought}s` : "Thought process"}</summary>
             <div className="reasoning-text">{msg.reasoning}</div>
           </details>
         ) : null}
         {job && onJobAction ? <JobStrip job={job} position={position ?? 0} onAction={onJobAction} /> : null}
-        {msg.content ? <Markdown text={msg.content} /> : (streaming || job?.status === "running") && !msg.reasoning ? <Thinking /> : null}
+        {msg.content ? <Markdown text={msg.content} streaming={streaming} /> : (streaming || job?.status === "running") && !msg.reasoning ? <Thinking orb={false} /> : null}
         {msg.web ? (
           <div className={`websearch ${msg.web.state}`} role="status">
             {msg.web.state === "searching" ? <Spark size={12} /> : msg.web.state === "done" ? <CheckIcon /> : <CloseIcon />}
