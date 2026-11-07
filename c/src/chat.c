@@ -247,7 +247,7 @@ void cl_chat_cancel(cl_chat *c) { atomic_store(&c->cancel, 1); }
 void cl_chat_close(cl_chat *c) {
   if (!c) return;
   cl_fwd_close(&c->f);
-  cl_tok_free(c->tok); free(c->tokmap); free(c->logits); free(c->hist); free(c->out.p);
+  cl_tok_free(c->tok); cl_meta_free(&c->meta); free(c->tokmap); free(c->logits); free(c->hist); free(c->out.p);
   free(c);
 }
 

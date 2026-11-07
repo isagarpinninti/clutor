@@ -555,6 +555,7 @@ static int cmd_prefillcheck(int argc, char **argv) {
   double tol = num(argc, argv, "--tol", 0.02);
   int ok = maxd <= tol && ia == ib;
   printf("{\"tokens\":%d,\"maxAbsLogitDiff\":%.6g,\"sameTopToken\":%s,\"stepSeconds\":%.3f,\"batchSeconds\":%.3f,\"ok\":%s}\n", n, maxd, ia == ib ? "true" : "false", t_step, t_batch, ok ? "true" : "false");
+  cl_fwd_close(&f); cl_tok_free(tok); cl_meta_free(&meta); free(map); free(ids); free(la); free(lb);   /* a leak checker (on by default on Linux) must find nothing left over */
   return ok ? 0 : 1;
 }
 
