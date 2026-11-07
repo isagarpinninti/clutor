@@ -19,7 +19,7 @@ export function Logo({ size = 24, state = "idle", tile = false }: { size?: numbe
   const scale = tile ? 0.74 : 1;
   return (
     <svg className={`logo ${state}${tile ? " tile" : ""}`} width={size} height={size} viewBox="0 0 64 64" role="img" aria-label="Clutor">
-      {tile ? <rect width="64" height="64" rx="16" fill="var(--brand, #3b6fe3)" /> : null}
+      {tile ? <rect width="64" height="64" rx="16" fill="var(--brand, #3150e0)" /> : null}
       <g fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" transform={`translate(32 32) scale(${scale}) translate(-32 -32)`}>
         <polygon className="logo-core" points={CORE} />
         {CELLS.map((p, i) => <polygon key={i} className="logo-cell" points={p} style={{ ["--i" as string]: i }} />)}

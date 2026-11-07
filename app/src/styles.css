@@ -4,10 +4,10 @@
   --ink-rgb: 255 255 255; --shade-rgb: 0 0 0;
   --g0: #060607; --g1: #0e0e10; --g2: #1a1a1d; --g3: #26262a; --g4: #323237; --g5: #3e3e44; --g6: #54545b; --g7: #6a6a71; --g8: #808088; --g9: #93939b; --g10: #a5a5ad; --g11: #b8b8c0; --g12: #c9c9d0; --g13: #dbdbe1; --g14: #ececf1; --g15: #f8f8fa;
   --bg: var(--g0); --panel: var(--g0); --panel-2: var(--g1); --card: var(--g1); --text: var(--g14); --muted: var(--g8); --line: var(--g2);
-  --accent: #7ea6ff; --accent-2: #7ea6ff; --accent-ink: #ffffff; --accent-soft: rgb(126 166 255 / .12); --danger: #ff8f86; --ok: #7ee2a8; --warn: #e6b450;
-  --code-bg: var(--g1); --code-head: var(--g2); --shadow: 0 0 0 transparent; --glow: none; --link: #8db2ff;
+  --accent: #4a68f5; --accent-2: #4a68f5; --accent-ink: #ffffff; --accent-soft: rgb(74 104 245 / .16); --danger: #ff8f86; --ok: #7ee2a8; --warn: #e6b450;
+  --code-bg: var(--g1); --code-head: var(--g2); --shadow: 0 0 0 transparent; --glow: none; --link: #7d95ff;
   --hl-kw: #c4a8ff; --hl-str: #8fe0ad; --hl-num: #f3b887; --hl-com: #7a8090; --hl-fn: #8ab8ff; --hl-ty: #7fd8e0;
-  --on-brand: #ffffff; --brand: #3b6fe3;
+  --on-brand: #ffffff; --brand: #3150e0;
   --r: 8px; --r-lg: 18px;
   --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -17,7 +17,7 @@
   color-scheme: light;
   --ink-rgb: 12 18 36; --shade-rgb: 12 18 36;
   --g0: #ffffff; --g1: #efeff0; --g2: #dfdfe2; --g3: #ced0d3; --g4: #bec0c5; --g5: #aeb0b6; --g6: #9ea0a7; --g7: #8e9099; --g8: #7d818a; --g9: #6d717c; --g10: #5d616d; --g11: #4d515e; --g12: #3d4150; --g13: #2c3241; --g14: #1c2233; --g15: #0c1224;
-  --accent: #2c5fd6; --accent-2: #2c5fd6; --accent-soft: rgb(44 95 214 / .10); --brand: #2c5fd6; --glow: none; --danger: #c93c37; --ok: #17803d; --warn: #9a6a00; --link: #2554d6;
+  --accent: #2a4bd8; --accent-2: #2a4bd8; --accent-soft: rgb(42 75 216 / .10); --brand: #2a4bd8; --glow: none; --danger: #c93c37; --ok: #17803d; --warn: #9a6a00; --link: #2554d6;
   --hl-kw: #7b45d6; --hl-str: #1a7f4b; --hl-num: #b45a14; --hl-com: #7b8394; --hl-fn: #2554d6; --hl-ty: #0e7490;
   --shadow: 0 1px 2px rgb(13 16 26 / .06), 0 8px 24px rgb(13 16 26 / .06);
 }
