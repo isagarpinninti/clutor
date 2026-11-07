@@ -400,7 +400,7 @@ describe("syntax highlighting", () => {
 });
 
 describe("agent display", () => {
-  it("titles tool calls like Claude's: Read(file), Update(file), Run(command)", () => {
+  it("titles tool calls plainly: Read(file), Update(file), Run(command)", () => {
     expect(callTitle("read_file", { path: "a.ts" })).toBe("Read(a.ts)");
     expect(callTitle("edit_file", { path: "a.ts" })).toBe("Update(a.ts)");
     expect(callTitle("run_command", { command: "npm test" })).toBe("Run(npm test)");

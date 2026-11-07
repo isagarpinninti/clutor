@@ -101,7 +101,21 @@ export class OpenAiCompatibleClient implements LlmClient {
   }
 }
 
-/** The first balanced JSON object in `text`, tolerating prose and ``` fences around it. Returns undefined if there is none. */
+/** Escapes the raw line breaks and tabs that models put inside a JSON string when they write a whole file into a tool call: strictly invalid, but unambiguous. */
+function escapeControlChars(json: string): string {
+  let out = "", inStr = false, esc = false;
+  for (const c of json) {
+    if (inStr) {
+      if (esc) { esc = false; out += c; continue; }
+      if (c === "\\") { esc = true; out += c; continue; }
+      if (c === '"') { inStr = false; out += c; continue; }
+      out += c === "\n" ? "\\n" : c === "\r" ? "\\r" : c === "\t" ? "\\t" : c;
+    } else { if (c === '"') inStr = true; out += c; }
+  }
+  return out;
+}
+
+/** The first balanced JSON object in `text`, tolerating prose and ``` fences around it and raw line breaks inside its strings. Returns undefined if there is none. */
 export function extractJsonObject(text: string): unknown {
   const start = text.indexOf("{");
   for (let s = start; s >= 0 && s < text.length; s = text.indexOf("{", s + 1)) {
@@ -112,11 +126,26 @@ export function extractJsonObject(text: string): unknown {
       if (c === '"') inStr = true;
       else if (c === "{") depth++;
       else if (c === "}" && --depth === 0) {
-        try { return JSON.parse(text.slice(s, i + 1)); } catch { break; }
+        const raw = text.slice(s, i + 1);
+        try { return JSON.parse(raw); } catch { /* try again with the line breaks escaped */ }
+        try { return JSON.parse(escapeControlChars(raw)); } catch { break; }
       }
     }
   }
   return undefined;
+}
+
+/** True when the text starts a tool call as JSON but ends before it is closed: the reply was cut off (the model ran out of room), usually in the middle of a long file. */
+export function looksCutOff(text: string): boolean {
+  const s = text.indexOf("{");
+  if (s < 0 || !/"(tool|name)"\s*:/.test(text.slice(s, s + 200))) return false;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = s; i < text.length; i++) {
+    const c = text[i] as string;
+    if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
+    if (c === '"') inStr = true; else if (c === "{") depth++; else if (c === "}" && --depth === 0) return false;
+  }
+  return true;
 }
 
 /** What the model is told in `json` mode, appended to the system prompt. */
@@ -125,5 +154,8 @@ export function jsonProtocolPrompt(): string {
     "Reply with exactly one JSON object and nothing else: {\"tool\": \"<name>\", \"args\": {...}}.",
     "Call one tool per reply. You will see the result and then reply again. The tools:",
     ...TOOLS.map((t) => `- ${t.name}(${Object.entries(t.fields).map(([k, f]) => `${k}${f.required ? "" : "?"}: ${f.type}`).join(", ")}): ${t.description}`),
+    "To create a file you must call write_file with the whole file in args.content (escape newlines as \\n). Never paste code into your reply as text: text is not saved anywhere. Example of a first reply for \"make a page\":",
+    '{"tool": "write_file", "args": {"path": "index.html", "content": "<!doctype html>\\n<html>...</html>\\n"}}',
+    "Then write the next file the same way. Call finish only after every file you need exists, and say plainly what you made.",
   ].join("\n");
 }

@@ -1,10 +1,11 @@
+#define _GNU_SOURCE
 #include "quant.h"
 #include "kernel.h"
 #include <math.h>
-#include <pthread.h>
+#include "cl_thread.h"
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
+#include "plat.h"
 
 /* Block layouts are ggml's (llama.cpp/ggml-common.h); the maths below follows its dequantize_row_* functions. */
 #define QK_K 256
@@ -426,14 +427,17 @@ static void dotb_q6_K(int nblk, const b_q6_K *x, const cl_xq *xq, int nb, float 
 /* ---- thread pool: persistent workers claim chunks of a batch; the caller works too ---- */
 #include <stdatomic.h>
 #define CHUNK 16
+#ifndef CL_TILE
+#define CL_TILE 8   /* tokens per tile in a batched product; measured: 8 is as fast as any, and far faster than 32 or 64 */
+#endif
 static int g_threads = 0;
 void cl_set_threads(int n) { g_threads = n < 1 ? 1 : n > 16 ? 16 : n; }
 int cl_get_threads(void) {
-  if (!g_threads) { long c = sysconf(_SC_NPROCESSORS_ONLN); cl_set_threads(c > 0 ? (int)c : 1); }
+  if (!g_threads) { cl_set_threads(cl_ncpu()); }
   return g_threads;
 }
 
-typedef struct { const cl_mv *jobs; int n; int *first; int total; } batch_t;   /* first[j] = index of job j's first chunk */
+typedef struct { const cl_mv *jobs; int n; int *first; int total; void (*fn)(void *, int); void *ctx; } batch_t;   /* first[j] = index of job j's first chunk; with fn set, chunk c is fn(ctx, c) */
 static pthread_mutex_t pool_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t pool_cv = PTHREAD_COND_INITIALIZER, pool_done = PTHREAD_COND_INITIALIZER;
 static _Atomic(const batch_t *) cur_batch;
@@ -443,28 +447,34 @@ static int pool_started, pool_size;
 
 /* CLUTOR_FLOAT_MATH=1 skips the 8-bit activations and multiplies dequantized weights in float: slower, and the reference the integer kernels are measured against. */
 static int float_math(void) {
-  static int v = -1;
-  if (v < 0) { const char *e = getenv("CLUTOR_FLOAT_MATH"); v = e && *e == '1'; }
-  return v;
+  static atomic_int v = -1;   /* read by every pool thread: atomic, so the first reads racing to set it are well defined */
+  int x = atomic_load_explicit(&v, memory_order_relaxed);
+  if (x < 0) { const char *e = getenv("CLUTOR_FLOAT_MATH"); x = e && *e == '1'; atomic_store_explicit(&v, x, memory_order_relaxed); }
+  return x;
 }
 
 static void do_rows(const cl_mv *j, int r0, int r1) {
   uint32_t t = j->type;
   const cl_xq *xq = float_math() ? NULL : j->xq;
-  const int nb = j->nb > 1 ? (j->nb > 64 ? 64 : j->nb) : 1;
+  const int nb = j->nb > 1 ? (j->nb > CL_MV_MAX ? CL_MV_MAX : j->nb) : 1;   /* callers never ask for more (forward.c asserts it); the clamp only keeps a bad batch from overrunning acc[] */
   uint64_t rb = cl_row_bytes(t, (uint64_t)j->cols);
   const uint8_t *w = j->w;
   float *out = j->out;
   const size_t os = j->out_stride;
 #ifdef CL_Q_NEON
   if (nb > 1 && xq && (t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K)) {
-    float sums[64];
-    for (int r = r0; r < r1; r++) {
-      const void *row = w + (size_t)r * rb;
-      if (t == CL_T_Q4_K) dotb_q4_K(j->cols / 256, (const b_q4_K *)row, xq, nb, sums);
-      else if (t == CL_T_Q5_K) dotb_q5_K(j->cols / 256, (const b_q5_K *)row, xq, nb, sums);
-      else dotb_q6_K(j->cols / 256, (const b_q6_K *)row, xq, nb, sums);
-      for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = sums[b];
+    /* The batch is walked in tiles of CL_TILE tokens: a weight row is re-read for each tile (from the processor's cache, it is only a few KB), but the tile's activations stay in
+     * the fastest cache, which is where a large batch used to lose most of its speed. */
+    float sums[CL_TILE];
+    for (int b0 = 0; b0 < nb; b0 += CL_TILE) {
+      const int nt = nb - b0 < CL_TILE ? nb - b0 : CL_TILE;
+      for (int r = r0; r < r1; r++) {
+        const void *row = w + (size_t)r * rb;
+        if (t == CL_T_Q4_K) dotb_q4_K(j->cols / 256, (const b_q4_K *)row, xq + b0, nt, sums);
+        else if (t == CL_T_Q5_K) dotb_q5_K(j->cols / 256, (const b_q5_K *)row, xq + b0, nt, sums);
+        else dotb_q6_K(j->cols / 256, (const b_q6_K *)row, xq + b0, nt, sums);
+        for (int b = 0; b < nt; b++) out[(size_t)(b0 + b) * os + r] = sums[b];
+      }
     }
     return;
   }
@@ -474,7 +484,7 @@ static void do_rows(const cl_mv *j, int r0, int r1) {
   else if (t == CL_T_Q6_K && xq) for (int r = r0; r < r1; r++) { const b_q6_K *row = (const b_q6_K *)(const void *)(w + (size_t)r * rb); for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = dot_q6_K(j->cols / 256, row, xq[b].b); }
   else {   /* any other type (or exact float math): dequantize a block at a time and use the float vectors */
     uint32_t bl = cl_type_block(t), bb = cl_type_bytes(t);
-    float buf[256], acc[64];
+    float buf[256], acc[CL_MV_MAX];
     for (int r = r0; r < r1; r++) {
       const uint8_t *row = w + (size_t)r * rb;
       for (int b = 0; b < nb; b++) acc[b] = 0;
@@ -492,6 +502,7 @@ static void run_chunks(const batch_t *b) {
   for (;;) {
     int c = atomic_fetch_add(&next_chunk, 1);
     if (c >= b->total) return;
+    if (b->fn) { b->fn(b->ctx, c); continue; }
     int j = 0;
     while (j + 1 < b->n && b->first[j + 1] <= c) j++;
     int r0 = (c - b->first[j]) * CHUNK, r1 = r0 + CHUNK;
@@ -518,13 +529,11 @@ static void *pool_worker(void *arg) {
   return NULL;
 }
 
-void cl_matvec_batch(const cl_mv *jobs, int n) {
-  int first[64], total = 0;
-  if (n > 64) n = 64;
-  for (int j = 0; j < n; j++) { first[j] = total; total += (jobs[j].rows + CHUNK - 1) / CHUNK; }
-  batch_t b = {jobs, n, first, total};
+/* Runs the batch on the pool (the caller works too) and returns when every chunk is done. */
+static void dispatch(const batch_t *bp) {
+  batch_t b = *bp;
   int nt = cl_get_threads();
-  if (nt == 1 || total < 4) { atomic_store(&next_chunk, 0); run_chunks(&b); return; }
+  if (nt == 1 || b.total < (b.fn ? 2 : 4)) { atomic_store(&next_chunk, 0); run_chunks(&b); return; }
   if (!pool_started) {
     pool_started = 1; pool_size = nt - 1;
     for (int i = 0; i < pool_size; i++) { pthread_t t; if (pthread_create(&t, NULL, pool_worker, NULL) == 0) pthread_detach(t); else { pool_size = i; break; } }
@@ -543,6 +552,20 @@ void cl_matvec_batch(const cl_mv *jobs, int n) {
     while (atomic_load(&pending_workers) > 0) pthread_cond_wait(&pool_done, &pool_mu);
     pthread_mutex_unlock(&pool_mu);
   }
+}
+
+void cl_matvec_batch(const cl_mv *jobs, int n) {
+  int first[64], total = 0;
+  if (n > 64) n = 64;
+  for (int j = 0; j < n; j++) { first[j] = total; total += (jobs[j].rows + CHUNK - 1) / CHUNK; }
+  batch_t b = {jobs, n, first, total, NULL, NULL};
+  dispatch(&b);
+}
+
+void cl_parallel_for(int n, void (*fn)(void *ctx, int i), void *ctx) {
+  if (n <= 0) return;
+  batch_t b = {NULL, 0, NULL, n, fn, ctx};
+  dispatch(&b);
 }
 
 void cl_matvec(uint32_t type, const void *w, int rows, int cols, const float *x, float *out) {

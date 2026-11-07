@@ -22,7 +22,7 @@ const char *cl_kernel_name(void) {
 #endif
 }
 
-float cl_f16_to_f32(uint16_t h) {
+float cl_f16_to_f32_soft(uint16_t h) {
   uint32_t sign = (uint32_t)(h & 0x8000u) << 16, exp = (h >> 10) & 0x1f, man = h & 0x3ffu, bits;
   if (exp == 0) {
     if (man == 0) bits = sign;

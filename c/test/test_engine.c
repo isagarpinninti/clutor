@@ -193,6 +193,14 @@ static void random_blocks(int nb, cl_block_q4_0 *w, cl_block_q8_0 *a, int extrem
 
 static void test_kernel(void) {
   printf("kernel path: %s\n", cl_kernel_name());
+  { /* the fast conversion agrees with the reference on every one of the 65,536 half-precision bit patterns (NaNs only need to be NaNs) */
+    int bad = 0;
+    for (uint32_t h = 0; h < 65536; h++) {
+      float a = cl_f16_to_f32((uint16_t)h), b = cl_f16_to_f32_soft((uint16_t)h);
+      if (isnan(b) ? !isnan(a) : memcmp(&a, &b, sizeof a) != 0) bad++;
+    }
+    CHECK(bad == 0, "half to single conversion: the fast path equals the reference for all 65,536 values");
+  }
   CHECK(cl_f16_to_f32(0x3c00) == 1.0f && cl_f16_to_f32(0xc000) == -2.0f && cl_f16_to_f32(0x3555) > 0.333f && cl_f16_to_f32(0x3555) < 0.3334f, "half floats: 1, -2, one third");
   CHECK(cl_f16_to_f32(0x0001) == ldexpf(1.0f, -24) && cl_f16_to_f32(0x0200) == ldexpf(1.0f, -15) && isinf(cl_f16_to_f32(0x7c00)) && isnan(cl_f16_to_f32(0x7e00)), "half floats: subnormal, infinity, NaN");
   CHECK(sizeof(cl_block_q4_0) == 18 && sizeof(cl_block_q8_0) == 36, "block sizes");

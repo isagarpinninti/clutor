@@ -10,11 +10,13 @@
     "test": "npm run test -w @clutor/core -w @clutor/cli",
     "bench": "node scripts/bench.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "gates": "npm run typecheck && npm run lint && npm run engine && npm run engine:test && npm run engine:golden && npm run engine:chat && npm run test && npm run build && npm run bench && npm run smoke",
+    "gates": "npm run typecheck && npm run lint && npm run engine && npm run engine:test && npm run engine:golden && npm run engine:chat && npm run engine:prefill && npm run engine:autostream && npm run test && npm run build && npm run bench && npm run smoke",
     "engine": "make -C c",
     "engine:test": "make -C c test",
     "engine:golden": "make -C c golden-paths",
     "engine:chat": "make -C c chat-test",
+    "engine:prefill": "make -C c prefill-test",
+    "engine:autostream": "make -C c auto-stream-test",
     "engine:fuzz": "make -C c fuzz"
   },
   "workspaces": [

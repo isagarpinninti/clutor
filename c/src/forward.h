@@ -33,7 +33,7 @@ typedef struct {
   cl_meta meta;
   uint8_t *map; size_t map_size;
   char arch[16];           /* "olmoe", "qwen3moe" or "granitemoe" */
-  int n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff_exp, n_expert, n_used, n_vocab, n_ctx_max;
+  int n_layer, n_embd, n_head, n_head_kv, head_dim, n_ff_exp, n_expert, n_used, n_vocab, n_ctx_max, n_ctx_train;
   int n_q, n_kvw;          /* width of the query projection (n_head * head_dim) and of the key / value projections (n_head_kv * head_dim) */
   int qk_mode;             /* 0: no QK-norm (granitemoe); 1: RMSNorm over the whole projected vector (olmoe); 2: over each head_dim vector with one shared weight (qwen3moe) */
   int qk_per_head;         /* qk_mode == 2 */
@@ -69,7 +69,14 @@ typedef struct {
   /* qwen35 prompt processing: scratch for up to CL_PF_B tokens at once (the weights are streamed once per batch, not once per token) */
   float *pf_x, *pf_xn, *pf_qkv, *pf_z, *pf_ab, *pf_qg, *pf_k, *pf_v, *pf_att, *pf_hd, *pf_hg, *pf_hu;
   cl_xq *pf_xqe, *pf_xqq, *pf_xqss, *pf_xqff;
+  /* prompt processing for every architecture but qwen35: scratch for up to CL_PS_B tokens, allocated on first use */
+  int ps_ready, ps_cap;
+  float *ps_x, *ps_xn, *ps_xg, *ps_q, *ps_k, *ps_v, *ps_att, *ps_hd, *ps_moe, *ps_hg, *ps_hu, *ps_wt, *ps_hde, *ps_rg;
+  int *ps_sel;
+  cl_xq *ps_xqe, *ps_xqq, *ps_xqff;
+  float *attn_part; size_t attn_part_cap;   /* partial results of the one-token attention, one per (key/value head, chunk of positions) */
   int locked;              /* the mapped weights are pinned in memory */
+  int auto_stream;         /* the model did not fit in memory and no cache size was given, so the engine chose to stream its experts */
   int pos;                 /* tokens already in the KV cache */
 } cl_fwd;
 
@@ -88,8 +95,10 @@ void cl_fwd_close(cl_fwd *f);
 void cl_fwd_reset(cl_fwd *f);
 /* Runs one token at position f->pos (then advances it). Writes n_vocab logits. `route` may be NULL, else it must hold n_layer*n_used entries. */
 int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *err, size_t errlen);
-/* Feeds n tokens. `logits` (n_vocab floats, may be NULL) receives the distribution after the LAST one. A qwen35 model reads the tokens in batches of up to
- * CL_PF_B, so a long prompt costs far fewer passes over the weights; every other architecture simply steps token by token. */
+/* Feeds n tokens. `logits` (n_vocab floats, may be NULL) receives the distribution after the LAST one. Tokens are processed in batches (CL_PF_B for qwen35, CL_PS_B for
+ * every other architecture): each weight matrix is read once per batch, and in a mixture-of-experts layer each expert is read once per batch for all the tokens that chose
+ * it, so a long prompt costs far fewer passes over the weights (and over the disk) than stepping token by token. Only the last token's output distribution is computed. */
 #define CL_PF_B 32
+#define CL_PS_B 512   /* the most tokens one batch can hold; 64 are used unless the experts are streamed from disk (a bigger batch then shares each read among more tokens) */
 int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err, size_t errlen);
 #endif

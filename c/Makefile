@@ -5,13 +5,19 @@ ifeq ($(shell uname -m),arm64)
   CFLAGS += -mcpu=native
 endif
 ifeq ($(shell uname -m),x86_64)
-  CFLAGS += -mavx2
+  CFLAGS += -mavx2 -mf16c
 endif
 LDLIBS = -lm -lpthread
+# Windows (MSYS2 MinGW-w64): GNU C for the POSIX names MinGW declares, FMA with AVX2, and the process-memory library for peak memory.
+ifeq ($(OS),Windows_NT)
+  CFLAGS := $(filter-out -std=c11 -Wpedantic,$(CFLAGS)) -std=gnu11 -mfma
+  LDLIBS += -lpsapi
+  EXE = .exe
+endif
 # BUILD can point somewhere writable when the source sits in a read-only installed package: make BUILD=$HOME/.clutor/bin
 BUILD ?= build
-SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/quant.c src/meta.c src/xs.c src/forward.c src/tokenizer.c src/stream.c
-BIN = $(BUILD)/clutor-engine
+SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/quant.c src/meta.c src/xs.c src/forward.c src/tokenizer.c src/stream.c src/chat.c src/bench.c
+BIN = $(BUILD)/clutor-engine$(EXE)
 
 all: $(BIN)
 build:
@@ -22,8 +28,11 @@ $(BIN): $(SRC) src/main.c $(wildcard src/*.h)
 build/test_engine: build $(SRC) test/test_engine.c $(wildcard src/*.h)
 	$(CC) $(CFLAGS) -Isrc $(SRC) test/test_engine.c -o $@ $(LDLIBS)
 FIXTURE = ../packages/core/test/fixtures/stories260K.gguf
-test: build/test_engine
+build/test_attention: build $(SRC) test/test_attention.c $(wildcard src/*.h)
+	$(CC) $(CFLAGS) -Isrc test/test_attention.c $(filter-out src/forward.c,$(SRC)) -o $@ $(LDLIBS)
+test: build/test_engine build/test_attention
 	./build/test_engine $(FIXTURE)
+	./build/test_attention
 
 # The kernel has one source and several compile-time paths. `make test` runs the one this machine picks; this builds and runs the others:
 # portable C (everywhere), NEON without the dot-product instruction (arm64), and AVX2 cross-built for x86_64 and run through Rosetta if it can.
@@ -37,7 +46,7 @@ ifeq ($(shell uname -m),arm64)
 	./build/test-neon $(FIXTURE)
 endif
 test-avx2: build
-	$(CC) -arch x86_64 $(PATH_FLAGS) -mavx2 $(TEST_SRC) -o build/test-avx2 $(LDLIBS)
+	$(CC) -arch x86_64 $(PATH_FLAGS) -mavx2 -mf16c $(TEST_SRC) -o build/test-avx2 $(LDLIBS)
 	arch -x86_64 ./build/test-avx2 $(FIXTURE)
 
 # Golden test: a tiny generated OLMoE with random K-quant weights, checked against an independent pure-Python forward pass (needs only python3).
@@ -104,9 +113,21 @@ sanitize: build
 	$(CC) -O1 -g -std=c11 -fsanitize=address,undefined -fno-omit-frame-pointer $(SRC) src/main.c -o build/engine-asan $(LDLIBS)
 	$(CC) -O1 -g -std=c11 -fsanitize=thread $(SRC) src/main.c -o build/engine-tsan $(LDLIBS)
 	@if [ -n "$(SMALL)" ]; then ./build/engine-asan $(SAN_RUN) >/dev/null && ./build/engine-tsan $(SAN_RUN) >/dev/null && echo "sanitizers clean on $(SMALL)"; else echo "(set SMALL=<moe.gguf> to also run the streaming engine under the sanitizers)"; fi
+	@$(MAKE) --no-print-directory golden-files >/dev/null
+	@# the thread pool and the batched prompt path (attention across threads, experts grouped across tokens) on every architecture: a data race or a memory error fails the run
+	@python3 test/prefill_check.py build/engine-asan build "$(PREFILL_PROMPT)"
+	@python3 test/prefill_check.py build/engine-tsan build "$(PREFILL_PROMPT)"
 # Compares tokenization, logits and routing with llama.cpp (needs llama-server and llama-tokenize on PATH): make verify-llama MODEL=path/to/olmoe.gguf
 verify-llama: $(BIN)
 	python3 test/verify_llama.py $(MODEL) --engine $(BIN)
 clean:
 	rm -rf build
-.PHONY: fuzz golden golden-files golden-paths chat-test verify-llama all test test-paths test-avx2 sanitize clean
+# The batched prompt path against stepping token by token, on every architecture, with the batch cut at 64, 7 and 1 tokens (so a short prompt crosses many batch boundaries),
+# mapped and streamed from disk, with and without SMART-ROUTE. The logits must agree (they are bit for bit equal today; the check allows 0.02).
+PREFILL_PROMPT = the cat is in the room and a rat
+prefill-test: $(BIN) golden-files
+	@python3 test/prefill_check.py $(BIN) build "$(PREFILL_PROMPT)"
+# A model that does not fit in memory streams its experts by itself (the tests pretend the machine is tiny); a dense one refuses and says why.
+auto-stream-test: $(BIN) golden-files
+	@python3 test/auto_stream.py $(BIN) build
+.PHONY: fuzz golden golden-files golden-paths chat-test prefill-test auto-stream-test verify-llama all test test-paths test-avx2 sanitize clean

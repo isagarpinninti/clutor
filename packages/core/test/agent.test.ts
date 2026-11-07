@@ -19,6 +19,94 @@ const project = () => MemoryProject.from({
 let key: Awaited<ReturnType<typeof generateReceiptSigner>>;
 beforeAll(async () => { key = await generateReceiptSigner(); });
 
+describe("reading a tool call a model wrote loosely", () => {
+  it("accepts a file written into a tool call with raw line breaks inside the string", () => {
+    const reply = '{"tool": "write_file", "args": {"path": "index.html", "content": "<!doctype html>\n<html>\n  <body>hi</body>\n</html>\n"}}'.replace(/\\n/g, "\n");
+    expect(reply.includes("\n")).toBe(true);
+    expect(extractJsonObject(reply)).toMatchObject({ tool: "write_file", args: { path: "index.html" } });
+  });
+  it("still reads a call wrapped in prose, a code fence or tags", () => {
+    expect(extractJsonObject('Sure:\n```json\n{"tool":"finish","args":{"summary":"ok"}}\n```')).toMatchObject({ tool: "finish" });
+    expect(extractJsonObject('<tool_call>\n{"name":"read_file","arguments":{"path":"a"}}\n</tool_call>')).toMatchObject({ name: "read_file" });
+  });
+  it("tells a reply that was cut off from one that is plain text", async () => {
+    const { looksCutOff } = await import("../src/agent/llm");
+    expect(looksCutOff('{"tool": "write_file", "args": {"path": "a.html", "content": "<html>')).toBe(true);
+    expect(looksCutOff("Here is how a hash table works.")).toBe(false);
+    expect(looksCutOff('{"tool":"finish","args":{"summary":"ok"}}')).toBe(false);
+  });
+  it("writes the file when the model's call has raw line breaks in it", async () => {
+    const raw = '{"tool": "write_file", "args": {"path": "index.html", "content": "<p>a</p>\n<p>b</p>"}}'.replace("\\n", "\n");
+    const r = await runAgent({ task: "make a page", llm: llm([() => ({ content: raw, toolCalls: [] }), () => say("finish", { summary: "Wrote it." })]), ws: new ShadowWorkspace(MemoryProject.from({})) });
+    expect(r.diffs.map((d) => d.path)).toEqual(["index.html"]);
+    expect(r.invalidReplies).toBe(0);
+  });
+});
+
+describe("agent loop: claims of files that do not exist", () => {
+  it("sends a finish back when the task names files that were never created, and accepts it once they exist", async () => {
+    const m = llm([
+      () => say("write_file", { path: "index.html", content: "<p>hi</p>" }),
+      () => say("finish", { summary: "I created index.html, style.css and script.js." }),
+      () => say("write_file", { path: "style.css", content: "p{}" }),
+      () => say("write_file", { path: "script.js", content: "1" }),
+      () => say("finish", { summary: "Created index.html, style.css and script.js." }),
+    ]);
+    const r = await runAgent({ task: "Make a game with index.html, style.css and script.js", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})) });
+    expect(r.diffs.map((d) => d.path).sort()).toEqual(["index.html", "script.js", "style.css"]);
+    expect(JSON.stringify(m.seen[2])).toContain("these files do not exist: style.css, script.js");
+  });
+  it("lets it end if it is sent back twice and still has not made them, rather than looping", async () => {
+    const m = llm([() => say("write_file", { path: "a.txt", content: "x" }), () => say("finish", { summary: "Done: made b.css." })]);
+    const r = await runAgent({ task: "make b.css", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})) });
+    expect(r.status).toBe("finished");
+    expect(r.steps).toBe(4);
+    expect(r.summary).toContain("these files were named but were not created: b.css");
+  });
+  it("does not check a plan-only run, whose plan names files it has not written", async () => {
+    const m = llm([() => say("read_file", { path: "a.ts" }), () => say("finish", { summary: "Plan: add b.ts and c.ts." })]);
+    const r = await runAgent({ task: "plan it", planOnly: true, llm: m, ws: new ShadowWorkspace(MemoryProject.from({ "a.ts": "1" })) });
+    expect(r.summary).toBe("Plan: add b.ts and c.ts.");
+    expect(r.steps).toBe(2);
+  });
+});
+
+describe("agent loop: finishing without doing anything", () => {
+  it("sends a finish that comes before any work back to work, then keeps the files the model writes", async () => {
+    const m = llm([
+      () => say("finish", { summary: "Created the game." }),
+      () => say("write_file", { path: "index.html", content: "<!doctype html>\n" }),
+      () => say("finish", { summary: "Wrote index.html." }),
+    ]);
+    const r = await runAgent({ task: "make a page", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})) });
+    expect(r).toMatchObject({ status: "finished", summary: "Wrote index.html." });
+    expect(r.diffs.map((d) => d.path)).toEqual(["index.html"]);
+    expect(JSON.stringify(m.seen[1])).toContain("have not read, written or run anything");
+  });
+  it("accepts a finish that is repeated after being sent back twice, so a task that needs no changes can still end", async () => {
+    const m = llm([() => say("finish", { summary: "Nothing needed." })]);
+    const r = await runAgent({ task: "is it fine?", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})) });
+    expect(r).toMatchObject({ status: "finished", summary: "Nothing needed.", steps: 3 });
+    expect(r.diffs).toEqual([]);
+  });
+  it("takes a plan, but a plan alone is not work: finishing right after it is still sent back", async () => {
+    const m = llm([
+      () => say("update_plan", { steps: "[>] Write index.html\n[ ] Style it" }),
+      () => say("finish", { summary: "Done." }),
+      () => say("write_file", { path: "index.html", content: "x" }),
+      () => say("finish", { summary: "Wrote it." }),
+    ]);
+    const events: AgentEvent[] = [];
+    const r = await runAgent({ task: "make a page", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), onEvent: (e) => events.push(e) });
+    expect(r.summary).toBe("Wrote it.");
+    expect(events.filter((e) => e.type === "tool_call").map((e) => (e as { name: string }).name)).toEqual(["update_plan", "finish", "write_file", "finish"]);
+  });
+  it("can be turned off", async () => {
+    const r = await runAgent({ task: "t", llm: llm([() => say("finish", { summary: "ok" })]), ws: new ShadowWorkspace(MemoryProject.from({})), maxIdleFinishes: 0 });
+    expect(r).toMatchObject({ status: "finished", steps: 1 });
+  });
+});
+
 describe("agent loop", () => {
   it("reads, edits, creates, and finishes, leaving the project untouched and a diff to review", async () => {
     const p = project();
