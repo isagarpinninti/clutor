@@ -838,3 +838,54 @@ html, body, .app, .main { background: var(--bg); }
 :root[data-theme] .codeblock { overflow: hidden; }
 :root[data-theme] .codehead { border-radius: 14px 14px 0 0; }
 :root[data-theme] .md code { border-radius: 6px; }
+
+/* ---- a coding task's progress: the agent's plan, or the stages it is going through ---- */
+.plan { border: 1px solid var(--g3); border-radius: 14px; background: var(--g1); padding: 12px 14px; margin: 0 0 12px; }
+.plan-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; color: var(--muted); letter-spacing: .02em; margin-bottom: 8px; }
+.plan-head span { color: var(--text); font-weight: 600; font-size: 13px; letter-spacing: 0; }
+.plan ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.plan li { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); }
+.plan li.done { color: var(--text); } .plan li.done .plan-text { opacity: .75; }
+.plan li.active { color: var(--text); font-weight: 550; }
+.plan-mark { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--g4); display: grid; place-items: center; color: #fff; }
+.plan-mark svg { width: 12px; height: 12px; }
+.plan li.done .plan-mark { background: var(--brand); border-color: var(--brand); }
+.plan li.active .plan-mark { border-color: transparent; background: none; color: var(--accent); }
+.plan li.active .plan-mark .logo { width: 18px; height: 18px; }
+.stages { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 8px; }
+.stage-row { list-style: none; margin: 0; padding: 0; display: flex; gap: 8px; flex-wrap: wrap; }
+.stage-row li { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 12px 0 8px; border-radius: 999px; border: 1px solid var(--g3); font-size: 12.5px; color: var(--muted); }
+.stage-dot { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--g4); display: grid; place-items: center; color: #fff; }
+.stage-dot svg { width: 10px; height: 10px; }
+.stage-row li.done { color: var(--text); } .stage-row li.done .stage-dot { background: var(--brand); border-color: var(--brand); }
+.stage-row li.active { color: var(--text); border-color: var(--accent); background: var(--accent-soft); } .stage-row li.active .stage-dot { border-color: var(--accent); animation: stage-pulse 1.2s ease-in-out infinite; }
+@keyframes stage-pulse { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 4px var(--accent-soft); } }
+.stage-now { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.shimmer { color: var(--g9); }
+
+/* ---- message actions: copy, edit and redo under your message; the reply has copy and regenerate ---- */
+.msg-actions { display: flex; gap: 2px; justify-content: flex-end; margin-top: 4px; opacity: 0; transition: opacity .15s; }
+.msg:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+.msg-actions .icon-btn { min-width: 30px; height: 30px; }
+.msg-actions .icon-btn:disabled { opacity: .35; cursor: default; }
+.edit-box { width: min(560px, 90%); margin-left: auto; display: flex; flex-direction: column; gap: 8px; }
+.edit-box textarea { width: 100%; resize: none; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 14px; background: var(--g1); color: var(--text); line-height: 1.5; outline: none; }
+.edit-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.meta .icon-btn { min-width: 28px; height: 28px; }
+
+/* ---- problems and heads-ups: one form, with an icon, a title, a plain explanation and an action ---- */
+.alert { display: flex; gap: 12px; align-items: flex-start; margin: 10px 0; padding: 14px 16px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--tone) 35%, var(--g3)); background: color-mix(in srgb, var(--tone) 7%, var(--g1)); --tone: var(--danger); }
+.alert.warn { --tone: var(--warn); } .alert.info { --tone: var(--accent); }
+.alert-icon { flex: none; width: 22px; height: 22px; display: grid; place-items: center; color: var(--tone); margin-top: 1px; }
+.alert-icon svg { width: 20px; height: 20px; }
+.alert-body { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.alert-body b { font-size: 14px; font-weight: 600; color: var(--text); letter-spacing: -.005em; }
+.alert-body p { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--muted); overflow-wrap: anywhere; }
+.alert-body .btn { margin-top: 8px; }
+/* a routine recovery is a quiet hint inside the steps, not an alarm */
+.turn-hint { display: flex; align-items: center; gap: 8px; margin: 2px 0 2px 2px; font-size: 12.5px; color: var(--muted); }
+.turn-hint svg { flex: none; opacity: .7; } .turn-hint i { font-style: normal; font-family: var(--mono); font-size: 11.5px; opacity: .8; }
+/* the short notices above the message box */
+:root[data-theme] .notice { display: flex; align-items: center; gap: 10px; padding: 10px 14px; font-size: 13.5px; color: var(--muted); }
+:root[data-theme] .notice::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+:root[data-theme] .notice.err { color: var(--text); border-color: color-mix(in srgb, var(--danger) 45%, var(--g3)); } :root[data-theme] .notice.err::before { background: var(--danger); }

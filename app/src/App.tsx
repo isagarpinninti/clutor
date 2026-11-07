@@ -227,13 +227,13 @@ export function App() {
     return { files: fit.map(({ name, bytes, text, truncated }) => ({ name, bytes, text, truncated })) };
   };
 
-  const send = async (text: string, attached: Attachment[] = []): Promise<void> => {
+  const send = async (text: string, attached: Attachment[] = [], again?: { base: Msg[]; files?: Msg["files"] }): Promise<void> => {
     if (!active || (!session.current && !wanted)) return;
     setPrefill(undefined);
     const convId = active.id;
-    const user: Msg = { id: uid(), role: "user", content: text, ...fileFields(attached) };
+    const user: Msg = { id: uid(), role: "user", content: text, ...(again ? (again.files?.length ? { files: again.files } : {}) : fileFields(attached)) };
     const reply: Msg = { id: uid(), role: "assistant", content: "" };
-    const history = [...active.messages, user];
+    const history = [...(again?.base ?? active.messages), user];
     update(convId, (c) => ({ ...c, title: c.messages.length ? c.title : titleFrom(text), updated: Date.now(), messages: [...history, reply] }));
     stick.current = true;
     const ac = new AbortController();
@@ -264,6 +264,20 @@ export function App() {
   };
 
   const stop = (): void => abort.current?.abort();
+  /** Sends a message again from where it was: what came after it is replaced by the new reply. With `text`, the message is edited first. */
+  const resendFrom = (userId: string, text?: string): void => {
+    if (!active || busy) return;
+    const i = active.messages.findIndex((m) => m.id === userId);
+    const m = active.messages[i];
+    if (i < 0 || !m || m.role !== "user") return;
+    void send(text ?? m.content, [], { base: active.messages.slice(0, i), ...(m.files ? { files: m.files } : {}) });
+  };
+  const regenerate = (assistantId: string): void => {
+    if (!active || busy) return;
+    const i = active.messages.findIndex((m) => m.id === assistantId);
+    const prev = active.messages[i - 1];
+    if (prev && prev.role === "user") resendFrom(prev.id);
+  };
   const onNew = (): void => { const c = newConversation(); setConversations((all) => [c, ...all]); setActiveId(c.id); setSidebar(false); };
   const onDelete = (id: string): void => {
     for (const j of queue.list()) if (j.conversationId === id) queue.remove(j.id);
@@ -361,7 +375,7 @@ export function App() {
         <div className="scroll" ref={scroller} onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
           {active && active.messages.length > 0 ? (
             <div className="thread">
-              {active.messages.map((m) => <MessageView key={m.id} msg={m} streaming={busy && m.id === lastAssistant?.id && !m.jobId} showReasoning={settings.showReasoning} job={jobByMessage.get(m.id)} position={m.jobId ? queue.position(m.jobId) : 0} onJobAction={jobAction} />)}
+              {active.messages.map((m) => <MessageView key={m.id} msg={m} busy={busy} {...(m.jobId ? {} : m.role === "user" ? { onRedo: (id: string) => resendFrom(id), onEdit: (id: string, t: string) => resendFrom(id, t) } : { onRegenerate: regenerate })} streaming={busy && m.id === lastAssistant?.id && !m.jobId} showReasoning={settings.showReasoning} job={jobByMessage.get(m.id)} position={m.jobId ? queue.position(m.jobId) : 0} onJobAction={jobAction} />)}
             </div>
           ) : (
             <div className="home">

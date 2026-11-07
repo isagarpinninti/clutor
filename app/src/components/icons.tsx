@@ -46,3 +46,8 @@ export const PhoneIcon = () => I(<><rect x="7" y="3.5" width="10" height="17" rx
 
 /** Think: an atom, orbits around a nucleus. */
 export const ThinkIcon = () => I(<><ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(60 12 12)" /><ellipse cx="12" cy="12" rx="9" ry="3.6" transform="rotate(-60 12 12)" /><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none" /></>);
+
+export const EditIcon = () => I(<><path d="M4.5 19.5h4l10-10a2.1 2.1 0 0 0-3-3l-10 10z" /><path d="m13.5 7.5 3 3" /></>);
+export const RedoIcon = () => I(<><path d="M19 12a7 7 0 1 1-2.2-5.1" /><path d="M19 4.5v4h-4" /></>);
+
+export const AlertIcon = () => I(<><circle cx="12" cy="12" r="8.5" /><path d="M12 7.8v5" /><path d="M12 16.2h.01" strokeWidth="2" /></>);

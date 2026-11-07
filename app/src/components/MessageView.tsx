@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import type { Msg } from "../store";
+import { Alert } from "./Alert";
 import { Markdown } from "./Markdown";
-import { CheckIcon, CloseIcon, CopyIcon, FileIcon } from "./icons";
+import { CheckIcon, CloseIcon, CopyIcon, EditIcon, FileIcon, RedoIcon } from "./icons";
 import { Logo } from "./Logo";
 import { Spark, Thinking } from "./Thinking";
 import { bridge } from "../bridge";
 import type { Job } from "../jobs";
 import { JobStrip, type JobAction } from "./JobStrip";
 
-export function MessageView({ msg, streaming, showReasoning, job, position, onJobAction }: { msg: Msg; streaming: boolean; showReasoning: boolean; job?: Job | undefined; position?: number; onJobAction?: (id: string, a: JobAction) => void }) {
+export function MessageView({ msg, streaming, showReasoning, job, position, onJobAction, busy, onRedo, onEdit, onRegenerate }: { msg: Msg; streaming: boolean; showReasoning: boolean; job?: Job | undefined; position?: number; onJobAction?: (id: string, a: JobAction) => void; busy?: boolean; onRedo?: (id: string) => void; onEdit?: (id: string, text: string) => void; onRegenerate?: (id: string) => void }) {
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
   // How long the model thought: measured while this message is on screen (a message loaded from history just says "Thought process", because the time was never saved).
   const thoughtFrom = useRef<number | undefined>(undefined);
   const [thought, setThought] = useState<number | undefined>();
@@ -17,7 +20,31 @@ export function MessageView({ msg, streaming, showReasoning, job, position, onJo
     if (streaming && msg.reasoning && !msg.content && thoughtFrom.current === undefined) thoughtFrom.current = Date.now();
     if (thoughtFrom.current !== undefined && thought === undefined && (msg.content || !streaming)) setThought(Math.max(1, Math.round((Date.now() - thoughtFrom.current) / 1000)));
   }, [streaming, msg.reasoning, msg.content, thought]);
-  if (msg.role === "user") return <div className="msg user"><div className="who">You</div><div className="prompt">{msg.content}{msg.files?.length ? <div className="attach-row sent">{msg.files.map((f) => <span key={f.name} className="attach"><FileIcon /><span className="attach-name">{f.name}</span>{f.truncated ? <small>cut to fit</small> : null}</span>)}</div> : null}</div></div>;
+  if (msg.role === "user") {
+    const copyUser = (): void => { void navigator.clipboard?.writeText(msg.content).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); };
+    if (editing) {
+      const save = (): void => { const t = draft.trim(); if (!t) return; setEditing(false); onEdit?.(msg.id, t); };
+      return (
+        <div className="msg user"><div className="who">You</div>
+          <div className="edit-box">
+            <textarea value={draft} autoFocus rows={Math.min(8, Math.max(2, draft.split("\n").length))} aria-label="Edit your message" onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); save(); } if (e.key === "Escape") setEditing(false); }} />
+            <div className="edit-actions"><button type="button" className="btn small ghost" onClick={() => setEditing(false)}>Cancel</button><button type="button" className="btn small" onClick={save} disabled={!draft.trim()}>Save and resend</button></div>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="msg user"><div className="who">You</div>
+        <div className="prompt">{msg.content}{msg.files?.length ? <div className="attach-row sent">{msg.files.map((f) => <span key={f.name} className="attach"><FileIcon /><span className="attach-name">{f.name}</span>{f.truncated ? <small>cut to fit</small> : null}</span>)}</div> : null}</div>
+        <div className="msg-actions" role="toolbar" aria-label="Message actions">
+          <button type="button" className="icon-btn tip" data-tip={copied ? "Copied" : "Copy"} onClick={copyUser} aria-label="Copy your message">{copied ? <CheckIcon /> : <CopyIcon />}</button>
+          {onEdit ? <button type="button" className="icon-btn tip" data-tip="Edit" disabled={busy} onClick={() => { setDraft(msg.content); setEditing(true); }} aria-label="Edit your message"><EditIcon /></button> : null}
+          {onRedo ? <button type="button" className="icon-btn tip" data-tip="Redo" disabled={busy} onClick={() => onRedo(msg.id)} aria-label="Send this message again"><RedoIcon /></button> : null}
+        </div>
+      </div>
+    );
+  }
   const s = msg.stats;
   const copy = (): void => { void navigator.clipboard?.writeText(msg.content).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }); };
   return (
@@ -43,7 +70,7 @@ export function MessageView({ msg, streaming, showReasoning, job, position, onJo
             {msg.sources.map((s, i) => <button type="button" key={s.url} className="source" title={s.url} onClick={() => void bridge.web.openExternal(s.url)}><i>{i + 1}</i><span>{s.title || s.url}</span></button>)}
           </div>
         ) : null}
-        {msg.error ? <div className="error">{msg.error}</div> : null}
+        {msg.error ? <Alert tone="error" title="This reply failed" action={onRegenerate && !busy ? { label: "Try again", onClick: () => onRegenerate(msg.id) } : undefined}>{msg.error}</Alert> : null}
         {!streaming && (s || msg.interrupted) ? (
           <div className="meta">
             {msg.interrupted ? <span>Stopped</span> : null}
@@ -52,6 +79,7 @@ export function MessageView({ msg, streaming, showReasoning, job, position, onJo
             {s?.promptTokens ? <span>context {s.promptTokens}</span> : null}
             {s?.cache ? <span>cache {Math.round(s.cache.hitRate * 100)}% hit · {s.cache.gbRead.toFixed(2)} GB read</span> : null}
             {msg.content ? <button type="button" className="icon-btn" onClick={copy} title="Copy reply" aria-label="Copy reply">{copied ? <span className="copied">Copied</span> : <CopyIcon />}</button> : null}
+            {onRegenerate && !busy ? <button type="button" className="icon-btn" onClick={() => onRegenerate(msg.id)} title="Regenerate" aria-label="Regenerate this reply"><RedoIcon /></button> : null}
           </div>
         ) : null}
       </div>

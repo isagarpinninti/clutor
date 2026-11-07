@@ -7,7 +7,8 @@ import { ModePicker, type ModeOption } from "./ModePicker";
 import { PlusMenu } from "./PlusMenu";
 import type { OverviewPane } from "./OverviewPane";
 import { SidePanel, type PanelTab } from "./SidePanel";
-import { Spark } from "./Thinking";
+import { Alert } from "./Alert";
+import { RunProgress } from "./RunProgress";
 import { ToolBlock } from "./ToolBlock";
 import { FolderIcon, SendIcon, StopIcon } from "./icons";
 
@@ -40,6 +41,7 @@ interface Props {
   verbose: boolean;
 }
 
+const RedoSmall = () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M19 12a7 7 0 1 1-2.2-5.1" /><path d="M19 4.5v4h-4" /></svg>;
 const count = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
 
 export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onChooseModel, onMcp, panel, onPanel, overviewProps, tab, onTab, perm, onPerm, verbose }: Props) {
@@ -52,7 +54,9 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
   const running = last?.status === "running";
   const withChanges = active ? [...active.turns].reverse().find((t) => t.diffs?.length) : undefined;
 
-  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [last?.blocks.length, last?.status, approvals.length, active?.id]);
+  // Follow the task: a new task, each step, each plan tick and each approval scroll into view, so pressing Enter always shows that something started.
+  const planDone = last?.plan?.filter((p) => p.state === "done").length ?? 0;
+  useEffect(() => { const t = requestAnimationFrame(() => end.current?.scrollIntoView({ block: "end", behavior: "smooth" })); return () => cancelAnimationFrame(t); }, [active?.turns.length, last?.id, last?.blocks.length, planDone, last?.status, approvals.length, active?.id]);
   useEffect(() => { setError(undefined); }, [active?.id]);
 
   const chooseFolder = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) onCreate(p); };
@@ -66,6 +70,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
     setTask(""); setError(undefined);
     void ctl.run(active.id, text, { perm, source: "local" }).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   };
+  const retry = (text: string): void => { if (!active || running) return; setError(undefined); void ctl.run(active.id, text, { perm, source: "local" }).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e))); };
   const apply = async (): Promise<void> => {
     if (!active || !withChanges) return;
     setApplying(true);
@@ -101,14 +106,16 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
               <section key={t.id} className="turn">
                 <div className="msg user"><div className="prompt">{t.task}</div></div>
                 <div className="turn-body">
+                  {t.plan?.length ? <RunProgress turn={t} /> : null}
                   {t.blocks.map((b) => b.kind === "text" ? <p key={b.id} className="turn-text">{b.text}</p>
-                    : b.kind === "note" ? <p key={b.id} className={`turn-note${b.bad ? " bad" : ""}`}>{b.text}</p>
+                    : b.kind === "note" ? (b.bad ? <Alert key={b.id} tone="error" title="A step went wrong">{b.text}</Alert> : <p key={b.id} className="turn-hint"><RedoSmall />{b.text}{b.count && b.count > 1 ? <i>×{b.count}</i> : null}</p>)
                     : <ToolBlock key={b.id} block={b} verbose={verbose} onOpenFile={(p) => { setFocusFile(p); onTab("files"); onPanel(true); }} />)}
-                  {t.status === "running" && !approval ? <div className="working"><Spark size={14} /><span>Working…</span></div> : null}
+                  {t.status === "running" && !approval && !t.plan?.length ? <RunProgress turn={t} /> : null}
                   {t.summary ? <div className="turn-summary"><Markdown text={t.summary} /></div> : null}
-                  {t.status === "interrupted" ? <p className="turn-note bad">The app was closed while this ran.</p> : null}
+                  {t.status === "done" && !t.planOnly && !t.diffs?.length && !t.lost && !t.blocks.some((b) => b.kind === "tool" && b.name === "run_command") ? <Alert tone="warn" title="Nothing was changed" action={ready && !running ? { label: "Try again", onClick: () => retry(t.task) } : undefined}>No files were created or edited. If you asked for a change, the model did not make it: try again, or choose a more capable model.</Alert> : null}
+                  {t.status === "interrupted" ? <Alert tone="warn" title="This task was interrupted" action={ready && !running ? { label: "Try again", onClick: () => retry(t.task) } : undefined}>The app was closed while it ran.</Alert> : null}
                   {t.status === "stopped" ? <p className="turn-note">Stopped.</p> : null}
-                  {t.status === "failed" ? <p className="turn-note bad">{t.error ?? "The task failed."}</p> : null}
+                  {t.status === "failed" ? <Alert tone="error" title="The task could not finish" action={ready && !running ? { label: "Try again", onClick: () => retry(t.task) } : undefined}>{t.error ?? "The task failed."}</Alert> : null}
                   {t.diffs?.length ? (
                     <button type="button" className="changes-card" onClick={() => { onTab("changes"); onPanel(true); }}>
                       <b>{count(t.diffs.length, "file")} changed</b>
@@ -127,7 +134,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
                 <div className="actions"><button type="button" className="btn small" onClick={() => ctl.answer(approval.id, true, { source: "local" })}>Allow</button><button type="button" className="btn small ghost" onClick={() => ctl.answer(approval.id, false, { source: "local" })}>Refuse</button></div>
               </div>
             ) : null}
-            {error && !panel ? <div className="notice err" role="alert">{error}</div> : null}
+            {error && !panel ? <Alert tone="error" title="That did not work">{error}</Alert> : null}
             <div ref={end} />
           </div>
         </div>
