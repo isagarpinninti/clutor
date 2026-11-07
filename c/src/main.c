@@ -22,6 +22,7 @@ static void usage(void) {
        "  tokenize <model.gguf> TEXT [--no-special]    Print the token ids of TEXT (byte-level BPE built from the model's own tables)\n"
        "  logits <model.gguf> PROMPT [--top N] [--ctx N] [--trace FILE]   Run the REAL forward pass over PROMPT and print the next-token logprobs (olmoe models); --trace writes the router's choices\n"
        "  generate <model.gguf> PROMPT [--n N] [--trace FILE] [--quiet] [--cache-mb N --prefetch off|prev|ahead (off) --prefetch-n N --policy lru|wtinylfu|adaptive --io-threads N --no-os-cache]   Greedy decoding with the real forward pass; --trace records the router's scores for every token; --cache-mb N streams the experts from disk through an N MiB cache instead of mapping the whole file\n"
+       "  diskbench <model.gguf> [--seconds N]   Time reading the file (sequential and scattered), as JSON: the measured disk speed the planner uses\n"
        "  chat <model.gguf> [--ctx N] [--cache-mb N | --lock ...]   A long-lived session over stdin/stdout, one JSON object per line: {\"op\":\"append\",\"text\":...} feeds text into the conversation (the KV cache is kept between calls), {\"op\":\"generate\",\"max\":N,\"temp\":T} streams the reply as {\"ev\":\"t\",\"s\":piece} lines and ends with {\"ev\":\"done\",...}, {\"op\":\"cancel\"} stops it, {\"op\":\"reset\"} forgets the conversation\n"
        "  quality <model.gguf> TEXTFILE --cache-mb N [--smart J,M,TAU] [--max-tokens N]   Teacher-forced perplexity, KL divergence and top-1 agreement of a streamed (optionally SMART-ROUTE) run against exact routing\n"
        "  stream <model.gguf> [options]    Stream experts from disk through the cache for N tokens of routing (synthetic, or the real router with --trace FILE) and report what was measured\n"
@@ -514,6 +515,16 @@ static int cmd_chat(int argc, char **argv) {
   return 0;
 }
 
+/* diskbench <file.gguf> [--seconds N]: times reading the file (sequential and scattered) and prints one JSON object. The planner uses it instead of an assumed disk speed. */
+static int cmd_diskbench(int argc, char **argv) {
+  if (argc < 1) { fprintf(stderr, "usage: clutor-engine diskbench <model.gguf> [--seconds N]\n"); return 2; }
+  double secs = num(argc, argv, "--seconds", 6.0), seq = 0, rnd = 0;
+  char err[256] = {0};
+  if (cl_disk_bench(argv[0], secs, &seq, &rnd, err, sizeof err)) { fprintf(stderr, "diskbench: %s\n", err); return 1; }
+  printf("{\"sequentialBytesPerSec\":%.0f,\"scatteredBytesPerSec\":%.0f,\"seconds\":%.1f}\n", seq, rnd, secs);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) { usage(); return 2; }
   if (!strcmp(argv[1], "--version")) { puts(VERSION); return 0; }
@@ -524,6 +535,7 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[1], "generate")) return cmd_generate(argc - 2, argv + 2);
   if (!strcmp(argv[1], "logits")) return cmd_logits(argc - 2, argv + 2);
   if (!strcmp(argv[1], "stream")) return cmd_stream(argc - 2, argv + 2);
+  if (!strcmp(argv[1], "diskbench")) return cmd_diskbench(argc - 2, argv + 2);
   usage();
   return strcmp(argv[1], "--help") ? 2 : 0;
 }

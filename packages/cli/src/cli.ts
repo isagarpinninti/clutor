@@ -91,7 +91,7 @@ Models are catalog ids (${CATALOG.map((c) => c.id).join(", ")}) or the path of a
 Common options: --config <file>  --json  -h, --help  -v, --version
 `;
 
-const BOOLEANS = ["json", "help", "version", "apply", "yes", "force", "smart-route", "no-start", "engine", "no-os-cache"] as const;
+const BOOLEANS = ["json", "help", "version", "apply", "yes", "force", "smart-route", "no-start", "engine", "no-os-cache", "measure-disk"] as const;
 
 function cfgFor(args: ReturnType<typeof parseArgs>, io: Io, dirArg?: string) {
   return loadConfig(dirArg ? resolve(io.cwd, dirArg) : io.cwd, flagString(args, "config"));
@@ -204,7 +204,21 @@ async function plan(io: Io, args: ReturnType<typeof parseArgs>, ref: string | un
   const m = await resolveModel(ref.toLowerCase().endsWith(".gguf") ? resolve(io.cwd, ref) : quant ? `${ref}@${quant}` : ref, { modelsDir: resolve(root, config.models) });
   const h = hostInfo();
   const ram = numFlag(args, "ram", 1, 4096) ?? config.memory.ramCeilingGiB;
-  const disk = numFlag(args, "disk", 0.01, 100) ?? config.memory.diskGBps;
+  let disk = numFlag(args, "disk", 0.01, 100) ?? config.memory.diskGBps;
+  let measuredDisk = false;
+  // --measure-disk times the real file with the engine's own read path and plans from that, instead of an assumed or typed-in speed.
+  if (flagBool(args, "measure-disk")) {
+    if (!ref.toLowerCase().endsWith(".gguf")) throw new UsageError("--measure-disk needs a .gguf file on this computer: clutor plan <file.gguf> --measure-disk");
+    const bin = findEngine();
+    if (!bin) throw new UsageError("--measure-disk needs the native engine: run `clutor engine install` (or `clutor engine build`)");
+    const r = await run(bin, ["diskbench", resolve(io.cwd, ref), "--seconds", "6"], { timeoutMs: 120_000 });
+    if (r.code !== 0) throw new UsageError(`could not time the disk: ${r.stderr.trim() || r.stdout.trim()}`);
+    const b = JSON.parse(r.stdout) as { sequentialBytesPerSec: number; scatteredBytesPerSec: number };
+    disk = b.scatteredBytesPerSec / GiB;
+    measuredDisk = true;
+    io.out(`Measured on this computer: ${(b.sequentialBytesPerSec / 1e9).toFixed(2)} GB/s sequential, ${(b.scatteredBytesPerSec / 1e9).toFixed(2)} GB/s scattered (1 MiB reads, the way experts are fetched). Planning from the scattered figure.`);
+    if (b.sequentialBytesPerSec > 12e9 || b.scatteredBytesPerSec > 9e9) io.out("! That is faster than a disk can be: the system probably served the file from memory. Try a file that has not been read recently.");
+  }
   const kv = flagInt(args, "kv", 4, 16);
   if (kv !== undefined && ![4, 8, 16].includes(kv)) throw new UsageError("--kv must be 16, 8 or 4");
   // --ram describes the machine to plan for (an 8 GiB laptop, say): the operating system's share comes out of it. The config's ramCeilingGiB stays a ceiling on this machine.
@@ -214,7 +228,7 @@ async function plan(io: Io, args: ReturnType<typeof parseArgs>, ref: string | un
     hostRamBytes: hostRam,
     ...(ramFlag === undefined && ram ? { ramCeilingBytes: ram * GiB } : {}), ...(config.memory.osHeadroomGiB !== undefined ? { osHeadroomBytes: config.memory.osHeadroomGiB * GiB } : {}),
     contextTokens: flagInt(args, "ctx", 256, 2_000_000) ?? config.memory.contextTokens, kvBits: (kv as 16 | 8 | 4 | undefined) ?? config.memory.kvBits,
-    ...(disk ? { diskBytesPerSec: disk * GiB, diskMeasured: flagString(args, "disk") !== undefined || config.memory.diskGBps !== undefined } : {}),
+    ...(disk ? { diskBytesPerSec: disk * GiB, diskMeasured: measuredDisk || flagString(args, "disk") !== undefined || config.memory.diskGBps !== undefined } : {}),
   });
   const gates = evaluateGates({ hostRamBytes: hostRam, plan: p, cache: { policy: config.cache.policy }, smartRoute: { enabled: config.cache.smartRoute.enabled, maxDeltaP: config.cache.smartRoute.maxDeltaP }, ...(m.gguf ? { gguf: m.gguf } : {}) });
   if (json) { io.out(JSON.stringify({ model: { id: m.id, name: m.name, approximate: m.layout.approximate }, plan: p, gates }, null, 2)); return p.fits ? 0 : 1; }
