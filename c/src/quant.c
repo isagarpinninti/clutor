@@ -603,7 +603,7 @@ static float dot_q3_K(int nb, const b_q3_K *x, const cl_q8k *y) {
 static int g_threads = 0;
 void cl_set_threads(int n) { g_threads = n < 1 ? 1 : n > 16 ? 16 : n; }
 int cl_get_threads(void) {
-  if (!g_threads) { cl_set_threads(cl_ncpu()); }
+  if (!g_threads) { const char *e = getenv("CLUTOR_THREADS"); cl_set_threads(e && atoi(e) > 0 ? atoi(e) : cl_ncpu()); }   /* CLUTOR_THREADS=n: for measuring how many cores help */
   return g_threads;
 }
 
