@@ -46,7 +46,7 @@ export interface Settings {
 }
 
 export const DEFAULT_SYSTEM = "You are a helpful assistant running on the user's own device through Clutor. Answer directly and concisely. Use Markdown only where it helps.";
-export const DEFAULT_SETTINGS: Settings = { temperature: 0.7, thinking: false, showReasoning: false, system: DEFAULT_SYSTEM, ctx: 4096, jobTokens: 1024, lock: true, browse: true, permission: "ask", maxSteps: 20, textSize: "medium", theme: "dark", notifyJobs: true, notifyAgent: true, transcript: "normal", suggestions: true };
+export const DEFAULT_SETTINGS: Settings = { temperature: 0.7, thinking: false, showReasoning: false, system: DEFAULT_SYSTEM, ctx: 8192, jobTokens: 1024, lock: true, browse: true, permission: "ask", maxSteps: 20, textSize: "medium", theme: "dark", notifyJobs: true, notifyAgent: true, transcript: "normal", suggestions: true };
 
 const CONV = "clutor.conversations.v1";
 const SET = "clutor.settings.v1";
@@ -60,7 +60,8 @@ function write(key: string, value: unknown): void {
 
 export const loadConversations = (): Conversation[] => read<Conversation[]>(CONV, []);
 export const saveConversations = (c: Conversation[]): void => write(CONV, c.slice(0, 200));
-export const loadSettings = (): Settings => ({ ...DEFAULT_SETTINGS, ...read<Partial<Settings>>(SET, {}) });
+/** 4096 was the old default and is too small for the coding agent (its instructions and one file fill it), so a saved 4096 is raised to the new default. */
+export const loadSettings = (): Settings => { const s = { ...DEFAULT_SETTINGS, ...read<Partial<Settings>>(SET, {}) }; if (s.ctx === 4096) s.ctx = DEFAULT_SETTINGS.ctx; return s; };
 export const saveSettings = (s: Settings): void => write(SET, s);
 
 export const uid = (): string => (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`);

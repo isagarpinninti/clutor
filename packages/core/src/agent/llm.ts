@@ -157,6 +157,7 @@ export function jsonProtocolPrompt(): string {
     ...TOOLS.map((t) => `- ${t.name}(${Object.entries(t.fields).map(([k, f]) => `${k}${f.required ? "" : "?"}: ${f.type}`).join(", ")}): ${t.description}`),
     "To create a file you must call write_file with the whole file in args.content (escape newlines as \\n). Never paste code into your reply as text: text is not saved anywhere. Example of a first reply for \"make a page\":",
     '{"tool": "write_file", "args": {"path": "index.html", "content": "<!doctype html>\\n<html>...</html>\\n"}}',
+    "Keep every file small: at most about 80 lines (about 700 tokens) per write_file, because a long reply is cut off and lost. For a web page write index.html, style.css and script.js as three separate files, one per reply.",
     "Then write the next file the same way. Call finish only after every file you need exists, and say plainly what you made.",
   ].join("\n");
 }

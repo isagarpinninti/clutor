@@ -2,7 +2,7 @@ import { applyTheme } from "./theme";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ModelInfo, type SystemInfo } from "./bridge";
 import { streamReply, toChatMessages } from "./chat";
-import { BackIcon, ChatIcon, ChevronIcon, CodeIcon, ForwardIcon, DiffIcon, FilesIcon, GlobeIcon, LaptopIcon, MoreIcon, ProgressIcon, SidebarIcon, TerminalIcon } from "./components/icons";
+import { BackIcon, ChatIcon, ChevronIcon, CodeIcon, ForwardIcon, DiffIcon, FilesIcon, GlobeIcon, LaptopIcon, MoreIcon, SidebarIcon, TerminalIcon } from "./components/icons";
 import { Logo } from "./components/Logo";
 import { Thinking } from "./components/Thinking";
 import { Composer } from "./components/Composer";
@@ -20,6 +20,7 @@ import { UsageDialog } from "./components/UsageDialog";
 import { fitAttachments, type Attachment } from "./attachments";
 import { gather, needsWeb, withWebContext, type Gathered } from "./web";
 import { chatUsage, contextPercent } from "./usage";
+import { compactMessages, shouldCompact } from "./compact";
 import { ModelDialog } from "./components/ModelDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { AgentController, type Approval } from "./agent/controller";
@@ -62,7 +63,7 @@ export function App() {
   const setCodeSessions = useCallback((u: CodeSession[] | ((all: CodeSession[]) => CodeSession[])): void => { const next = typeof u === "function" ? u(sessionsRef.current) : u; sessionsRef.current = next; setCodeSessionsRaw(next); }, []);
   const [codeId, setCodeId] = useState<string>(() => { try { return localStorage.getItem("clutor.codeSession") ?? ""; } catch { return ""; } });
   const [panel, setPanel] = useState(false);
-  const [panelTab, setPanelTab] = useState<PanelTab>("progress");
+  const [panelTab, setPanelTab] = useState<PanelTab>("overview");
   const [renaming, setRenaming] = useState(false);
   const [settingsAt, setSettingsAt] = useState<"usage" | "connectors">("usage");
   const togglePanel = (t: PanelTab): void => { if (panel && panelTab === t) setPanel(false); else { setPanelTab(t); setPanel(true); } };
@@ -233,7 +234,10 @@ export function App() {
     const convId = active.id;
     const user: Msg = { id: uid(), role: "user", content: text, ...(again ? (again.files?.length ? { files: again.files } : {}) : fileFields(attached)) };
     const reply: Msg = { id: uid(), role: "assistant", content: "" };
-    const history = [...(again?.base ?? active.messages), user];
+    let base = again?.base ?? active.messages;
+    const nCtx = state.ready?.nCtx ?? settings.ctx;
+    const compactNow = shouldCompact(chatUsage(base, nCtx).contextUsed, nCtx, base);
+    const history = [...base, user];
     update(convId, (c) => ({ ...c, title: c.messages.length ? c.title : titleFrom(text), updated: Date.now(), messages: [...history, reply] }));
     stick.current = true;
     const ac = new AbortController();
@@ -242,6 +246,15 @@ export function App() {
     if (!session.current || (wanted && state.model?.path !== wanted.path)) flash(`Loading ${wanted?.name ?? "your model"} first…`);
     const s = await ensureModel();
     if (!s) { update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, error: "The model could not be loaded." } : m)) })); abort.current = null; setBusy(false); return; }
+    // Auto-compact: the context is nearly full, so the conversation so far is replaced by a summary before this message goes in.
+    let sendHistory = history;
+    if (compactNow) {
+      flash("Context is nearly full: compacting the conversation…");
+      try {
+        const summary = await compactMessages(s as never, base, ac.signal);
+        if (summary) { base = summary; sendHistory = [...summary, user]; update(convId, (c) => ({ ...c, messages: [...summary, user, reply] })); flash("Conversation compacted."); }
+      } catch { /* the conversation stays as it was */ }
+    }
     // Browse: look the question up first (this only uses the network, so a background job keeps running meanwhile).
     let web: Gathered | undefined;
     const setWeb = (w: NonNullable<Msg["web"]>, sources?: Gathered["sources"]): void => update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, web: w, ...(sources ? { sources } : {}) } : m)) }));
@@ -256,7 +269,7 @@ export function App() {
     const jobWasRunning = queue.running !== undefined;
     const release = await queue.holdForChat();
     if (jobWasRunning) flash("A background job paused while you chat; it carries on afterwards.");
-    await streamReply(s, history, settings, ac.signal, (u) =>
+    await streamReply(s, sendHistory, settings, ac.signal, (u) =>
       update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, content: u.content, ...(u.reasoning ? { reasoning: u.reasoning } : {}), ...(u.stats ? { stats: u.stats } : {}), ...(u.error ? { error: u.error } : {}), ...(u.interrupted ? { interrupted: true } : {}) } : m)) })), web ? (m) => withWebContext(m, web as Gathered) : undefined);
     abort.current = null;
     release();
@@ -356,7 +369,7 @@ export function App() {
           ) : null}
           {mode === "code" && codeActive ? (
             <div className="tool-tabs" role="toolbar" aria-label="Panels">
-              {([["progress", "Progress", <ProgressIcon key="p" />], ["overview", "Session", <LaptopIcon key="o" />], ["terminal", "Terminal", <TerminalIcon key="t" />], ["changes", "Changes", <DiffIcon key="c" />], ["browser", "Browser", <GlobeIcon key="b" />], ["files", "Files", <FilesIcon key="f" />]] as Array<[PanelTab, string, JSX.Element]>).map(([id, label, icon]) => (
+              {([["overview", "Session", <LaptopIcon key="o" />], ["terminal", "Terminal", <TerminalIcon key="t" />], ["changes", "Changes", <DiffIcon key="c" />], ["browser", "Browser", <GlobeIcon key="b" />], ["files", "Files", <FilesIcon key="f" />]] as Array<[PanelTab, string, JSX.Element]>).map(([id, label, icon]) => (
                 <button type="button" key={id} className={`tool-tab tip${panel && panelTab === id ? " on" : ""}`} data-tip={label} onClick={() => togglePanel(id)} aria-pressed={panel && panelTab === id} aria-label={label}>{icon}</button>
               ))}
             </div>

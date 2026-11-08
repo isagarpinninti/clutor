@@ -407,3 +407,21 @@ describe("JSON extraction", () => {
     expect(extractJsonObject('{bad} then {"ok":true}')).toEqual({ ok: true });
   });
 });
+
+describe("auto-compact", () => {
+  it("replaces dropped steps with a record of what was done and repeats the plan, instead of forgetting them", async () => {
+    const big = "x".repeat(900);
+    const steps: Step[] = [() => say("update_plan", { steps: "[>] Write the pages\n[ ] Finish" })];
+    for (let i = 0; i < 8; i++) steps.push(() => say("write_file", { path: `p${i}.txt`, content: `${big}${i}` }));
+    steps.push(() => say("finish", { summary: "done" }));
+    const events: AgentEvent[] = [];
+    const m = llm(steps);
+    const r = await runAgent({ task: "write pages p0.txt to p7.txt", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), contextChars: 5000, onEvent: (e) => events.push(e) });
+    expect(events.some((e) => e.type === "compact")).toBe(true);
+    const last = m.seen[m.seen.length - 1] as ChatMessage[];
+    const note = last.find((x) => (x.content ?? "").startsWith("Older steps were compacted"));
+    expect(note?.content).toContain("write_file p0.txt");
+    expect(note?.content).toContain("Write the pages");
+    expect(r.status).toBe("finished");
+  });
+});

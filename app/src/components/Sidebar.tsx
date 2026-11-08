@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { groupByProject, sessionDot, type CodeSession } from "../agent/sessions";
 import type { Conversation } from "../store";
 import { Logo } from "./Logo";
+import { Resizer } from "./Resizer";
 import { ChevronIcon, ClockIcon, GaugeIcon, GearIcon, PlusIcon, SearchIcon, TrashIcon } from "./icons";
 
 interface Props {
@@ -62,6 +63,7 @@ export function Sidebar(p: Props) {
     <>
       <div className={`scrim${p.open ? " show" : ""}`} onClick={p.onClose} aria-hidden="true" />
       <aside className={`sidebar${p.open ? " open" : ""}${p.collapsed ? " collapsed" : ""}`} aria-label="Sidebar">
+        {!p.collapsed ? <Resizer side="right" cssVar="--side-w" storageKey="clutor.sideW" min={200} max={460} fallback={252} label="Resize the sidebar" /> : null}
         <div className="side-brand"><Logo size={22} /><span>Clutor</span></div>
         <div className="side-nav">
           <button type="button" className="nav-item primary" onClick={p.mode === "code" ? p.onNewCode : p.onNew}><PlusIcon /><span>{p.mode === "code" ? "New session" : "New chat"}</span></button>

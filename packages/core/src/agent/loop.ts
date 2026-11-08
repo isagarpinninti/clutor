@@ -19,6 +19,7 @@ export type AgentEvent =
   | { type: "tool_result"; step: number; name: string; ok: boolean; output: string }
   | { type: "partial"; step: number; text: string }   // the reply so far, while the model is still writing it
   | { type: "invalid"; step: number; error: string }
+  | { type: "compact"; step: number; dropped: number }
   | { type: "diff"; diffs: FileDiff[] }
   | { type: "verify"; command: string; ok: boolean; ran: boolean; attempt: number; output: string }
   | { type: "done"; result: AgentResult };
@@ -99,7 +100,7 @@ export async function missingFiles(text: string, ws: ShadowWorkspace): Promise<s
 
 /** The model called finish before it had looked at or changed anything: models often describe the work in prose and then claim it is done. */
 const IDLE_FINISH = "You called finish but have not read, written or run anything, so nothing has been done. Do the task with the tools now: to create a file call write_file with the whole file in args.content; to change one call edit_file. Do not describe the code in your reply, put it in a file. Only call finish once the files exist. If the task truly needs no file changes, call finish again and say why.";
-const NUDGE_CUT = "Your reply was cut off before the tool call was finished, so nothing was done. Write smaller files: put one short file in each write_file call (split a long file into several files), and reply with the JSON object only.";
+const NUDGE_CUT = "Your reply was cut off before the tool call was finished, so nothing was done. Each file must be short: at most about 80 lines in one write_file call. Split a page into index.html, style.css and script.js, write them one per reply, and reply with the JSON object only.";
 const NUDGE_JSON = 'Reply with exactly one JSON object like {"tool": "read_file", "args": {"path": "src/a.ts"}}. If the task is finished, use the finish tool.';
 
 interface Parsed { id: string; name: string; args: unknown }
@@ -118,7 +119,7 @@ function safeJson(s: string): unknown { try { return JSON.parse(s); } catch { re
 const size = (m: ChatMessage[]): number => m.reduce((n, x) => n + (x.content?.length ?? 0) + (x.tool_calls ? JSON.stringify(x.tool_calls).length : 0), 0);
 
 /** Shrinks old tool output first, then drops the oldest whole turns, keeping the task message and the latest exchanges. */
-export function fitContext(turns: ChatMessage[][], head: ChatMessage[], limit: number): ChatMessage[][] {
+export function fitContext(turns: ChatMessage[][], head: ChatMessage[], limit: number, dropped?: ChatMessage[][]): ChatMessage[][] {
   const total = (): number => size(head) + turns.reduce((n, t) => n + size(t), 0);
   const keepRecent = 4;
   for (let i = 0; i < turns.length - keepRecent && total() > limit; i++) {
@@ -126,8 +127,24 @@ export function fitContext(turns: ChatMessage[][], head: ChatMessage[], limit: n
       if ((m.role === "tool" || m.role === "user") && (m.content?.length ?? 0) > 400) m.content = `${(m.content as string).slice(0, 300)}\n... [older output removed to save space]`;
     }
   }
-  while (total() > limit && turns.length > keepRecent) turns.shift();
+  while (total() > limit && turns.length > keepRecent) { const t = turns.shift(); if (t && dropped) dropped.push(t); }
   return turns;
+}
+
+/** One line per step in turns that were dropped from the window: what was done, so the model keeps the thread after the old messages are gone. */
+export function summarizeTurns(dropped: ChatMessage[][]): string {
+  const lines: string[] = [];
+  for (const t of dropped) {
+    const a = t.find((m) => m.role === "assistant");
+    const p = a ? parseReplyJson(a.content ?? null) : undefined;
+    if (!p) continue;
+    const args = (p.args ?? {}) as Record<string, unknown>;
+    const what = typeof args["path"] === "string" ? args["path"] : typeof args["command"] === "string" ? args["command"] : typeof args["query"] === "string" ? args["query"] : "";
+    if (p.name === "update_plan" || p.name === "finish") continue;
+    const failed = t.some((m) => m.role === "user" && /^Result of \S+ \(failed\)/.test(m.content ?? ""));
+    lines.push(`- ${p.name}${what ? ` ${String(what).slice(0, 80)}` : ""}${failed ? " (failed)" : ""}`);
+  }
+  return lines.slice(-40).join("\n");
 }
 
 export async function runAgent(o: AgentOptions): Promise<AgentResult> {
@@ -148,6 +165,7 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
   const turns: ChatMessage[][] = [];
   const commands: AgentResult["commands"] = [];
   const usage = { promptTokens: 0, completionTokens: 0 };
+  let droppedTurns = false, lastPlan = "", compacted = "";
   let steps = 0, toolCalls = 0, invalidTotal = 0, invalidRun = 0, heals = 0, idleFinishes = 0, workCalls = 0, claimChecks = 0;
   const maxIdleFinishes = o.maxIdleFinishes ?? 2;
   let status: AgentResult["status"] = "max_steps";
@@ -160,7 +178,18 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
   loop: while (steps < maxSteps) {
     if (o.signal?.aborted) { status = "aborted"; summary = "stopped by the user"; break; }
     steps++;
-    const messages = [...head, ...fitContext(turns, head, limit).flat()];
+    const dropped: ChatMessage[][] = [];
+    const kept = fitContext(turns, head, limit, dropped);
+    if (dropped.length) {
+      // Auto-compact: the oldest steps no longer fit, so they are replaced by a short record of what was done (no model call: it would cost minutes on a slow machine).
+      droppedTurns = true;
+      compacted = [compacted, summarizeTurns(dropped)].filter(Boolean).join("\n").split("\n").slice(-40).join("\n");
+      emit({ type: "compact", step: steps, dropped: dropped.length });
+    }
+    // The plan was written in one of the dropped turns: say it again, or the model plans from the start every time.
+    const planNote: ChatMessage[] = droppedTurns && (lastPlan || compacted)
+      ? [{ role: "user", content: `Older steps were compacted to save room.${compacted ? `\nDone so far:\n${compacted}` : ""}${lastPlan ? `\nYour current plan (continue from it, do not start over):\n${lastPlan}` : ""}` }] : [];
+    const messages = [...head, ...planNote, ...kept.flat()];
     let reply;
     try {
       reply = await o.llm.chat(messages, { ...(o.signal ? { signal: o.signal } : {}), onPartial: (text) => emit({ type: "partial", step: steps, text }) });
@@ -208,6 +237,7 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
         invalidRun = 0;
         toolCalls++;
         if (v.call.name !== "finish" && v.call.name !== "update_plan") workCalls++;
+        if (v.call.name === "update_plan") { const st = (v.call.args as { steps?: unknown }).steps; if (typeof st === "string" && st.trim()) lastPlan = st.trim().slice(0, 1500); }
         emit({ type: "tool_call", step: steps, name: v.call.name, args: v.call.args });
         const r = await executeTool(ctx, v.call.name as ToolName, v.call.args);
         if (r.command) commands.push(r.command);

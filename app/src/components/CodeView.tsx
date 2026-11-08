@@ -60,10 +60,10 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
 
   // A task that starts opens the panel on its progress; when it ends with changes to review, the panel moves on to them (unless you have gone elsewhere in it).
   const runningId = last?.status === "running" ? last.id : undefined;
-  useEffect(() => { if (runningId) { onTab("progress"); onPanel(true); } }, [runningId]);
+  useEffect(() => { if (runningId) { onTab("overview"); onPanel(true); } }, [runningId]);
   const prevStatus = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (prevStatus.current === "running" && last && last.status !== "running" && last.diffs?.length && tab === "progress") onTab("changes");
+    if (prevStatus.current === "running" && last && last.status !== "running" && last.diffs?.length && tab === "overview") onTab("changes");
     prevStatus.current = last?.status;
   }, [last?.status, last?.id]);
   // Follow the task: a new task, each step, each plan tick and each approval scroll into view, so pressing Enter always shows that something started.
@@ -138,7 +138,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
                   {t.blocks.map((b) => b.kind === "text" ? <p key={b.id} className="turn-text">{b.text}</p>
                     : b.kind === "note" ? (b.bad ? <Alert key={b.id} tone="error" title="A step went wrong">{b.text}</Alert> : <p key={b.id} className="turn-hint"><RedoSmall />{b.text}{b.count && b.count > 1 ? <i>×{b.count}</i> : null}</p>)
                     : <ToolBlock key={b.id} block={b} verbose={verbose} onOpenFile={(p) => { setFocusFile(p); onTab("files"); onPanel(true); }} />)}
-                  {t.status === "running" && !approval ? <WorkingLine turn={t} onOpen={() => { onTab("progress"); onPanel(true); }} /> : null}
+                  {t.status === "running" && !approval ? <WorkingLine turn={t} onOpen={() => { onTab("overview"); onPanel(true); }} /> : null}
                   {t.summary ? <div className="turn-summary"><Markdown text={t.summary} /></div> : null}
                   {t.status === "done" && !t.planOnly && !t.diffs?.length && !t.lost && !t.blocks.some((b) => b.kind === "tool" && b.name === "run_command") ? <Alert tone="warn" title="Nothing was changed" action={ready && !running ? { label: "Try again", onClick: () => retry(t.task) } : undefined}>No files were created or edited. If you asked for a change, the model did not make it: try again, or choose a more capable model.</Alert> : null}
                   {t.status === "interrupted" ? <Alert tone="warn" title="This task was interrupted" action={ready && !running ? { label: "Try again", onClick: () => retry(t.task) } : undefined}>The app was closed while it ran.</Alert> : null}

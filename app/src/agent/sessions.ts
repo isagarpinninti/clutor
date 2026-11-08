@@ -109,6 +109,12 @@ export function applyEvent(blocks: Block[], e: AgentEvent): Block[] {
       const d = e.diffs.find((x) => x.path === b.path);
       return d?.patch ? { ...b, patch: d.patch } : b;
     });
+    case "compact": {
+      const last = blocks[blocks.length - 1];
+      const text = "The conversation was compacted: older steps were replaced by a short record so the task could continue.";
+      if (last && last.kind === "note" && last.text === text) return blocks;
+      return [...blocks, { id: bid(), kind: "note", text }];
+    }
     case "invalid": {
       const text = e.error === "the reply was not a tool call" ? "The model answered in plain text instead of using a tool, so it was asked again."
         : e.error === "the reply was cut off" ? "The model's reply was cut off, so it was asked to write smaller files."

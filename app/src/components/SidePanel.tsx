@@ -4,7 +4,8 @@ import type { Turn } from "../agent/sessions";
 import { reviewable } from "../agent/sessions";
 import { Patch } from "./Patch";
 import { OverviewPane } from "./OverviewPane";
-import { ProgressPane } from "./ProgressPane";
+import { ProgressPane, WorkingLine } from "./ProgressPane";
+import { Resizer } from "./Resizer";
 import { BrowserPane } from "./BrowserPane";
 import { TerminalPane } from "./TerminalPane";
 import { CloseIcon, SearchIcon } from "./icons";
@@ -29,8 +30,8 @@ interface Props {
   onTab: (t: PanelTab) => void;
 }
 
-export type PanelTab = "progress" | "overview" | "changes" | "files" | "terminal" | "browser";
-const TITLES: Record<PanelTab, string> = { progress: "Progress", overview: "Session", changes: "Changes", files: "Files", terminal: "Terminal", browser: "Browser" };
+export type PanelTab = "overview" | "changes" | "files" | "terminal" | "browser";
+const TITLES: Record<PanelTab, string> = { overview: "Session", changes: "Changes", files: "Files", terminal: "Terminal", browser: "Browser" };
 
 /** The panel beside the conversation: the changes waiting for review, and the project's files. */
 export function SidePanel({ host, root, turn, progress, focusFile, onApply, onDiscard, onUndo, onClose, busy, error, tab, onTab, hidden, overview }: Props) {
@@ -49,13 +50,17 @@ export function SidePanel({ host, root, turn, progress, focusFile, onApply, onDi
   const shown = useMemo(() => (q.trim() ? files.filter((f) => f.toLowerCase().includes(q.trim().toLowerCase())) : files).slice(0, 400), [files, q]);
 
   return (
-    <aside className="side-panel" aria-label="Changes, files, terminal and browser" hidden={hidden}>
+    <aside className="side-panel" aria-label="Session, changes, files, terminal and browser" hidden={hidden}>
+      <Resizer side="left" cssVar="--panel-w" storageKey="clutor.panelW" min={300} max={900} fallback={400} label="Resize the side panel" />
       <header>
         <h3 className="panel-title">{TITLES[tab]}{tab === "changes" && diffs.length ? ` · ${diffs.length}` : ""}</h3>
         <button type="button" className="icon-btn" onClick={onClose} aria-label="Close panel"><CloseIcon /></button>
       </header>
-      <div className="panel-body" hidden={tab !== "progress"}><ProgressPane turn={progress} onOpenFile={open} /></div>
-      <div className="panel-body flush" hidden={tab !== "overview"}><OverviewPane {...overview} onOpenFile={open} /></div>
+      {tab !== "overview" && progress?.status === "running" ? <div className="pp-strip"><WorkingLine turn={progress} onOpen={() => onTab("overview")} /></div> : null}
+      <div className="panel-body session-body" hidden={tab !== "overview"}>
+        <ProgressPane turn={progress} onOpenFile={open} />
+        <OverviewPane {...overview} onOpenFile={open} />
+      </div>
       <div className="panel-body" hidden={tab !== "changes" && tab !== "files"}>
         {tab !== "files" ? (
           diffs.length === 0 ? <p className="empty-hint">{turn?.lost ? "The changes from this task were too large to keep after a restart. Run it again." : "No changes yet. When the agent edits files they appear here for review."}</p> : (

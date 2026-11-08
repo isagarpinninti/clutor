@@ -3,7 +3,10 @@ import { currentStage, type Turn } from "../agent/sessions";
 import { liveStore, parseLive } from "../agent/live";
 import { Logo } from "./Logo";
 import { PlanList, fmtElapsed, useSince, useTotal } from "./RunProgress";
+import { Patch } from "./Patch";
 import { CheckIcon, CloseIcon } from "./icons";
+
+const count = (patch: string): { add: number; del: number } => { let add = 0, del = 0; for (const l of patch.split("\n")) { if (l.startsWith("+") && !l.startsWith("+++")) add++; else if (l.startsWith("-") && !l.startsWith("---")) del++; } return { add, del }; };
 
 /** The reply being written for this task, re-read when it changes (it changes several times a second, so it lives outside the app's state). */
 export function useLiveReply(taskId: string | undefined): string | undefined {
@@ -77,15 +80,24 @@ export function ProgressPane({ turn, onOpenFile }: { turn: Turn | undefined; onO
 
       {tools.length ? (
         <section className="pp-steps" aria-label="Steps">
-          <h4>Steps</h4>
+          <h4>Activity</h4>
           <ul>
-            {tools.map((b) => (
-              <li key={b.id} className={b.status}>
-                <span className="pp-dot" aria-hidden="true">{b.status === "ok" ? <CheckIcon /> : b.status === "error" ? <CloseIcon /> : <Logo size={12} state="thinking" />}</span>
-                <span className="pp-label">{b.label}</span>
-                {b.path ? <button type="button" className="link-btn" onClick={() => onOpenFile(b.path as string)}>open</button> : null}
-              </li>
-            ))}
+            {tools.map((b) => {
+              const c = b.patch ? count(b.patch) : undefined;
+              const detail = b.name === "run_command" ? b.output : b.patch ? undefined : b.status === "error" ? b.output : undefined;
+              return (
+                <li key={b.id} className={b.status}>
+                  <div className="pp-line">
+                    <span className="pp-dot" aria-hidden="true">{b.status === "ok" ? <CheckIcon /> : b.status === "error" ? <CloseIcon /> : <Logo size={12} state="thinking" />}</span>
+                    <span className="pp-label">{b.label}</span>
+                    {c ? <span className="counts"><i className="add">+{c.add}</i> <i className="del">−{c.del}</i></span> : null}
+                    {b.path ? <button type="button" className="link-btn" onClick={() => onOpenFile(b.path as string)}>open</button> : null}
+                  </div>
+                  {b.patch ? <details className="pp-detail"><summary>Changes</summary><Patch patch={b.patch} /></details> : null}
+                  {detail ? <details className="pp-detail" open={b.name === "run_command" && b.status === "error"}><summary>{b.name === "run_command" ? "Output" : "Details"}</summary><pre className="pp-out">{detail.slice(0, 2000)}</pre></details> : null}
+                </li>
+              );
+            })}
           </ul>
         </section>
       ) : null}
