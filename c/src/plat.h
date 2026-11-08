@@ -59,6 +59,8 @@ static inline int cl_lock_memory(void *p, size_t n) {
   return VirtualLock(p, n) != 0;
 }
 static inline uint64_t cl_phys_mem(void) { MEMORYSTATUSEX s; s.dwLength = sizeof s; return GlobalMemoryStatusEx(&s) ? (uint64_t)s.ullTotalPhys : 0; }
+/* Memory that can be given to a program now without pushing others out to disk (0 when it cannot be told). */
+static inline uint64_t cl_avail_mem(void) { MEMORYSTATUSEX s; s.dwLength = sizeof s; return GlobalMemoryStatusEx(&s) ? (uint64_t)s.ullAvailPhys : 0; }
 static inline size_t cl_page_size(void) { SYSTEM_INFO i; GetSystemInfo(&i); return i.dwPageSize ? i.dwPageSize : 4096; }
 static inline int cl_ncpu(void) { SYSTEM_INFO i; GetSystemInfo(&i); return i.dwNumberOfProcessors ? (int)i.dwNumberOfProcessors : 1; }
 static inline uint64_t cl_peak_rss(void) { PROCESS_MEMORY_COUNTERS c; return GetProcessMemoryInfo(GetCurrentProcess(), &c, sizeof c) ? (uint64_t)c.PeakWorkingSetSize : 0; }
@@ -173,6 +175,23 @@ static inline void *cl_map_ro(int fd, size_t size) { void *p = mmap(NULL, size, 
 static inline void cl_unmap(void *p, size_t size) { if (p) munmap(p, size); }
 static inline int cl_lock_memory(void *p, size_t n) { return mlock(p, n) == 0; }
 static inline uint64_t cl_phys_mem(void) { long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE); return pages > 0 && psz > 0 ? (uint64_t)pages * (uint64_t)psz : 0; }
+/* Memory that can be given to a program now without pushing others out to disk (0 when it cannot be told): free and reclaimable pages, which is what other programs have not taken. */
+#if defined(__APPLE__)
+#include <mach/mach.h>
+static inline uint64_t cl_avail_mem(void) {
+  vm_statistics64_data_t v; mach_msg_type_number_t n = HOST_VM_INFO64_COUNT; vm_size_t psz = 0;
+  if (host_page_size(mach_host_self(), &psz) != KERN_SUCCESS) return 0;
+  if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t)&v, &n) != KERN_SUCCESS) return 0;
+  return ((uint64_t)v.free_count + (uint64_t)v.inactive_count + (uint64_t)v.speculative_count) * (uint64_t)psz;
+}
+#else
+static inline uint64_t cl_avail_mem(void) {
+  FILE *f = fopen("/proc/meminfo", "r");
+  if (f) { char line[160]; unsigned long long kb = 0; while (fgets(line, sizeof line, f)) if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { fclose(f); return (uint64_t)kb * 1024u; } fclose(f); }
+  long pages = sysconf(_SC_AVPHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
+  return pages > 0 && psz > 0 ? (uint64_t)pages * (uint64_t)psz : 0;
+}
+#endif
 static inline size_t cl_page_size(void) { long p = sysconf(_SC_PAGESIZE); return p > 0 ? (size_t)p : 4096; }
 static inline int cl_ncpu(void) { long c = sysconf(_SC_NPROCESSORS_ONLN); return c > 0 ? (int)c : 1; }
 static inline uint64_t cl_peak_rss(void) {

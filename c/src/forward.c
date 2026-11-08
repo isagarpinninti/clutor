@@ -89,6 +89,14 @@ static int bind_q35_layer(cl_fwd *f, int l, char *err, size_t errlen) {
 #define AKEY(buf, suffix) snprintf(buf, sizeof buf, "%s.%s", f->arch, suffix)
 #define REQ_U(suffix, dst) do { char k_[96]; uint64_t v_; AKEY(k_, suffix); if (!cl_meta_u64(&f->meta, k_, &v_)) { snprintf(err, errlen, "the model does not state %s", k_); goto fail; } dst = (int)v_; } while (0)
 
+uint64_t cl_auto_cache_bytes(uint64_t ram, uint64_t avail, uint64_t experts) {
+  uint64_t want = ram / 100 * 45;
+  if (avail > 0 && avail / 100 * 60 < want) want = avail / 100 * 60;
+  if (want < ((uint64_t)256 << 20)) want = (uint64_t)256 << 20;
+  if (want > experts) want = experts;   /* a cache bigger than all the experts would be wasted */
+  return want;
+}
+
 int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen) {
   memset(f, 0, sizeof *f);
   if (cl_model_open(&f->model, path, err, errlen)) return 1;
@@ -247,9 +255,9 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
       uint64_t experts = 0;
       for (int l = 0; l < f->n_layer; l++) experts += (uint64_t)f->n_expert * (f->L[l].gate_slab + f->L[l].up_slab + f->L[l].down_slab);
       auto_opts = opts ? *opts : (cl_fwd_opts){0};
-      uint64_t want = ram / 100 * 45;
-      if (want < ((uint64_t)256 << 20)) want = (uint64_t)256 << 20;
-      if (want > experts) want = experts;   /* a cache bigger than all the experts would be wasted */
+      uint64_t avail = cl_avail_mem();
+      { const char *fa = getenv("CLUTOR_FAKE_AVAIL_BYTES"); if (fa && atoll(fa) > 0) avail = (uint64_t)atoll(fa); }   /* for the tests */
+      const uint64_t want = cl_auto_cache_bytes(ram, avail, experts);
       auto_opts.cache_bytes = want;
       if (!auto_opts.io_threads) auto_opts.io_threads = 4;
       if (!auto_opts.prefetch) auto_opts.prefetch = 2;

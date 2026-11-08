@@ -2,6 +2,7 @@
 #include "cache.h"
 #include "gguf.h"
 #include "kernel.h"
+#include "forward.h"
 #include "quant.h"
 #include "meta.h"
 #include "xs.h"
@@ -200,6 +201,14 @@ static void test_kernel(void) {
       if (isnan(b) ? !isnan(a) : memcmp(&a, &b, sizeof a) != 0) bad++;
     }
     CHECK(bad == 0, "half to single conversion: the fast path equals the reference for all 65,536 values");
+  }
+  { /* the cache a model that does not fit gets: 45 percent of memory, at most 60 percent of what is free, 256 MiB at least, never more than all the experts */
+    const uint64_t G = (uint64_t)1 << 30, M = (uint64_t)1 << 20;
+    CHECK(cl_auto_cache_bytes(16 * G, 0, 40 * G) == 16 * G / 100 * 45, "auto cache: 45 percent of memory when free memory is unknown");
+    CHECK(cl_auto_cache_bytes(16 * G, 14 * G, 40 * G) == 16 * G / 100 * 45, "auto cache: 45 percent of memory when plenty is free");
+    CHECK(cl_auto_cache_bytes(16 * G, 4 * G, 40 * G) == 4 * G / 100 * 60, "auto cache: at most 60 percent of what is free when other programs hold the rest");
+    CHECK(cl_auto_cache_bytes(16 * G, 100 * M, 40 * G) == 256 * M, "auto cache: never below 256 MiB");
+    CHECK(cl_auto_cache_bytes(64 * G, 60 * G, 3 * G) == 3 * G, "auto cache: never more than all the experts");
   }
   { /* single to half (the key/value cache is stored this way): the fast path equals the software reference, every half value survives the round trip, and the rule is round to nearest even */
     int bad = 0, trips = 0, ties = 0;

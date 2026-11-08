@@ -90,6 +90,9 @@ typedef struct { uint64_t cache_bytes; int stage_slots, io_threads, os_bypass, p
   int lock;         /* pin the mapped weights in memory (mlock), so other programs' memory is compressed or swapped out instead of the model being evicted: what GPU runtimes get by wiring their buffers. Mapped (non-streaming) models only */
   cl_smart smart;   /* SMART-ROUTE: needs streaming (cache_bytes > 0), since it asks the cache what is in memory */
   int prefetch_n;   /* how many of the previous token's experts per layer to read early (best-ranked first); 0 = all that were used */ cl_policy policy; } cl_fwd_opts;
+/* How large an expert cache a model that does not fit gets: 45% of the machine's memory, but at most 60% of what is free right now (other programs may be using the rest, and a
+ * cache that pushes them to disk makes everything slower, the engine included), never below 256 MiB, and never more than all the experts. `avail` 0 means unknown. */
+uint64_t cl_auto_cache_bytes(uint64_t ram, uint64_t avail, uint64_t experts);
 int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen);
 void cl_fwd_close(cl_fwd *f);
 void cl_fwd_reset(cl_fwd *f);
