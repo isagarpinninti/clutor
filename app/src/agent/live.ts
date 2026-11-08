@@ -34,7 +34,8 @@ function unescapeJson(s: string): string {
 function partialString(json: string, key: string): string | undefined {
   const m = new RegExp(`"${key}"\\s*:\\s*"`).exec(json);
   if (!m) return undefined;
-  let i = m.index + m[0].length, end = json.length;
+  const i = m.index + m[0].length;
+  let end = json.length;
   for (let j = i; j < json.length; j++) { if (json[j] === "\\") { j++; continue; } if (json[j] === '"') { end = j; break; } }
   return unescapeJson(json.slice(i, end));
 }
