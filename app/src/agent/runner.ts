@@ -19,6 +19,8 @@ export interface CodingTask {
   approve: (info: { command: string; network: boolean }) => Promise<boolean>;
   /** Investigate and propose a plan only: the agent is told not to change files, and whatever it changes is discarded. */
   planOnly?: boolean;
+  /** What earlier tasks in this session did (see sessionMemory). */
+  history?: string;
   verifyCommand?: string;
   maxSteps?: number;
   /** The model's context window in tokens; the agent keeps about this much of the conversation (a token is about three characters). */
@@ -36,6 +38,12 @@ export function replyTokens(contextTokens?: number): number { return Math.max(10
 export async function runCodingTask(t: CodingTask): Promise<{ result: AgentResult; ws: ShadowWorkspace }> {
   const ws = new ShadowWorkspace(hostProject(t.host, t.root));
   const external = t.mcp?.external();
+  // Project instructions: a file the user keeps in the folder for the agent (the first of these that exists), read at the start of every task.
+  let instructions = "", instructionsFile = "";
+  for (const name of ["CLUTOR.md", "AGENTS.md", "CLAUDE.md"]) {
+    const text = await t.host.read(t.root, name).catch(() => null);
+    if (text && text.trim()) { instructions = text.trim().slice(0, 6000); instructionsFile = name; break; }
+  }
   const result = await runAgent({
     task: t.task, ws, llm: engineLlm(t.session, t.modelName, { maxTokens: replyTokens(t.contextTokens), ...(t.onContext ? { onContext: t.onContext } : {}) }),
     ...(t.planOnly ? { planOnly: true } : {}), maxSteps: t.maxSteps ?? 20, contextChars: Math.max(12_000, Math.min(600_000, Math.round((t.contextTokens ?? 4096) * 2.5))),
@@ -47,7 +55,7 @@ export async function runCodingTask(t: CodingTask): Promise<{ result: AgentResul
     },
     ...(external?.available() ? { external } : {}),
     ...(t.web ? { web: agentWeb(t.web, () => t.approve({ command: "Search the web and read pages for this task", network: true })) } : {}),
-    systemExtra: [t.planOnly ? "PLAN MODE: do not write, edit or delete any file. Read and search the project, then call finish with a clear step-by-step plan: which files to change and how." : "", external?.available() ? external.describe() : ""].filter(Boolean).join("\n\n"),
+    systemExtra: [t.planOnly ? "PLAN MODE: do not write, edit or delete any file. Read and search the project, then call finish with a clear step-by-step plan: which files to change and how." : "", instructions ? `Project instructions from ${instructionsFile} (follow them):\n${instructions}` : "", t.history ? `Earlier in this session (the files named are already in the folder; do not make them again):\n${t.history}` : "", external?.available() ? external.describe() : ""].filter(Boolean).join("\n\n"),
     ...(t.verifyCommand ? { verifyCommand: t.verifyCommand } : {}),
     ...(t.signal ? { signal: t.signal } : {}),
     onEvent: t.onEvent,

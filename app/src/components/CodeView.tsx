@@ -58,6 +58,10 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
   const end = useRef<HTMLDivElement>(null);
   const last = active ? lastTurn(active) : undefined;
   const running = last?.status === "running";
+  const [queue, setQueue] = useState<string[]>([]);
+  const [info, setInfo] = useState<string>();
+  const [slashAt, setSlashAt] = useState(0);
+  const histPos = useRef(-1);
   const withChanges = active ? [...active.turns].reverse().find((t) => t.diffs?.length) : undefined;
 
   // A task that starts opens the panel on its progress; when it ends with changes to review, the panel moves on to them (unless you have gone elsewhere in it).
@@ -78,11 +82,54 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
   const pending = approvals.filter((a) => a.sessionId === active?.id);
   const approval = pending[0];
 
+  const exec = (text: string): void => { if (!active) return; setError(undefined); void ctl.run(active.id, text, { perm, source: "local" }).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e))); };
+  const contextUsed = [...(active?.turns ?? [])].reverse().find((t) => t.context)?.context ?? 0;
+  const contextMax = overviewProps.contextMax;
+  const COMMANDS: Array<{ name: string; hint: string; run: () => void }> = active ? [
+    { name: "help", hint: "What you can type here", run: () => setInfo("Type a task and press Enter. While it works you can queue another message (it runs next) or press Esc to stop. Commands: " + "/clear, /compact, /undo, /plan, /ask, /auto, /context, /diff, /model, /tools, /help. Up arrow brings back your earlier tasks. Put instructions for the agent in CLUTOR.md (or AGENTS.md / CLAUDE.md) in the folder.") },
+    { name: "clear", hint: "Start a new session in this folder", run: () => { onCreate(active.root); } },
+    { name: "compact", hint: "Make later tasks forget the earlier ones (the files stay)", run: () => { ctl.forget(active.id); setInfo("Compacted: later tasks no longer remember the earlier ones in this session. The files in the folder stay as they are."); } },
+    { name: "undo", hint: "Undo the last task's changes in the folder", run: () => { if (withChanges?.applied) void undo(); else setInfo("There is nothing to undo."); } },
+    { name: "plan", hint: "Plan only: read the project, change nothing", run: () => { onPerm("plan"); setInfo("Plan only: the next tasks read the project and write a plan, and change nothing."); } },
+    { name: "ask", hint: "Ask before running anything", run: () => { onPerm("ask"); setInfo("The agent asks before running a command."); } },
+    { name: "auto", hint: "Run checks without asking", run: () => { onPerm("auto"); setInfo("Tests and checks run without asking; the network and tools still ask."); } },
+    { name: "context", hint: "How full the model's context is", run: () => setInfo(contextUsed ? `${contextUsed.toLocaleString()} of ${contextMax.toLocaleString()} tokens used (${Math.round((contextUsed / Math.max(1, contextMax)) * 100)}%) after the latest step.` : "No task has run yet in this session.") },
+    { name: "diff", hint: "Open the changes", run: () => { onTab("changes"); onPanel(true); } },
+    { name: "model", hint: "Choose a model", run: onChooseModel },
+    { name: "tools", hint: "Connect tools (MCP servers)", run: onMcp },
+  ] : [];
+  const slash = task.startsWith("/") && !task.includes(" ") ? COMMANDS.filter((c) => c.name.startsWith(task.slice(1).toLowerCase())) : [];
+  const runCommand = (c: { run: () => void }): void => { setTask(""); setInfo(undefined); c.run(); };
   const start = (): void => {
     const text = task.trim();
-    if (!active || !text || running) return;
-    setTask(""); setError(undefined);
-    void ctl.run(active.id, text, { perm, source: "local" }).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+    if (!active || !text) return;
+    if (text.startsWith("/")) {
+      const c = COMMANDS.find((x) => x.name === text.slice(1).split(/\s+/)[0]?.toLowerCase());
+      if (c) { runCommand(c); return; }
+      setInfo(`There is no command ${text.split(/\s+/)[0]}. Type /help to see them.`); return;
+    }
+    setTask(""); setInfo(undefined); histPos.current = -1;
+    if (running) { setQueue((q) => [...q, text]); return; }   // typed while it works: it runs next
+    exec(text);
+  };
+  // The next queued message starts when the running task ends (not after a stop: a stop means the person wants control back).
+  useEffect(() => {
+    if (!running && queue.length && last && last.status !== "stopped" && last.status !== "failed") { const [next, ...rest] = queue; setQueue(rest); if (next) exec(next); }
+    if (last?.status === "stopped" && queue.length) setQueue([]);
+  }, [running, last?.status]);
+  useEffect(() => { setQueue([]); setInfo(undefined); }, [active?.id]);
+  useEffect(() => {
+    if (!running || !active) return;
+    const on = (e: KeyboardEvent): void => { if (e.key === "Escape" && !editing) { ctl.stop(active.id); } };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, [running, active?.id, editing]);
+  const recall = (dir: -1 | 1): void => {
+    const tasks = (active?.turns ?? []).map((t) => t.task).reverse();
+    if (!tasks.length) return;
+    const n = Math.max(-1, Math.min(tasks.length - 1, histPos.current + (dir === -1 ? 1 : -1)));
+    histPos.current = n;
+    setTask(n < 0 ? "" : (tasks[n] as string));
   };
   const retry = (text: string): void => { if (!active || running) return; setError(undefined); void ctl.run(active.id, text, { perm, source: "local" }).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e))); };
   const apply = async (): Promise<void> => {
@@ -163,7 +210,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
                 <b>{approval.network ? "Allow this, with network access?" : "Allow this to run?"}{approval.source === "remote" ? <span className="tag">asked from {approval.device ?? "your phone"}</span> : null}</b>
                 <code>{approval.command}</code>
                 <small>Commands run in a scratch copy of the project, with a clean environment and a time limit. They can still read files your user can read.</small>
-                <div className="actions"><button type="button" className="btn small" onClick={() => ctl.answer(approval.id, true, { source: "local" })}>Allow</button><button type="button" className="btn small ghost" onClick={() => ctl.answer(approval.id, false, { source: "local" })}>Refuse</button></div>
+                <div className="actions"><button type="button" className="btn small" onClick={() => ctl.answer(approval.id, true, { source: "local" })}>Allow once</button>{!approval.network && approval.source === "local" ? <button type="button" className="btn small ghost" onClick={() => { ctl.allowSession(approval.sessionId); ctl.answer(approval.id, true, { source: "local" }); }}>Allow for this session</button> : null}<button type="button" className="btn small ghost" onClick={() => ctl.answer(approval.id, false, { source: "local" })}>Refuse</button></div>
               </div>
             ) : null}
             {error && !panel ? <Alert tone="error" title="That did not work">{error}</Alert> : null}
@@ -171,9 +218,25 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
           </div>
         </div>
         <div className="composer-wrap">
+          {info ? <div className="notice info-note" role="status"><span>{info}</span><button type="button" className="icon-btn" aria-label="Dismiss" onClick={() => setInfo(undefined)}>×</button></div> : null}
+          {queue.length ? <ul className="queued" aria-label="Queued messages">{queue.map((q, i) => <li key={i}><span>Queued</span><em>{q}</em><button type="button" className="icon-btn" aria-label="Remove from the queue" onClick={() => setQueue((all) => all.filter((_, j) => j !== i))}>×</button></li>)}</ul> : null}
+          {slash.length ? <ul className="slash-menu" role="listbox" aria-label="Commands">{slash.map((c, i) => <li key={c.name} role="option" aria-selected={i === slashAt} className={i === slashAt ? "on" : ""} onMouseEnter={() => setSlashAt(i)} onMouseDown={(e) => { e.preventDefault(); runCommand(c); }}><b>/{c.name}</b><span>{c.hint}</span></li>)}</ul> : null}
           <div className={`composer${!ready ? " is-disabled" : ""}`}>
-            <textarea rows={2} value={task} placeholder={!ready ? "Load a model to start" : `What should change in ${folderName(active.root)}?`} disabled={!ready || running} aria-label="Task"
-              onChange={(e) => setTask(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); start(); } }} />
+            <textarea rows={2} value={task} placeholder={!ready ? "Load a model to start" : running ? "Type to queue the next message… (Esc stops the task)" : `What should change in ${folderName(active.root)}? (/ for commands)`} disabled={!ready} aria-label="Task"
+              onChange={(e) => { setTask(e.target.value); setSlashAt(0); }}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return;
+                if (slash.length) {
+                  if (e.key === "ArrowDown") { e.preventDefault(); setSlashAt((i) => (i + 1) % slash.length); return; }
+                  if (e.key === "ArrowUp") { e.preventDefault(); setSlashAt((i) => (i - 1 + slash.length) % slash.length); return; }
+                  if (e.key === "Tab") { e.preventDefault(); setTask(`/${(slash[slashAt] ?? slash[0])?.name ?? ""}`); return; }
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); const c = slash[slashAt] ?? slash[0]; if (c) runCommand(c); return; }
+                  if (e.key === "Escape") { setTask(""); return; }
+                }
+                if (e.key === "ArrowUp" && (task === "" || histPos.current >= 0) && e.currentTarget.selectionStart === 0) { e.preventDefault(); recall(-1); return; }
+                if (e.key === "ArrowDown" && histPos.current >= 0) { e.preventDefault(); recall(1); return; }
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); start(); }
+              }} />
             <div className="composer-row">
               <PlusMenu items={[
                 { id: "folder", label: "Open another folder", hint: "Starts a new session on it", onSelect: () => void chooseFolder() },
@@ -182,10 +245,11 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
               ]} />
               <ModePicker value={perm} options={PERMISSIONS} onChange={onPerm} label="Permissions" />
               <span className="spacer" />
+              {contextUsed > 0 ? <span className={`ctx-meter${contextUsed / Math.max(1, contextMax) > 0.8 ? " hot" : ""}`} title={`${contextUsed.toLocaleString()} of ${contextMax.toLocaleString()} tokens`}>{Math.round((contextUsed / Math.max(1, contextMax)) * 100)}% context</span> : null}
               {picker}
               {!ready ? <button type="button" className="btn small ghost" onClick={onChooseModel}>Choose a model</button> : null}
-              {running ? <button type="button" className="round stop" onClick={() => active && ctl.stop(active.id)} aria-label="Stop"><StopIcon /></button>
-                : <button type="button" className="round send" onClick={start} disabled={!ready || !task.trim()} aria-label="Run"><SendIcon /></button>}
+              {running && !task.trim() ? <button type="button" className="round stop" onClick={() => active && ctl.stop(active.id)} aria-label="Stop (Esc)"><StopIcon /></button>
+                : <button type="button" className="round send" onClick={start} disabled={!ready || !task.trim()} aria-label={running ? "Queue" : "Run"}><SendIcon /></button>}
             </div>
           </div>
           <p className="fineprint">{perm === "plan" ? "Plan only: nothing will be changed." : "Enter to send · Shift+Enter for a new line · files are written to the folder when the task ends, and Undo restores it."}</p>

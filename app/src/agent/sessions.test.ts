@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@core/agent/loop";
-import { applyEvent, applyTurnEvent, completePlan, tickPlan, groupBlocks, summarizeTools, currentStage, groupByProject, parsePlan, newSession, reviewable, sessionDot, toolLabel, toSaved, type CodeSession, type Turn } from "./sessions";
+import { applyEvent, applyTurnEvent, sessionMemory, completePlan, tickPlan, groupBlocks, summarizeTools, currentStage, groupByProject, parsePlan, newSession, reviewable, sessionDot, toolLabel, toSaved, type CodeSession, type Turn } from "./sessions";
 
 const turn = (over: Partial<Turn> = {}): Turn => ({ id: "t", task: "x", created: 1, status: "done", blocks: [], ...over });
 const sess = (over: Partial<CodeSession> = {}): CodeSession => ({ ...newSession("/p/app", 1), ...over });
@@ -104,5 +104,21 @@ describe("grouping steps", () => {
   });
   it("says what a run of steps did", () => {
     expect(summarizeTools([tool("1", "read_file"), tool("2", "read_file"), tool("3", "write_file"), tool("4", "run_command"), tool("5", "run_command"), tool("6", "run_command")])).toBe("Read 2 files, wrote 1 file, ran 3 commands");
+  });
+});
+
+describe("session memory", () => {
+  const turn = (task: string, summary: string, files: string[], status: "done" | "running" = "done"): Turn => ({ id: task, task, created: 0, status, blocks: [], summary, diffs: files.map((path) => ({ path, status: "added" as const, additions: 1, deletions: 0, patch: "" })) });
+  it("tells the next task what earlier tasks did and which files they made", () => {
+    const s: CodeSession = { id: "s", title: "t", root: "/p", created: 0, updated: 0, turns: [turn("make a game", "Made a tic tac toe.", ["index.html", "style.css"]), turn("now", "", [], "running")] };
+    const m = sessionMemory(s);
+    expect(m).toContain("make a game");
+    expect(m).toContain("Files changed: index.html, style.css");
+    expect(m).not.toContain("now");
+  });
+  it("forgets turns before the /compact point", () => {
+    const s: CodeSession = { id: "s", title: "t", root: "/p", created: 0, updated: 0, forget: 1, turns: [turn("old", "x", []), turn("new", "y", [])] };
+    expect(sessionMemory(s)).not.toContain("old");
+    expect(sessionMemory(s)).toContain("new");
   });
 });

@@ -133,3 +133,13 @@ describe("AgentController", () => {
     await expect(t.ctl.run("nope", "x", { perm: "ask", source: "local" })).rejects.toThrow(/no longer exists/);
   });
 });
+
+describe("allow for this session", () => {
+  it("runs later commands in the session without asking, but never one that uses the network", async () => {
+    const t = setup(['{"tool":"run_command","args":{"command":"npm test"}}', '{"tool":"finish","args":{"summary":"ran"}}'], { "package.json": '{"scripts":{"test":"echo"}}' });
+    t.ctl.allowSession(t.sess().id);
+    await t.ctl.run(t.sess().id, "run tests", { perm: "ask", source: "local" });
+    expect(t.approvals().length).toBe(0);
+    expect(t.sess().turns[0]!.blocks.some((b) => b.kind === "tool" && b.name === "run_command" && b.status === "ok")).toBe(true);
+  });
+});

@@ -60,7 +60,18 @@ export interface Turn {
   error?: string;
 }
 
-export interface CodeSession { id: string; title: string; root: string; created: number; updated: number; turns: Turn[] }
+export interface CodeSession { id: string; title: string; root: string; created: number; updated: number; turns: Turn[]; /** Turns before this index are not remembered by the next task (after /compact or /clear). */ forget?: number }
+
+/** What the next task is told about the session so far: each earlier task with how it ended and the files it changed, so "now add a score" has something to refer to. */
+export function sessionMemory(s: CodeSession): string {
+  const lines: string[] = [];
+  for (const t of s.turns.slice(s.forget ?? 0).slice(-8)) {
+    if (t.planOnly || (t.status !== "done" && t.status !== "stopped" && t.status !== "failed")) continue;
+    const files = (t.diffs ?? []).map((d) => d.path).slice(0, 8).join(", ");
+    lines.push(`- Task: ${t.task.slice(0, 200)}\n  Result: ${(t.summary ?? (t.error ? `failed: ${t.error}` : t.status)).replace(/\s+/g, " ").slice(0, 300)}${files ? `\n  Files changed: ${files}` : ""}`);
+  }
+  return lines.join("\n");
+}
 
 export type Dot = "running" | "review" | "done" | "failed" | "idle";
 

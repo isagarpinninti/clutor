@@ -4,7 +4,7 @@ import type { AgentSession } from "./llm";
 import type { McpManager } from "./mcp";
 import { runCodingTask } from "./runner";
 import { liveStore } from "./live";
-import { applyTurnEvent, completePlan, reviewable, type CodeSession, type Turn } from "./sessions";
+import { applyTurnEvent, completePlan, reviewable, sessionMemory, type CodeSession, type Turn } from "./sessions";
 
 /**
  * Runs coding tasks, asks for approvals, and applies or undoes changes. It is the one place that does these things, so the desktop screen and a paired phone behave the same:
@@ -51,6 +51,13 @@ export class AgentController {
   private patch(sid: string, tid: string, f: (t: Turn) => Turn): void { this.d.change(sid, (s) => ({ ...s, updated: Date.now(), turns: s.turns.map((t) => (t.id === tid ? f(t) : t)) })); }
 
   /** Starts a task on a session and resolves when it ends. */
+  private allowed = new Set<string>();
+  /** The user chose "Allow for this session": commands that do not use the network run without asking until the session ends or the app is closed. */
+  allowSession(sessionId: string): void { this.allowed.add(sessionId); this.emit(); }
+  isAllowed(sessionId: string): boolean { return this.allowed.has(sessionId); }
+  /** /compact and /clear: later tasks no longer remember the ones so far. */
+  forget(sessionId: string): void { this.d.change(sessionId, (x) => ({ ...x, forget: x.turns.length })); }
+
   async run(sessionId: string, text: string, o: { perm: Permission; source: Source; device?: string }): Promise<void> {
     const session = this.d.getSession(sessionId);
     if (!session) throw new Error("that session no longer exists");
@@ -70,7 +77,7 @@ export class AgentController {
       release = await this.d.hold();
       const cfg = this.d.config();
       const out = await runCodingTask({
-        host: this.d.host, web: this.d.web, root: session.root, session: engine, modelName: cfg.modelName, task, signal: ac.signal, planOnly: o.perm === "plan",
+        host: this.d.host, web: this.d.web, root: session.root, history: sessionMemory(session), session: engine, modelName: cfg.modelName, task, signal: ac.signal, planOnly: o.perm === "plan",
         maxSteps: cfg.maxSteps, contextTokens: cfg.contextTokens, ...(this.d.mcp() ? { mcp: this.d.mcp() as McpManager } : {}),
         approve: (info) => this.approve(sessionId, info, o),
         onContext: (n) => this.patch(sessionId, turn.id, (t) => ({ ...t, context: n })),
@@ -110,6 +117,7 @@ export class AgentController {
 
   private approve(sessionId: string, info: { command: string; network: boolean }, o: { perm: Permission; source: Source; device?: string }): Promise<boolean> {
     if (o.perm === "plan") return Promise.resolve(false);
+    if (this.allowed.has(sessionId) && o.source === "local" && !info.network) return Promise.resolve(true);   // "Allow for this session"
     // "Auto-run checks" is only ever given to a task started on this computer, and still asks for anything that uses the network.
     if (o.perm === "auto" && o.source === "local" && !info.network) return Promise.resolve(true);
     return new Promise<boolean>((resolve) => {
