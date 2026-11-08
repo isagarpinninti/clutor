@@ -97,6 +97,14 @@ uint64_t cl_auto_cache_bytes(uint64_t ram, uint64_t avail, uint64_t experts) {
   return want;
 }
 
+/* Pinning a model in memory only makes sense when it leaves the rest of the system room: at most 60% of the machine's memory and 90% of what is free now. Pinning more (a model that is
+ * nearly the size of the memory, or bigger) either fails after reading the whole file or, worse, succeeds and starves everything else, and the machine slows to a crawl. */
+int cl_should_lock(uint64_t file_bytes, uint64_t ram, uint64_t avail) {
+  if (ram > 0 && file_bytes > ram / 100 * 60) return 0;
+  if (avail > 0 && file_bytes > avail / 100 * 90) return 0;
+  return 1;
+}
+
 int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen) {
   memset(f, 0, sizeof *f);
   if (cl_model_open(&f->model, path, err, errlen)) return 1;
@@ -113,7 +121,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   f->map = cl_map_ro(fd, f->map_size);
   cl_close(fd);
   if (!f->map) { snprintf(err, errlen, "cannot map %s", path); goto fail; }
-  if (opts && opts->lock && !opts->cache_bytes) f->locked = cl_lock_memory(f->map, f->map_size);   /* reads the whole file in, so it can take seconds; failing just leaves the model evictable */
+  if (opts && opts->lock && !opts->cache_bytes && cl_should_lock((uint64_t)f->map_size, cl_phys_mem(), cl_avail_mem())) f->locked = cl_lock_memory(f->map, f->map_size);   /* reads the whole file in, so it can take seconds; failing just leaves the model evictable */
   if (cl_meta_parse(&f->meta, f->map, f->map_size, err, errlen)) goto fail;
   REQ_U("embedding_length", f->n_embd);
   REQ_U("attention.head_count", f->n_head);

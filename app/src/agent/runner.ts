@@ -21,6 +21,8 @@ export interface CodingTask {
   planOnly?: boolean;
   /** What earlier tasks in this session did (see sessionMemory). */
   history?: string;
+  /** Told the generation speed of each reply, so the app can remember how fast this model is here. */
+  onSpeed?: (tokensPerSecond: number, tokens: number) => void;
   verifyCommand?: string;
   maxSteps?: number;
   /** The model's context window in tokens; the agent keeps about this much of the conversation (a token is about three characters). */
@@ -46,7 +48,7 @@ export async function runCodingTask(t: CodingTask): Promise<{ result: AgentResul
     if (text && text.trim()) { instructions = text.trim().slice(0, 6000); instructionsFile = name; break; }
   }
   const result = await runAgent({
-    task: t.task, ws, llm: engineLlm(t.session, t.modelName, { maxTokens: replyTokens(t.contextTokens), ...(t.onContext ? { onContext: t.onContext } : {}) }),
+    task: t.task, ws, llm: engineLlm(t.session, t.modelName, { maxTokens: replyTokens(t.contextTokens), ...(t.onContext ? { onContext: t.onContext } : {}), ...(t.onSpeed ? { onSpeed: t.onSpeed } : {}) }),
     ...(hooks ? { hooks } : {}), ...(t.planOnly ? { planOnly: true } : {}), maxSteps: t.maxSteps ?? 20, contextChars: Math.max(12_000, Math.min(600_000, Math.round((t.contextTokens ?? 4096) * 2.5))),
     approve: t.approve,
     runCommand: async (plan, command) => {

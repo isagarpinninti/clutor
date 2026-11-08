@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { bridge, type ModelInfo } from "../bridge";
 import { checkModel, diskFromBench, type DiskInfo, type ModelCheck } from "../plan";
-import { fmtBytes } from "../store";
+import { estimates } from "../estimate";
+import { fmtBytes, readSpeed } from "../store";
 
 interface Props { model: ModelInfo; ramBytes: number; contextTokens: number }
 
@@ -32,10 +33,19 @@ export function ModelCheckCard({ model, ramBytes, contextTokens }: Props) {
   if (error) return <div className="check-card"><p className="err">{error}</p></div>;
   if (!check) return <div className="check-card"><p className="empty-hint">Reading the model's header…</p></div>;
   const parts = check.plan.components.filter((c) => c.bytes > 0);
+  const est = estimates(check, { ...(readSpeed(model.name) ? { measuredTps: readSpeed(model.name) as number } : {}) });
   return (
     <div className="check-card">
       <p className={`verdict ${tone[check.verdict]}`}>{check.headline}</p>
       <p className="check-speed">{check.speed}</p>
+      {est ? (
+        <div className="check-est" aria-label="Estimated times">
+          <p className="check-est-head">Estimated on this computer <small>{est.tps.source === "measured" ? "from this model's measured speed" : "worked out from the file and this machine's memory and disk, not measured"}</small></p>
+          <p className="check-est-speed">About {est.tps.lowTps >= 10 ? Math.round(est.tps.lowTps) : est.tps.lowTps.toFixed(1)} to {est.tps.highTps >= 10 ? Math.round(est.tps.highTps) : est.tps.highTps.toFixed(1)} tokens per second</p>
+          <ul>{est.lines.map((l) => <li key={l.label}><span>{l.label}</span><b>{l.time}</b></li>)}<li><span>Loading the model</span><b>{est.load}</b></li></ul>
+          {est.tps.caution ? <p className="check-note warn">{est.tps.caution}</p> : null}
+        </div>
+      ) : null}
       <dl className="check-facts">
         <div><dt>Architecture</dt><dd>{check.arch}{check.experts > 0 ? ` · ${check.experts} experts, ${check.expertsUsed} used per token` : " · dense"}</dd></div>
         <div><dt>Layers</dt><dd>{check.layers}</dd></div>

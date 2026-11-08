@@ -13,6 +13,8 @@ import { parseHooks } from "@core/agent/loop";
 import { ToolGroup } from "./ToolGroup";
 import { Logo } from "./Logo";
 import { fmtElapsed } from "./RunProgress";
+import { fmtRange, seconds, TYPICAL } from "../estimate";
+import { readSpeed } from "../store";
 import { RewindIcon, CheckIcon, CopyIcon, EditIcon, FolderIcon, RedoIcon, SendIcon, StopIcon } from "./icons";
 
 export type { Permission };
@@ -289,6 +291,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
                 : <button type="button" className="round send" onClick={start} disabled={!ready || !task.trim()} aria-label={running ? "Queue" : "Run"}><SendIcon /></button>}
             </div>
           </div>
+          {!running && ready && readSpeed(overviewProps.modelName) ? <p className="eta-hint">On this model a small task (a page in three files) takes about {fmtRange(seconds(TYPICAL.task, (readSpeed(overviewProps.modelName) as number) * 1.2), seconds(TYPICAL.task, (readSpeed(overviewProps.modelName) as number) * 0.7))}, from its measured speed of {(readSpeed(overviewProps.modelName) as number).toFixed(1)} tokens per second.</p> : null}
           <p className="fineprint">{perm === "plan" ? "Plan only: nothing will be changed." : "Enter to send · Shift+Enter for a new line · files are written to the folder when the task ends, and Undo restores it."}</p>
         </div>
       </div>

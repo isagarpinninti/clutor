@@ -4,6 +4,7 @@ import { liveStore, parseLive } from "../agent/live";
 import { Logo } from "./Logo";
 import { useVerb } from "./Thinking";
 import { PlanList, fmtElapsed, useSince, useTotal } from "./RunProgress";
+import { fmtDuration, remainingFromPlan } from "../estimate";
 import { Patch } from "./Patch";
 import { CheckIcon, CloseIcon } from "./icons";
 
@@ -15,6 +16,13 @@ export function useLiveReply(taskId: string | undefined): string | undefined {
 }
 
 const kb = (n: number): string => (n < 1000 ? `${n} characters` : `${(n / 1000).toFixed(1)}K characters`);
+
+/** "about 4 min left", from how long the finished steps of the plan took; nothing until a step is done and one is still to do. */
+export function etaText(turn: Turn, elapsedSec: number): string | undefined {
+  const plan = turn.plan ?? [];
+  const left = remainingFromPlan(elapsedSec, plan.filter((s) => s.state === "done").length, plan.length);
+  return left === undefined ? undefined : `about ${fmtDuration(left)} left (estimate)`;
+}
 
 /** One line saying what the agent is doing, with how long it has been at it. Used in the conversation, where the detail would be too much. */
 export function WorkingLine({ turn, onOpen }: { turn: Turn; onOpen?: () => void }) {
@@ -30,7 +38,7 @@ export function WorkingLine({ turn, onOpen }: { turn: Turn; onOpen?: () => void 
     <div className="working" role="status" aria-live="polite">
       <Logo size={28} state="thinking" />
       <span className="shimmer" key={label}>{label}…</span>
-      <small className="stage-time">{fmtElapsed(total)}{tokens > 0 ? ` · ↓ ${tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tokens` : ""}</small>
+      <small className="stage-time">{fmtElapsed(total)}{etaText(turn, total) ? ` · ${etaText(turn, total)}` : ""}{tokens > 0 ? ` · ↓ ${tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tokens` : ""}</small>
       {onOpen ? <button type="button" className="link-btn" onClick={onOpen}>Progress</button> : null}
     </div>
   );
@@ -75,7 +83,7 @@ export function ProgressPane({ turn, onOpenFile }: { turn: Turn | undefined; onO
 
       {running ? (
         <section className="pp-now" aria-label="Right now">
-          <div className="pp-now-head"><Logo size={24} state="thinking" /><b>{nowLabel}</b><small>{fmtElapsed(inStep)}</small>{live ? <small className="pp-chars">{kb(live.chars)}</small> : null}</div>
+          <div className="pp-now-head"><Logo size={24} state="thinking" /><b>{nowLabel}</b><small>{fmtElapsed(inStep)}</small>{etaText(turn, total) ? <small className="eta">{etaText(turn, total)}</small> : null}{live ? <small className="pp-chars">{kb(live.chars)}</small> : null}</div>
           {live?.prose && !preview ? <p className="pp-prose">{live.prose.slice(-600)}</p> : null}
           {preview !== undefined ? <pre ref={code} className="pp-code" aria-label="The file as it is written">{preview.split("\n").slice(-8).join("\n") || " "}</pre> : null}
           {!live ? <p className="pp-prose">Reading the task and deciding what to do first…</p> : null}

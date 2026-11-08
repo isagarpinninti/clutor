@@ -61,6 +61,13 @@ function write(key: string, value: unknown): void {
 export const loadConversations = (): Conversation[] => read<Conversation[]>(CONV, []);
 export const saveConversations = (c: Conversation[]): void => write(CONV, c.slice(0, 200));
 /** 4096 was the old default and is too small for the coding agent (its instructions and one file fill it), so a saved 4096 is raised to the new default. */
+/** The generation speed seen for each model on this computer (tokens per second, smoothed over the replies so far), kept so the time estimates can use a measurement instead of a guess. */
+const SPEEDS = "clutor.speeds.v1";
+export function readSpeed(model: string): number | undefined { const v = read<Record<string, number>>(SPEEDS, {})[model]; return typeof v === "number" && v > 0 ? v : undefined; }
+export function recordSpeed(model: string, tps: number, tokens: number): void {
+  if (!model || !(tps > 0) || tokens < 30) return;   // a short reply says little about the speed
+  try { const all = read<Record<string, number>>(SPEEDS, {}); const old = all[model]; all[model] = old ? old * 0.6 + tps * 0.4 : tps; localStorage.setItem(SPEEDS, JSON.stringify(all)); } catch { /* not remembered */ }
+}
 export const loadSettings = (): Settings => { const s = { ...DEFAULT_SETTINGS, ...read<Partial<Settings>>(SET, {}) }; if (s.ctx === 4096) s.ctx = DEFAULT_SETTINGS.ctx; return s; };
 export const saveSettings = (s: Settings): void => write(SET, s);
 

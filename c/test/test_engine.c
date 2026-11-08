@@ -204,6 +204,10 @@ static void test_kernel(void) {
   }
   { /* the cache a model that does not fit gets: 45 percent of memory, at most 60 percent of what is free, 256 MiB at least, never more than all the experts */
     const uint64_t G = (uint64_t)1 << 30, M = (uint64_t)1 << 20;
+    CHECK(cl_should_lock(4 * G, 16 * G, 12 * G) == 1, "lock: a model well inside memory is pinned");
+    CHECK(cl_should_lock(12 * G, 16 * G, 14 * G) == 0, "lock: a model over 60 percent of memory is not pinned");
+    CHECK(cl_should_lock(6 * G, 16 * G, 5 * G) == 0, "lock: a model bigger than the free memory is not pinned");
+    CHECK(cl_should_lock(4 * G, 0, 0) == 1, "lock: unknown memory does not stop pinning a model");
     CHECK(cl_auto_cache_bytes(16 * G, 0, 40 * G) == 16 * G / 100 * 45, "auto cache: 45 percent of memory when free memory is unknown");
     CHECK(cl_auto_cache_bytes(16 * G, 14 * G, 40 * G) == 16 * G / 100 * 45, "auto cache: 45 percent of memory when plenty is free");
     CHECK(cl_auto_cache_bytes(16 * G, 4 * G, 40 * G) == 4 * G / 100 * 60, "auto cache: at most 60 percent of what is free when other programs hold the rest");

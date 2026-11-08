@@ -36,6 +36,8 @@ export interface Deps {
   log?(entry: { device?: string; what: string }): void;
   id(): string;
   titleFrom(text: string): string;
+  /** The model generated a reply at this speed. */
+  onSpeed?(tokensPerSecond: number, tokens: number): void;
   /** Commands the user chose to always allow in a folder (kept across restarts). */
   rules?: { get(root: string): string[]; add(root: string, command: string): void; clear(root: string): void };
 }
@@ -87,6 +89,7 @@ export class AgentController {
         maxSteps: cfg.maxSteps, contextTokens: cfg.contextTokens, ...(this.d.mcp() ? { mcp: this.d.mcp() as McpManager } : {}),
         approve: (info) => this.approve(sessionId, info, o),
         onContext: (n) => this.patch(sessionId, turn.id, (t) => ({ ...t, context: n })),
+        onSpeed: (v, n) => this.d.onSpeed?.(v, n),
         onEvent: (e) => {
           if (e.type === "partial") { liveStore.set(turn.id, e.text); return; }   // the reply as it is written: kept outside the saved state
           if (e.type === "tool_call" || e.type === "thought" || e.type === "invalid") liveStore.clear(turn.id);

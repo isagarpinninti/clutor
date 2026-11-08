@@ -30,7 +30,7 @@ import { Sidebar } from "./components/Sidebar";
 import type { EngineSession } from "@engine/session";
 import { useEngine } from "./engine";
 import { isActive, JobQueue, localJobStore, uid as jobUid, type Job } from "./jobs";
-import { modelForMode, loadConversations, loadSettings, saveConversations, saveSettings, titleFrom, uid, type Conversation, type Msg, type Settings } from "./store";
+import { modelForMode, readSpeed, recordSpeed, loadConversations, loadSettings, saveConversations, saveSettings, titleFrom, uid, type Conversation, type Msg, type Settings } from "./store";
 
 const newConversation = (): Conversation => ({ id: uid(), title: "New chat", updated: Date.now(), messages: [] });
 
@@ -197,6 +197,7 @@ export function App() {
     onApprovals: setApprovals,
     log: (e) => { if (e.device) void bridge.remote.log(JSON.stringify({ at: Date.now(), device: e.device, what: e.what })); },
     id: uid, titleFrom,
+    onSpeed: (v, n) => recordSpeed(live.current.modelName, v, n),
     rules: {
       get: (root) => { try { const all = JSON.parse(localStorage.getItem("clutor.allow") ?? "{}") as Record<string, string[]>; return all[root] ?? []; } catch { return []; } },
       add: (root, command) => { try { const all = JSON.parse(localStorage.getItem("clutor.allow") ?? "{}") as Record<string, string[]>; all[root] = [...new Set([...(all[root] ?? []), command])].slice(-50); localStorage.setItem("clutor.allow", JSON.stringify(all)); } catch { /* not remembered */ } },
@@ -274,8 +275,10 @@ export function App() {
     const jobWasRunning = queue.running !== undefined;
     const release = await queue.holdForChat();
     if (jobWasRunning) flash("A background job paused while you chat; it carries on afterwards.");
-    await streamReply(s, sendHistory, settings, ac.signal, (u) =>
-      update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, content: u.content, ...(u.reasoning ? { reasoning: u.reasoning } : {}), ...(u.stats ? { stats: u.stats } : {}), ...(u.error ? { error: u.error } : {}), ...(u.interrupted ? { interrupted: true } : {}) } : m)) })), web ? (m) => withWebContext(m, web as Gathered) : undefined);
+    await streamReply(s, sendHistory, settings, ac.signal, (u) => {
+      if (u.stats?.tps && !u.interrupted) recordSpeed(live.current.modelName, u.stats.tps, u.stats.tokens);
+      update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, content: u.content, ...(u.reasoning ? { reasoning: u.reasoning } : {}), ...(u.stats ? { stats: u.stats } : {}), ...(u.error ? { error: u.error } : {}), ...(u.interrupted ? { interrupted: true } : {}) } : m)) }));
+    }, web ? (m) => withWebContext(m, web as Gathered) : undefined);
     abort.current = null;
     release();
     setBusy(false);

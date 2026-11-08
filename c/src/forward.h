@@ -93,6 +93,8 @@ typedef struct { uint64_t cache_bytes; int stage_slots, io_threads, os_bypass, p
 /* How large an expert cache a model that does not fit gets: 45% of the machine's memory, but at most 60% of what is free right now (other programs may be using the rest, and a
  * cache that pushes them to disk makes everything slower, the engine included), never below 256 MiB, and never more than all the experts. `avail` 0 means unknown. */
 uint64_t cl_auto_cache_bytes(uint64_t ram, uint64_t avail, uint64_t experts);
+/* Whether to pin a model of this size in memory (see forward.c). `ram` and `avail` 0 mean unknown. */
+int cl_should_lock(uint64_t file_bytes, uint64_t ram, uint64_t avail);
 int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen);
 void cl_fwd_close(cl_fwd *f);
 void cl_fwd_reset(cl_fwd *f);
