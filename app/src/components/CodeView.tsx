@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { bridge } from "../bridge";
 import type { AgentController, Approval, Permission } from "../agent/controller";
 import { folderName, groupBlocks, lastTurn, reviewable, type CodeSession } from "../agent/sessions";
@@ -78,6 +78,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
   useEffect(() => { const t = requestAnimationFrame(() => end.current?.scrollIntoView({ block: "end", behavior: "smooth" })); return () => cancelAnimationFrame(t); }, [active?.turns.length, last?.id, last?.blocks.length, planDone, last?.status, approvals.length, active?.id]);
   useEffect(() => { setError(undefined); }, [active?.id]);
 
+  const openFile = useCallback((p: string): void => { setFocusFile(p); onTab("files"); onPanel(true); }, [onTab, onPanel]);
   const chooseFolder = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) onCreate(p); };
 
   const pending = approvals.filter((a) => a.sessionId === active?.id);
@@ -215,7 +216,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
                 <div className="turn-body">
                   {groupBlocks(t.blocks).map((b) => b.kind === "text" ? <p key={b.id} className="turn-text">{b.text}</p>
                     : b.kind === "note" ? (b.bad ? <Alert key={b.id} tone="error" title="A step went wrong">{b.text}</Alert> : <p key={b.id} className="turn-hint"><RedoSmall />{b.text}{b.count && b.count > 1 ? <i>×{b.count}</i> : null}</p>)
-                    : b.kind === "group" ? <ToolGroup key={b.id} tools={b.tools} verbose={verbose} onOpenFile={(p) => { setFocusFile(p); onTab("files"); onPanel(true); }} />
+                    : b.kind === "group" ? <ToolGroup key={b.id} tools={b.tools} verbose={verbose} onOpenFile={openFile} />
                     : null)}
                   {t.status === "running" && !approval ? <WorkingLine turn={t} onOpen={() => { onTab("overview"); onPanel(true); }} /> : null}
                   {t.ended && t.status !== "running" && t.blocks.length > 0 ? <p className="worked"><Logo size={14} />{t.status === "stopped" ? "Stopped after" : "Worked for"} {fmtElapsed(Math.max(1, Math.round((t.ended - t.created) / 1000)))}{t.usage ? ` · ${t.usage.steps} step${t.usage.steps === 1 ? "" : "s"} · ${t.usage.tokens.toLocaleString()} tokens` : ""}</p> : null}

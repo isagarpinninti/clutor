@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { Block } from "../agent/sessions";
 import { summarizeTools } from "../agent/sessions";
 import { ToolBlock } from "./ToolBlock";
@@ -11,7 +11,7 @@ type Tool = Extract<Block, { kind: "tool" }>;
  * A run of steps as one line, the way a person would tell it: "Wrote 2 files, ran 3 commands". While one is running the line says what it is doing; click to see every step,
  * and click a step to see its output or its change.
  */
-export function ToolGroup({ tools, verbose, onOpenFile }: { tools: Tool[]; verbose: boolean; onOpenFile: (path: string) => void }) {
+export const ToolGroup = memo(function ToolGroup({ tools, verbose, onOpenFile }: { tools: Tool[]; verbose: boolean; onOpenFile: (path: string) => void }) {
   const running = tools.find((t) => t.status === "running");
   const failed = tools.some((t) => t.status === "error");
   const [user, setUser] = useState<boolean | undefined>(undefined);
@@ -27,4 +27,4 @@ export function ToolGroup({ tools, verbose, onOpenFile }: { tools: Tool[]; verbo
       {open ? <div className="tgroup-body">{tools.map((t) => <ToolBlock key={t.id} block={t} verbose={false} onOpenFile={onOpenFile} />)}</div> : null}
     </div>
   );
-}
+}, (a, b) => a.verbose === b.verbose && a.onOpenFile === b.onOpenFile && a.tools.length === b.tools.length && a.tools.every((t, i) => t === b.tools[i]));
