@@ -17,6 +17,7 @@ export type AgentEvent =
   | { type: "thought"; step: number; text: string }
   | { type: "tool_call"; step: number; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; step: number; name: string; ok: boolean; output: string }
+  | { type: "partial"; step: number; text: string }   // the reply so far, while the model is still writing it
   | { type: "invalid"; step: number; error: string }
   | { type: "diff"; diffs: FileDiff[] }
   | { type: "verify"; command: string; ok: boolean; ran: boolean; attempt: number; output: string }
@@ -162,12 +163,13 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
     const messages = [...head, ...fitContext(turns, head, limit).flat()];
     let reply;
     try {
-      reply = await o.llm.chat(messages, o.signal ? { signal: o.signal } : {});
+      reply = await o.llm.chat(messages, { ...(o.signal ? { signal: o.signal } : {}), onPartial: (text) => emit({ type: "partial", step: steps, text }) });
     } catch (e) {
       if (o.signal?.aborted) { status = "aborted"; summary = "stopped by the user"; break; }
       status = "error"; error = e instanceof Error ? e.message : String(e); summary = `the model could not be reached: ${error}`;
       break;
     }
+    if (o.signal?.aborted) { status = "aborted"; summary = "stopped by the user"; break; }   // a reply cut short by Stop is not acted on or shown
     usage.promptTokens += reply.usage?.promptTokens ?? 0;
     usage.completionTokens += reply.usage?.completionTokens ?? 0;
     // In JSON mode the reply IS the tool call; only prose before it is a thought.

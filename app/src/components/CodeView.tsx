@@ -8,7 +8,7 @@ import { PlusMenu } from "./PlusMenu";
 import type { OverviewPane } from "./OverviewPane";
 import { SidePanel, type PanelTab } from "./SidePanel";
 import { Alert } from "./Alert";
-import { RunProgress } from "./RunProgress";
+import { WorkingLine } from "./ProgressPane";
 import { ToolBlock } from "./ToolBlock";
 import { CheckIcon, CopyIcon, EditIcon, FolderIcon, RedoIcon, SendIcon, StopIcon } from "./icons";
 
@@ -58,6 +58,14 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
   const running = last?.status === "running";
   const withChanges = active ? [...active.turns].reverse().find((t) => t.diffs?.length) : undefined;
 
+  // A task that starts opens the panel on its progress; when it ends with changes to review, the panel moves on to them (unless you have gone elsewhere in it).
+  const runningId = last?.status === "running" ? last.id : undefined;
+  useEffect(() => { if (runningId) { onTab("progress"); onPanel(true); } }, [runningId]);
+  const prevStatus = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (prevStatus.current === "running" && last && last.status !== "running" && last.diffs?.length && tab === "progress") onTab("changes");
+    prevStatus.current = last?.status;
+  }, [last?.status, last?.id]);
   // Follow the task: a new task, each step, each plan tick and each approval scroll into view, so pressing Enter always shows that something started.
   const planDone = last?.plan?.filter((p) => p.state === "done").length ?? 0;
   useEffect(() => { const t = requestAnimationFrame(() => end.current?.scrollIntoView({ block: "end", behavior: "smooth" })); return () => cancelAnimationFrame(t); }, [active?.turns.length, last?.id, last?.blocks.length, planDone, last?.status, approvals.length, active?.id]);
@@ -127,11 +135,10 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
                   )}
                 </div>
                 <div className="turn-body">
-                  {t.plan?.length ? <RunProgress turn={t} /> : null}
                   {t.blocks.map((b) => b.kind === "text" ? <p key={b.id} className="turn-text">{b.text}</p>
                     : b.kind === "note" ? (b.bad ? <Alert key={b.id} tone="error" title="A step went wrong">{b.text}</Alert> : <p key={b.id} className="turn-hint"><RedoSmall />{b.text}{b.count && b.count > 1 ? <i>×{b.count}</i> : null}</p>)
                     : <ToolBlock key={b.id} block={b} verbose={verbose} onOpenFile={(p) => { setFocusFile(p); onTab("files"); onPanel(true); }} />)}
-                  {t.status === "running" && !approval && !t.plan?.length ? <RunProgress turn={t} /> : null}
+                  {t.status === "running" && !approval ? <WorkingLine turn={t} onOpen={() => { onTab("progress"); onPanel(true); }} /> : null}
                   {t.summary ? <div className="turn-summary"><Markdown text={t.summary} /></div> : null}
                   {t.status === "done" && !t.planOnly && !t.diffs?.length && !t.lost && !t.blocks.some((b) => b.kind === "tool" && b.name === "run_command") ? <Alert tone="warn" title="Nothing was changed" action={ready && !running ? { label: "Try again", onClick: () => retry(t.task) } : undefined}>No files were created or edited. If you asked for a change, the model did not make it: try again, or choose a more capable model.</Alert> : null}
                   {t.status === "interrupted" ? <Alert tone="warn" title="This task was interrupted" action={ready && !running ? { label: "Try again", onClick: () => retry(t.task) } : undefined}>The app was closed while it ran.</Alert> : null}
@@ -180,7 +187,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
           <p className="fineprint">{perm === "plan" ? "Plan only: nothing will be changed." : "Every change is shown to you before it is written."}</p>
         </div>
       </div>
-      <SidePanel host={bridge.host} root={active.root} turn={withChanges} focusFile={focusFile} onApply={() => void apply()} onDiscard={discard} onUndo={() => void undo()} onClose={() => onPanel(false)} busy={applying || running} error={error} tab={tab} onTab={onTab} hidden={!panel} overview={{ ...overviewProps, session: active }} />
+      <SidePanel host={bridge.host} root={active.root} turn={withChanges} progress={last} focusFile={focusFile} onApply={() => void apply()} onDiscard={discard} onUndo={() => void undo()} onClose={() => onPanel(false)} busy={applying || running} error={error} tab={tab} onTab={onTab} hidden={!panel} overview={{ ...overviewProps, session: active }} />
     </div>
   );
 }

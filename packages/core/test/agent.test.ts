@@ -71,6 +71,25 @@ describe("agent loop: claims of files that do not exist", () => {
   });
 });
 
+describe("agent loop: stopping", () => {
+  it("drops a reply that Stop cut short: nothing is shown or run from it", async () => {
+    const ac = new AbortController();
+    const events: AgentEvent[] = [];
+    const m = llm([() => { ac.abort(); return { content: 'Let me think about this... {"tool": "write_file", "args": {"path": "a.txt", "content": "x"}}', toolCalls: [] }; }]);
+    const r = await runAgent({ task: "t", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), signal: ac.signal, onEvent: (e) => events.push(e) });
+    expect(r.status).toBe("aborted");
+    expect(r.diffs).toEqual([]);
+    expect(events.map((e) => e.type)).not.toContain("thought");
+  });
+  it("passes the reply so far to the listener while the model writes it", async () => {
+    const parts: string[] = [];
+    const m: LlmClient = { model: "s", toolMode: "json", async chat(_m, o) { o?.onPartial?.('{"tool": "fin'); o?.onPartial?.('{"tool": "finish", "args": {"summary": "ok"}}'); return { content: '{"tool": "finish", "args": {"summary": "ok"}}', toolCalls: [] }; } };
+    const events: AgentEvent[] = [];
+    await runAgent({ task: "t", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), maxIdleFinishes: 0, onEvent: (e) => { events.push(e); if (e.type === "partial") parts.push(e.text); } });
+    expect(parts).toEqual(['{"tool": "fin', '{"tool": "finish", "args": {"summary": "ok"}}']);
+  });
+});
+
 describe("agent loop: finishing without doing anything", () => {
   it("sends a finish that comes before any work back to work, then keeps the files the model writes", async () => {
     const m = llm([

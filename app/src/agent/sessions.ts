@@ -40,6 +40,8 @@ export interface Turn {
   status: TurnStatus;
   blocks: Block[];
   summary?: string;
+  /** When the task ended. */
+  ended?: number;
   /** The agent's own plan, kept up to date as it works. */
   plan?: PlanStep[];
   /** The task was run in "plan only" mode, so no changes are expected. */

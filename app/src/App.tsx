@@ -2,7 +2,7 @@ import { applyTheme } from "./theme";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ModelInfo, type SystemInfo } from "./bridge";
 import { streamReply, toChatMessages } from "./chat";
-import { BackIcon, ChatIcon, ChevronIcon, CodeIcon, ForwardIcon, DiffIcon, FilesIcon, GlobeIcon, LaptopIcon, MoreIcon, SidebarIcon, TerminalIcon } from "./components/icons";
+import { BackIcon, ChatIcon, ChevronIcon, CodeIcon, ForwardIcon, DiffIcon, FilesIcon, GlobeIcon, LaptopIcon, MoreIcon, ProgressIcon, SidebarIcon, TerminalIcon } from "./components/icons";
 import { Logo } from "./components/Logo";
 import { Thinking } from "./components/Thinking";
 import { Composer } from "./components/Composer";
@@ -62,7 +62,7 @@ export function App() {
   const setCodeSessions = useCallback((u: CodeSession[] | ((all: CodeSession[]) => CodeSession[])): void => { const next = typeof u === "function" ? u(sessionsRef.current) : u; sessionsRef.current = next; setCodeSessionsRaw(next); }, []);
   const [codeId, setCodeId] = useState<string>(() => { try { return localStorage.getItem("clutor.codeSession") ?? ""; } catch { return ""; } });
   const [panel, setPanel] = useState(false);
-  const [panelTab, setPanelTab] = useState<PanelTab>("overview");
+  const [panelTab, setPanelTab] = useState<PanelTab>("progress");
   const [renaming, setRenaming] = useState(false);
   const [settingsAt, setSettingsAt] = useState<"usage" | "connectors">("usage");
   const togglePanel = (t: PanelTab): void => { if (panel && panelTab === t) setPanel(false); else { setPanelTab(t); setPanel(true); } };
@@ -356,7 +356,7 @@ export function App() {
           ) : null}
           {mode === "code" && codeActive ? (
             <div className="tool-tabs" role="toolbar" aria-label="Panels">
-              {([["overview", "Session", <LaptopIcon key="o" />], ["terminal", "Terminal", <TerminalIcon key="t" />], ["changes", "Changes", <DiffIcon key="c" />], ["browser", "Browser", <GlobeIcon key="b" />], ["files", "Files", <FilesIcon key="f" />]] as Array<[PanelTab, string, JSX.Element]>).map(([id, label, icon]) => (
+              {([["progress", "Progress", <ProgressIcon key="p" />], ["overview", "Session", <LaptopIcon key="o" />], ["terminal", "Terminal", <TerminalIcon key="t" />], ["changes", "Changes", <DiffIcon key="c" />], ["browser", "Browser", <GlobeIcon key="b" />], ["files", "Files", <FilesIcon key="f" />]] as Array<[PanelTab, string, JSX.Element]>).map(([id, label, icon]) => (
                 <button type="button" key={id} className={`tool-tab tip${panel && panelTab === id ? " on" : ""}`} data-tip={label} onClick={() => togglePanel(id)} aria-pressed={panel && panelTab === id} aria-label={label}>{icon}</button>
               ))}
             </div>

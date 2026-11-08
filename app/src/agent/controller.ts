@@ -3,6 +3,7 @@ import { applyChanges, ConflictError, undoCheckpoint } from "./apply";
 import type { AgentSession } from "./llm";
 import type { McpManager } from "./mcp";
 import { runCodingTask } from "./runner";
+import { liveStore } from "./live";
 import { applyTurnEvent, reviewable, type CodeSession, type Turn } from "./sessions";
 
 /**
@@ -73,18 +74,23 @@ export class AgentController {
         maxSteps: cfg.maxSteps, contextTokens: cfg.contextTokens, ...(this.d.mcp() ? { mcp: this.d.mcp() as McpManager } : {}),
         approve: (info) => this.approve(sessionId, info, o),
         onContext: (n) => this.patch(sessionId, turn.id, (t) => ({ ...t, context: n })),
-        onEvent: (e) => this.patch(sessionId, turn.id, (t) => applyTurnEvent(t, e)),
+        onEvent: (e) => {
+          if (e.type === "partial") { liveStore.set(turn.id, e.text); return; }   // the reply as it is written: kept outside the saved state
+          if (e.type === "tool_call" || e.type === "thought" || e.type === "invalid") liveStore.clear(turn.id);
+          this.patch(sessionId, turn.id, (t) => applyTurnEvent(t, e));
+        },
       });
       const changes = o.perm === "plan" ? [] : await out.ws.changeSet();
       const diffs = o.perm === "plan" ? [] : out.result.diffs.filter((x) => x.patch || x.status !== "modified");
       this.d.onUsage({ steps: out.result.steps, tokens: out.result.usage.completionTokens });
       this.patch(sessionId, turn.id, (t) => ({
-        ...t, status: out.result.status === "aborted" ? "stopped" : out.result.status === "error" || out.result.status === "stuck" ? "failed" : "done", summary: out.result.summary,
+        ...t, ended: Date.now(), status: out.result.status === "aborted" ? "stopped" : out.result.status === "error" || out.result.status === "stuck" ? "failed" : "done", summary: out.result.summary,
         usage: { steps: out.result.steps, tokens: out.result.usage.completionTokens }, ...(out.result.status === "stuck" ? { error: "The model kept answering in text and did not use the tools, so nothing was changed. Its last answer is shown above." } : out.result.error ? { error: out.result.error } : {}), ...(diffs.length ? { changes, diffs } : {}),
       }));
     } catch (e) {
-      this.patch(sessionId, turn.id, (t) => ({ ...t, status: "failed", error: e instanceof Error ? e.message : String(e) }));
+      this.patch(sessionId, turn.id, (t) => ({ ...t, ended: Date.now(), status: "failed", error: e instanceof Error ? e.message : String(e) }));
     } finally {
+      liveStore.clear(turn.id);
       release?.();
       this.aborts.delete(sessionId);
       for (const [id, p] of this.pending) if (p.approval.sessionId === sessionId) { this.pending.delete(id); p.resolve(false); }

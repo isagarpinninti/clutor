@@ -51,3 +51,6 @@ export const EditIcon = () => I(<><path d="M4.5 19.5h4l10-10a2.1 2.1 0 0 0-3-3l-
 export const RedoIcon = () => I(<><path d="M19 12a7 7 0 1 1-2.2-5.1" /><path d="M19 4.5v4h-4" /></>);
 
 export const AlertIcon = () => I(<><circle cx="12" cy="12" r="8.5" /><path d="M12 7.8v5" /><path d="M12 16.2h.01" strokeWidth="2" /></>);
+
+/** Progress: a checklist. */
+export const ProgressIcon = () => I(<><path d="M9.5 7h9M9.5 12h9M9.5 17h9" /><path d="m4.8 7.2 1 1 1.8-2M4.8 12.2l1 1 1.8-2M4.8 17.2l1 1 1.8-2" /></>);

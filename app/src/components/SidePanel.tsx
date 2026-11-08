@@ -4,6 +4,7 @@ import type { Turn } from "../agent/sessions";
 import { reviewable } from "../agent/sessions";
 import { Patch } from "./Patch";
 import { OverviewPane } from "./OverviewPane";
+import { ProgressPane } from "./ProgressPane";
 import { BrowserPane } from "./BrowserPane";
 import { TerminalPane } from "./TerminalPane";
 import { CloseIcon, SearchIcon } from "./icons";
@@ -13,6 +14,8 @@ interface Props {
   root: string;
   /** The turn whose changes are shown (the latest that has any). */
   turn: Turn | undefined;
+  /** The latest turn, whose plan and progress are shown. */
+  progress: Turn | undefined;
   focusFile: string | undefined;
   onApply: () => void;
   onDiscard: () => void;
@@ -26,11 +29,11 @@ interface Props {
   onTab: (t: PanelTab) => void;
 }
 
-export type PanelTab = "overview" | "changes" | "files" | "terminal" | "browser";
-const TITLES: Record<PanelTab, string> = { overview: "Session", changes: "Changes", files: "Files", terminal: "Terminal", browser: "Browser" };
+export type PanelTab = "progress" | "overview" | "changes" | "files" | "terminal" | "browser";
+const TITLES: Record<PanelTab, string> = { progress: "Progress", overview: "Session", changes: "Changes", files: "Files", terminal: "Terminal", browser: "Browser" };
 
 /** The panel beside the conversation: the changes waiting for review, and the project's files. */
-export function SidePanel({ host, root, turn, focusFile, onApply, onDiscard, onUndo, onClose, busy, error, tab, onTab, hidden, overview }: Props) {
+export function SidePanel({ host, root, turn, progress, focusFile, onApply, onDiscard, onUndo, onClose, busy, error, tab, onTab, hidden, overview }: Props) {
   const [files, setFiles] = useState<string[]>([]);
   const [q, setQ] = useState("");
   const [viewing, setViewing] = useState<{ path: string; text: string | null; error?: string }>();
@@ -51,6 +54,7 @@ export function SidePanel({ host, root, turn, focusFile, onApply, onDiscard, onU
         <h3 className="panel-title">{TITLES[tab]}{tab === "changes" && diffs.length ? ` · ${diffs.length}` : ""}</h3>
         <button type="button" className="icon-btn" onClick={onClose} aria-label="Close panel"><CloseIcon /></button>
       </header>
+      <div className="panel-body" hidden={tab !== "progress"}><ProgressPane turn={progress} onOpenFile={open} /></div>
       <div className="panel-body flush" hidden={tab !== "overview"}><OverviewPane {...overview} onOpenFile={open} /></div>
       <div className="panel-body" hidden={tab !== "changes" && tab !== "files"}>
         {tab !== "files" ? (

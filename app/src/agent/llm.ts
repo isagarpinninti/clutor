@@ -13,13 +13,14 @@ export function engineLlm(session: AgentSession, name: string, o: { maxTokens?: 
   return {
     model: name,
     toolMode: "json",
-    async chat(messages: CoreMessage[], opts: { signal?: AbortSignal } = {}): Promise<ChatResult> {
+    async chat(messages: CoreMessage[], opts: { signal?: AbortSignal; onPartial?: (text: string) => void } = {}): Promise<ChatResult> {
       const msgs: ChatMessage[] = messages.map((m) => ({ role: m.role === "tool" ? "user" : m.role, content: m.content ?? "" }));
-      let content = "", prompt = 0, completion = 0;
+      let content = "", prompt = 0, completion = 0, lastPartial = 0;
       for await (const ev of session.stream(msgs, { thinking: false, temp: o.temperature ?? 0.2, max: o.maxTokens ?? 1024, ...(opts.signal ? { signal: opts.signal } : {}) })) {
-        if (ev.type === "content") content += ev.text;
+        if (ev.type === "content") { content += ev.text; if (opts.onPartial) { const t = Date.now(); if (t - lastPartial >= 250) { lastPartial = t; opts.onPartial(content); } } }
         else if (ev.type === "done") { prompt = ev.promptTokens ?? 0; completion = ev.completionTokens ?? 0; }
       }
+      opts.onPartial?.(content);   // the last piece, so what is shown is the whole reply
       o.onContext?.(prompt + completion);
       return { content, toolCalls: [], usage: { promptTokens: prompt, completionTokens: completion } };
     },

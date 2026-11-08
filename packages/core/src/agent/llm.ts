@@ -20,7 +20,8 @@ export interface LlmClient {
   readonly model: string;
   /** `native` sends the tool schemas to the API; `json` asks the model to answer with a JSON object and parses it. */
   readonly toolMode: "native" | "json";
-  chat(messages: ChatMessage[], opts?: { signal?: AbortSignal }): Promise<ChatResult>;
+  /** `onPartial` (optional) is called with the reply so far while it is being written, so a long reply (a whole file) can be shown as it grows. */
+  chat(messages: ChatMessage[], opts?: { signal?: AbortSignal; onPartial?: (text: string) => void }): Promise<ChatResult>;
 }
 
 export interface OpenAiClientOptions {
@@ -55,7 +56,7 @@ export class OpenAiCompatibleClient implements LlmClient {
     this.toolMode = o.toolMode ?? "json";
   }
 
-  async chat(messages: ChatMessage[], opts: { signal?: AbortSignal } = {}): Promise<ChatResult> {
+  async chat(messages: ChatMessage[], opts: { signal?: AbortSignal; onPartial?: (text: string) => void } = {}): Promise<ChatResult> {
     const f = this.o.fetch ?? globalThis.fetch;
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(new LlmError(`the model did not answer within ${(this.o.timeoutMs ?? 300_000) / 1000} seconds`)), this.o.timeoutMs ?? 300_000);

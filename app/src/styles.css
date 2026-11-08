@@ -460,7 +460,7 @@ body, .app { -webkit-font-smoothing: antialiased; }
 .tool-tabs { display: flex; gap: 2px; margin-left: 4px; }
 .tool-tab { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 6px; border: 0; background: none; color: var(--muted); font-size: 12.5px; transition: background .12s, color .12s; } .tool-tab:hover { background: var(--g1); color: var(--text); } .tool-tab.on { background: var(--g1); color: var(--text); } .tool-tab svg { width: 16px; height: 16px; }
 @media (max-width: 1250px) { .tool-tab span { display: none; } .tool-tab { padding: 0 8px; } }
-.side-panel[hidden], .panel-body[hidden] { display: none; }
+.panel-body[hidden] { display: none; }
 .side-panel > header .seg { max-width: 100%; overflow-x: auto; } .side-panel > header .seg button { padding: 3px 10px; white-space: nowrap; }
 .panel-body.flush { padding: 0; gap: 0; }
 .term { display: flex; flex-direction: column; flex: 1; min-height: 0; } .term-note { margin: 0; padding: 8px 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--g1); } .term-note code { font-family: var(--mono); color: var(--text); }
@@ -896,3 +896,52 @@ html, body, .app, .main { background: var(--bg); }
 .stage-total { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-left: auto; font-variant-numeric: tabular-nums; }
 .plan-time { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--accent); font-variant-numeric: tabular-nums; }
 .plan li { align-items: center; }
+
+/* ---- motion: short and light. Things slide or fade for a fraction of a second, only opacity, transform and width move, and nothing waits for an animation to finish ---- */
+.side-panel { overflow: hidden; transition: width .22s var(--ease), opacity .18s ease, border-color .22s; }
+.side-panel > * { min-width: 400px; }
+.side-panel[hidden] { display: flex; width: 0; opacity: 0; border-left-color: transparent; pointer-events: none; visibility: hidden; transition: width .22s var(--ease), opacity .14s ease, border-color .22s, visibility 0s .22s; }
+@media (max-width: 1100px) {
+  .side-panel { transition: transform .22s var(--ease), opacity .18s ease; }
+  .side-panel > * { min-width: 0; }
+  .side-panel[hidden] { width: min(400px, 92vw); transform: translateX(104%); opacity: 1; transition: transform .22s var(--ease), visibility 0s .22s; }
+}
+.panel-body:not([hidden]) { animation: fade-in .16s ease-out both; }
+.turn-body > *, .alert, .tool { animation: fade-in .16s ease-out both; }
+@keyframes fade-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@keyframes msg-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.msg { animation-duration: .2s; }
+.home::before { display: none; }
+.plan li, .plan-mark, .tool-head, .conv, .nav-item, .toggle, .btn, .icon-btn, .tool-tab, .link-btn { transition: background-color .12s ease, color .12s ease, border-color .12s ease, opacity .12s ease, transform .12s ease; }
+.tool-tab[aria-pressed="true"], .tool-tab.on { background: var(--g2); color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .side-panel, .side-panel[hidden] { transition: none !important; } .panel-body:not([hidden]), .turn-body > *, .alert, .tool { animation: none !important; } }
+
+/* ---- the progress panel ---- */
+.progress-pane { display: flex; flex-direction: column; gap: 14px; }
+.pp-head { display: flex; flex-direction: column; gap: 8px; }
+.pp-task { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.pp-status { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.pp-status small { margin-left: auto; font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.pp-ok, .pp-bad { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: var(--brand); } .pp-bad { background: var(--danger); }
+.pp-ok svg, .pp-bad svg { width: 11px; height: 11px; }
+.progress-pane .plan { margin: 0; }
+.pp-now { border: 1px solid var(--g3); border-radius: 14px; background: var(--g1); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.pp-now-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+.pp-now-head b { font-weight: 560; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pp-now-head small { font-family: var(--mono); font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; }
+.pp-now-head .pp-chars { margin-left: auto; color: var(--muted); }
+.pp-prose { margin: 0; font-size: 13px; line-height: 1.55; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.pp-code { margin: 0; max-height: 280px; overflow: auto; padding: 10px 12px; border-radius: 10px; background: var(--g0); border: 1px solid var(--g2); font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--g12); white-space: pre; tab-size: 2; }
+.pp-steps h4 { margin: 0 0 8px; font-size: 12.5px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
+.pp-steps ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pp-steps li { display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 0 4px; font-size: 13px; color: var(--muted); }
+.pp-steps li.ok { color: var(--text); } .pp-steps li.error { color: var(--danger); }
+.pp-dot { flex: none; width: 16px; height: 16px; display: grid; place-items: center; color: var(--accent); }
+.pp-steps li.ok .pp-dot { color: var(--muted); } .pp-steps li.error .pp-dot { color: var(--danger); }
+.pp-dot svg { width: 14px; height: 14px; }
+.pp-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12.5px; }
+.pp-steps .link-btn { margin-left: auto; flex: none; font-size: 12px; }
+.pane-empty { padding: 4px 2px; }
+/* the single quiet line in the conversation */
+.working { gap: 10px; padding: 4px 0; }
+.working .link-btn { margin-left: auto; font-size: 12px; color: var(--muted); }
