@@ -174,6 +174,7 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
   let error: string | undefined;
   let verification: AgentResult["verification"];
   const seen = new Map<string, number>();
+  const writtenSame = new Map<string, string>();
   emit({ type: "start", task: o.task, model: o.llm.model });
 
   loop: while (steps < maxSteps) {
@@ -250,7 +251,12 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
         if (v.call.name !== "finish" && v.call.name !== "update_plan") workCalls++;
         if (v.call.name === "update_plan") { const st = (v.call.args as { steps?: unknown }).steps; if (typeof st === "string" && st.trim()) lastPlan = st.trim().slice(0, 1500); }
         emit({ type: "tool_call", step: steps, name: v.call.name, args: v.call.args });
-        const r = await executeTool(ctx, v.call.name as ToolName, v.call.args);
+        const wa = v.call.args as { path?: unknown; content?: unknown };
+        const again = v.call.name === "write_file" && typeof wa.path === "string" && typeof wa.content === "string" && writtenSame.get(wa.path) === wa.content;
+        const r = again
+          ? { ok: true, output: `${wa.path as string} was already written with exactly this content. Do not write it again: go on to the next file, or call finish if every file exists.` }
+          : await executeTool(ctx, v.call.name as ToolName, v.call.args);
+        if (!again && v.call.name === "write_file" && r.ok && typeof wa.path === "string" && typeof wa.content === "string") writtenSame.set(wa.path, wa.content);
         if (r.command) commands.push(r.command);
         out = r;
         emit({ type: "tool_result", step: steps, name: v.call.name, ok: r.ok, output: r.output.slice(0, 4000) });

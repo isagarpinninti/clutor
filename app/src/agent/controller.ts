@@ -87,6 +87,12 @@ export class AgentController {
         ...t, ...(out.result.status === "finished" && t.plan ? { plan: completePlan(t.plan) as NonNullable<typeof t.plan> } : {}), ended: Date.now(), status: out.result.status === "aborted" ? "stopped" : out.result.status === "error" || out.result.status === "stuck" ? "failed" : "done", summary: out.result.summary,
         usage: { steps: out.result.steps, tokens: out.result.usage.completionTokens }, ...(out.result.status === "stuck" ? { error: "The model kept answering in text and did not use the tools, so nothing was changed. Its last answer is shown above." } : out.result.error ? { error: out.result.error } : {}), ...(diffs.length ? { changes, diffs } : {}),
       }));
+      // The files are written to the folder as soon as the task ends (an undo point is kept, so "Undo" restores the folder). Held back for review: a plan-only task has no changes,
+      // and a task started from another device, which must be approved on this computer. If the files in the folder changed meanwhile nothing is written and the error says so.
+      if (o.perm !== "plan" && o.source === "local" && changes.length) {
+        const r = await this.apply(sessionId, turn.id);
+        if (!r.ok) this.patch(sessionId, turn.id, (t) => ({ ...t, error: t.error ? `${t.error} ${r.error}` : r.error }));
+      }
     } catch (e) {
       this.patch(sessionId, turn.id, (t) => ({ ...t, ended: Date.now(), status: "failed", error: e instanceof Error ? e.message : String(e) }));
     } finally {
@@ -98,7 +104,7 @@ export class AgentController {
       const done = this.d.getSession(sessionId);
       const last = done?.turns.find((t) => t.id === turn.id);
       if (done && last) this.d.onFinish?.(done, last);
-      this.d.log?.({ ...(o.device ? { device: o.device } : {}), what: `task ${last?.status ?? "ended"}${last?.diffs?.length ? `, ${last.diffs.length} file(s) changed, waiting for review` : ""}` });
+      this.d.log?.({ ...(o.device ? { device: o.device } : {}), what: `task ${last?.status ?? "ended"}${last?.diffs?.length ? `, ${last.diffs.length} file(s) changed${last.applied ? " and written to the folder" : ", waiting for review"}` : ""}` });
     }
   }
 

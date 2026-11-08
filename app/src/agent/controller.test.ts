@@ -36,23 +36,34 @@ const EDIT = ['{"tool":"edit_file","args":{"path":"a.txt","old_text":"old","new_
 const wait = async (f: () => boolean) => { for (let i = 0; i < 300; i++) { if (f()) return; await new Promise((r) => setTimeout(r, 5)); } throw new Error("timed out"); };
 
 describe("AgentController", () => {
-  it("runs a task, records the steps and the proposed change, and leaves the folder alone until applied", async () => {
+  it("writes a local task's files to the folder when it ends, and undo restores them", async () => {
     const t = setup(EDIT);
     await t.ctl.run(t.sess().id, "make it new", { perm: "ask", source: "local" });
     const turn = t.sess().turns[0]!;
     expect(turn.status).toBe("done");
     expect(turn.diffs?.map((d) => d.path)).toEqual(["a.txt"]);
-    expect(t.fs.get("a.txt")).toBe("old\n");
-    expect(await t.ctl.apply(t.sess().id, turn.id)).toEqual({ ok: true });
+    expect(turn.applied).toBeTruthy();
     expect(t.fs.get("a.txt")).toBe("new\n");
     expect(await t.ctl.undo(t.sess().id, turn.id)).toEqual({ ok: true });
     expect(t.fs.get("a.txt")).toBe("old\n");
   });
 
-  it("refuses to apply when the file changed meanwhile", async () => {
+  it("holds a task started from another device for review until it is applied here", async () => {
     const t = setup(EDIT);
-    await t.ctl.run(t.sess().id, "x", { perm: "ask", source: "local" });
-    t.fs.set("a.txt", "edited by you\n");
+    await t.ctl.run(t.sess().id, "make it new", { perm: "ask", source: "remote", device: "Pixel" });
+    const turn = t.sess().turns[0]!;
+    expect(turn.applied).toBeUndefined();
+    expect(t.fs.get("a.txt")).toBe("old\n");
+    expect(await t.ctl.apply(t.sess().id, turn.id)).toEqual({ ok: true });
+    expect(t.fs.get("a.txt")).toBe("new\n");
+  });
+
+  it("writes nothing when the file changed meanwhile, and says so", async () => {
+    const t = setup(EDIT);
+    const changed = t.fs;
+    const p = t.ctl.run(t.sess().id, "x", { perm: "ask", source: "remote" });
+    await p;
+    changed.set("a.txt", "edited by you\n");
     const r = await t.ctl.apply(t.sess().id, t.sess().turns[0]!.id);
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/changed since/);
