@@ -1,7 +1,7 @@
 import type { NativeReady, Transport } from "@engine/session";
 
 export interface SystemInfo { os: string; arch: string; ramBytes: number; cores: number; modelsDir: string }
-export interface ModelInfo { path: string; name: string; bytes: number }
+export interface ModelInfo { path: string; name: string; bytes: number; /** Set for a cloud model: the provider's name. The path is then `cloud:<provider id>:<model>`. */ cloud?: string }
 export interface CatalogItem { id: string; name: string; bytes: number; description: string }
 export interface DownloadProgress { id: string; done: number; total: number; state: "downloading" | "verifying" | "done" | "error"; error?: string }
 
@@ -72,6 +72,16 @@ export interface AgentHost {
   dirs(root: string): Promise<string[]>;
 }
 
+/** Cloud models: requests go through the app's native side, which holds the API keys (the page never sees a key). */
+export interface CloudApi {
+  keySet(provider: string, key: string): Promise<void>;
+  keyHas(provider: string): Promise<boolean>;
+  keyClear(provider: string): Promise<void>;
+  /** POSTs `body` and calls `onChunk` with the response text as it arrives; resolves when the response ends (or fails: `error` is set). */
+  request(o: { id: string; provider: string; url: string; auth: "bearer" | "anthropic" | "none"; body: string }, onChunk: (text: string) => void): Promise<{ status: number; error?: string }>;
+  cancel(id: string): Promise<void>;
+}
+
 /** Everything the interface needs from the machine it runs on. The real app implements it with Tauri commands; a browser preview with a mock. */
 export interface Bridge {
   readonly native: boolean;
@@ -79,6 +89,7 @@ export interface Bridge {
   readonly web: WebApi;
   readonly remote: RemoteApi;
   readonly inspect: InspectApi;
+  readonly cloud: CloudApi;
   system(): Promise<SystemInfo>;
   /** The models in the app's folder, the command line's, and any folders you chose. */
   listModels(folders?: string[]): Promise<ModelInfo[]>;

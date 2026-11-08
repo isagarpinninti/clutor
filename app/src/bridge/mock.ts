@@ -156,6 +156,19 @@ export const mockBridge: Bridge = {
   web: mockWeb,
   remote,
   inspect: mockInspect,
+  cloud: {
+    async keySet() { /* nothing is stored in a browser preview */ },
+    async keyHas() { return true; },
+    async keyClear() { /* nothing to clear */ },
+    async request(o, onChunk) {
+      const anthropic = o.auth === "anthropic";
+      const words = "This is a canned answer from the preview cloud model. In the app it comes from your provider.".split(" ");
+      for (const w of words) { await new Promise((r) => setTimeout(r, 25)); onChunk(anthropic ? `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: `${w} ` } })}\n\n` : `data: ${JSON.stringify({ choices: [{ delta: { content: `${w} ` } }] })}\n\n`); }
+      onChunk(anthropic ? `event: message_stop\ndata: {"type":"message_stop"}\n\n` : `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 20, completion_tokens: words.length } })}\n\ndata: [DONE]\n\n`);
+      return { status: 200 };
+    },
+    async cancel() { /* the canned answer is short */ },
+  },
   async system(): Promise<SystemInfo> { return { os: "preview", arch: "browser", ramBytes: 16 * 2 ** 30, cores: 8, modelsDir: "~/.clutor/models" }; },
   async listModels(folders) { return folders?.length ? [...MODELS, { path: `${folders[0]}/Custom-Model-7B-Q4_K_M.gguf`, name: "Custom-Model-7B-Q4_K_M", bytes: 4_400_000_000 }] : MODELS; },
   async catalog() { return CATALOG; },

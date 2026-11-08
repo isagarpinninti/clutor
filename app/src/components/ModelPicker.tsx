@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { bridge, type ModelInfo } from "../bridge";
 import { fmtBytes } from "../store";
+import { loadProviders } from "../cloud/providers";
+import { cloudModel } from "./CloudPane";
 import { Spark } from "./Thinking";
 
 interface Props {
@@ -42,10 +44,15 @@ export function ModelPicker({ current, status, note, folders, same, onSame, onPi
       </button>
       {open ? (
         <div className="pmenu" role="listbox" aria-label="Models">
-          {models.length === 0 ? <p className="menu-empty">No models on this device yet.</p> : null}
+          {models.length === 0 && loadProviders().length === 0 ? <p className="menu-empty">No models on this device yet.</p> : null}
           {models.map((m) => (
             <button type="button" role="option" aria-selected={m.path === current?.path} key={m.path} className={`menu-item${m.path === current?.path ? " on" : ""}`} onClick={() => { setOpen(false); if (m.path !== current?.path) onPick(m); }}>
               <span>{m.name}</span><small>{fmtBytes(m.bytes)}</small>
+            </button>
+          ))}
+          {loadProviders().filter((p) => p.confirmed).flatMap((p) => p.models.map((m) => cloudModel(p, m))).map((m) => (
+            <button type="button" role="option" aria-selected={m.path === current?.path} key={m.path} className={`menu-item${m.path === current?.path ? " on" : ""}`} onClick={() => { setOpen(false); if (m.path !== current?.path) onPick(m); }}>
+              <span>{m.name}</span><small>{m.cloud} · cloud</small>
             </button>
           ))}
           {onSame ? <button type="button" role="menuitemcheckbox" aria-checked={same ?? true} className="menu-item same" onClick={() => onSame(!(same ?? true))}><span>Same model for Chat and Code</span><span className={`mini-check${(same ?? true) ? " on" : ""}`} aria-hidden="true" /></button> : null}

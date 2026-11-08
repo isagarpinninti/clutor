@@ -1,3 +1,4 @@
+mod cloud;
 mod engine;
 mod models;
 mod inspect;
@@ -11,6 +12,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(cloud::CloudState::default())
         .manage(engine::EngineState::default())
         .manage(project::McpState::default())
         .manage(project::TermState::default())
@@ -51,6 +53,11 @@ pub fn run() {
             remote::commands::remote_kick,
             remote::commands::remote_log,
             remote::commands::remote_log_read,
+            cloud::cloud_key_set,
+            cloud::cloud_key_has,
+            cloud::cloud_key_clear,
+            cloud::cloud_request,
+            cloud::cloud_cancel,
             web::web_fetch,
             web::web_search,
         ])

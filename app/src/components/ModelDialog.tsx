@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { bridge, type CatalogItem, type DownloadProgress, type ModelInfo, type SystemInfo } from "../bridge";
 import { fmtBytes } from "../store";
 import { ChipIcon, DownloadIcon, FolderIcon } from "./icons";
+import { CloudPane } from "./CloudPane";
 
 interface Props {
   /** The context window the check assumes (Settings > Models). */
@@ -20,7 +21,7 @@ export function ModelDialog({ contextTokens, folders, onFolder, system, current,
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
-  const [tab, setTab] = useState<"local" | "get">("local");
+  const [tab, setTab] = useState<"local" | "get" | "cloud">("local");
   const [checking, setChecking] = useState<string>();
 
   const refresh = (): void => { void bridge.listModels(folders).then(setModels); };
@@ -48,6 +49,7 @@ export function ModelDialog({ contextTokens, folders, onFolder, system, current,
         <div className="tabs" role="tablist">
           <button type="button" role="tab" aria-selected={tab === "local"} className={tab === "local" ? "on" : ""} onClick={() => setTab("local")}>On this device</button>
           <button type="button" role="tab" aria-selected={tab === "get"} className={tab === "get" ? "on" : ""} onClick={() => setTab("get")}>Get a model</button>
+          <button type="button" role="tab" aria-selected={tab === "cloud"} className={tab === "cloud" ? "on" : ""} onClick={() => setTab("cloud")}>Cloud</button>
         </div>
         {tab === "local" ? (
           <div className="list">
@@ -68,6 +70,8 @@ export function ModelDialog({ contextTokens, folders, onFolder, system, current,
             <button type="button" className="row ghost" onClick={() => void chooseFolder()}><FolderIcon /><span className="row-main"><b>{folders[0] ? "Change models folder" : "Choose a models folder"}</b><small>{folders[0] ?? "Pick the folder where your .gguf files are"}</small></span></button>
             <button type="button" className="row ghost" onClick={() => void bridge.revealModels()}><FolderIcon /><span className="row-main"><b>Open models folder</b><small>{system?.modelsDir ?? ""}</small></span></button>
           </div>
+        ) : tab === "cloud" ? (
+          <CloudPane current={current} onPick={onPick} onClose={onClose} />
         ) : (
           <div className="list">
             {catalog.map((c) => {

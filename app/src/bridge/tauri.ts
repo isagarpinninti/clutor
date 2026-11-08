@@ -4,7 +4,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { AgentHost, Bridge, DiskSpeed, InspectApi, RemoteApi, RemoteDevice, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
+import type { AgentHost, Bridge, CloudApi, DiskSpeed, InspectApi, RemoteApi, RemoteDevice, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
 /** The engine runs inside this process (src-tauri links it); its events arrive as Tauri events and its operations go out as commands. */
 class TauriTransport implements Transport {
@@ -80,6 +80,29 @@ const remote: RemoteApi = {
   onClose: (cb) => listen<{ client: number }>("remote-close", (e) => cb(e.payload.client)),
 };
 
+const cloudWaiters = new Map<string, { onChunk: (t: string) => void; done: (r: { status: number; error?: string }) => void }>();
+let cloudListening: Promise<void> | undefined;
+function listenCloud(): Promise<void> {
+  cloudListening ??= (async () => {
+    await listen<{ id: string; text: string }>("cloud-chunk", (e) => cloudWaiters.get(e.payload.id)?.onChunk(e.payload.text));
+    await listen<{ id: string; status: number; error?: string | null }>("cloud-end", (e) => { const w = cloudWaiters.get(e.payload.id); if (w) { cloudWaiters.delete(e.payload.id); w.done({ status: e.payload.status, ...(e.payload.error ? { error: e.payload.error } : {}) }); } });
+  })();
+  return cloudListening;
+}
+const cloud: CloudApi = {
+  keySet: (provider, key) => invoke("cloud_key_set", { provider, key }),
+  keyHas: (provider) => invoke<boolean>("cloud_key_has", { provider }),
+  keyClear: (provider) => invoke("cloud_key_clear", { provider }),
+  async request(o, onChunk) {
+    await listenCloud();
+    return new Promise((resolve) => {
+      cloudWaiters.set(o.id, { onChunk, done: resolve });
+      invoke("cloud_request", { id: o.id, provider: o.provider, url: o.url, auth: o.auth, body: o.body }).catch((e: unknown) => { cloudWaiters.delete(o.id); resolve({ status: 0, error: String(e) }); });
+    });
+  },
+  cancel: (id) => invoke("cloud_cancel", { id }),
+};
+
 const inspect: InspectApi = {
   size: (path) => invoke("model_size", { path }),
   async read(path, offset, length) {
@@ -96,6 +119,7 @@ export const tauriBridge: Bridge = {
   native: true,
   host,
   web,
+  cloud,
   remote,
   inspect,
   system: () => invoke<SystemInfo>("system_info"),

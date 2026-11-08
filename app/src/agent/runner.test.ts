@@ -76,6 +76,7 @@ describe("how long a reply may be", () => {
     expect(replyTokens(undefined)).toBe(1024);
     expect(replyTokens(4096)).toBe(1024);
     expect(replyTokens(16384)).toBe(4096);
-    expect(replyTokens(131072)).toBe(4096);
+    expect(replyTokens(131072)).toBe(8192);
+    expect(replyTokens(32768)).toBe(4096);
   });
 });

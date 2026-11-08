@@ -30,7 +30,7 @@ import { Sidebar } from "./components/Sidebar";
 import type { EngineSession } from "@engine/session";
 import { useEngine } from "./engine";
 import { isActive, JobQueue, localJobStore, uid as jobUid, type Job } from "./jobs";
-import { modelForMode, readSpeed, recordSpeed, loadConversations, loadSettings, saveConversations, saveSettings, titleFrom, uid, type Conversation, type Msg, type Settings } from "./store";
+import { modelForMode, recordSpeed, loadConversations, loadSettings, saveConversations, saveSettings, titleFrom, uid, type Conversation, type Msg, type Settings } from "./store";
 
 const newConversation = (): Conversation => ({ id: uid(), title: "New chat", updated: Date.now(), messages: [] });
 
