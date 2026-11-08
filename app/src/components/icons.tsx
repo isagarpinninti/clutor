@@ -54,3 +54,5 @@ export const AlertIcon = () => I(<><circle cx="12" cy="12" r="8.5" /><path d="M1
 
 /** Progress: a checklist. */
 export const ProgressIcon = () => I(<><path d="M9.5 7h9M9.5 12h9M9.5 17h9" /><path d="m4.8 7.2 1 1 1.8-2M4.8 12.2l1 1 1.8-2M4.8 17.2l1 1 1.8-2" /></>);
+
+export const RewindIcon = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /><path d="M12 8v4l3 2" /></svg>;

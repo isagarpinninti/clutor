@@ -143,3 +143,29 @@ describe("allow for this session", () => {
     expect(t.sess().turns[0]!.blocks.some((b) => b.kind === "tool" && b.name === "run_command" && b.status === "ok")).toBe(true);
   });
 });
+
+describe("rewind", () => {
+  it("puts the folder back to before the task and removes the task from the session", async () => {
+    const t = setup(EDIT);
+    await t.ctl.run(t.sess().id, "make it new", { perm: "ask", source: "local" });
+    expect(t.fs.get("a.txt")).toBe("new\n");
+    const r = await t.ctl.rewind(t.sess().id, t.sess().turns[0]!.id);
+    expect(r).toEqual({ ok: true, text: "make it new" });
+    expect(t.fs.get("a.txt")).toBe("old\n");
+    expect(t.sess().turns.length).toBe(0);
+  });
+  it("changes nothing when a file was edited by hand since", async () => {
+    const t = setup(EDIT);
+    await t.ctl.run(t.sess().id, "make it new", { perm: "ask", source: "local" });
+    t.fs.set("a.txt", "mine\n");
+    const r = await t.ctl.rewind(t.sess().id, t.sess().turns[0]!.id);
+    expect(r.ok).toBe(false);
+    expect(t.fs.get("a.txt")).toBe("mine\n");
+    expect(t.sess().turns.length).toBe(1);
+  });
+  it("passes files mentioned with @ to the agent without showing them as the task", async () => {
+    const t = setup(['{"tool":"finish","args":{"summary":"ok"}}']);
+    await t.ctl.run(t.sess().id, "look at @a.txt", { perm: "plan", source: "local", extra: "Contents of a.txt:\nold" });
+    expect(t.sess().turns[0]!.task).toBe("look at @a.txt");
+  });
+});

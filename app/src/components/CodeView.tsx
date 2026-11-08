@@ -12,7 +12,7 @@ import { WorkingLine } from "./ProgressPane";
 import { ToolGroup } from "./ToolGroup";
 import { Logo } from "./Logo";
 import { fmtElapsed } from "./RunProgress";
-import { CheckIcon, CopyIcon, EditIcon, FolderIcon, RedoIcon, SendIcon, StopIcon } from "./icons";
+import { RewindIcon, CheckIcon, CopyIcon, EditIcon, FolderIcon, RedoIcon, SendIcon, StopIcon } from "./icons";
 
 export type { Permission };
 const PERMISSIONS: ModeOption<Permission>[] = [
@@ -82,17 +82,41 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
   const pending = approvals.filter((a) => a.sessionId === active?.id);
   const approval = pending[0];
 
-  const exec = (text: string): void => { if (!active) return; setError(undefined); void ctl.run(active.id, text, { perm, source: "local" }).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e))); };
+  const [files, setFiles] = useState<string[]>([]);
+  useEffect(() => { setFiles([]); if (active?.root) void bridge.host.list(active.root).then(setFiles).catch(() => setFiles([])); }, [active?.root, active?.turns.length]);
+  /** Files named with @ in the task, read so the agent has them in front of it (each at most 6,000 characters, at most 5 files). */
+  const mentioned = async (text: string): Promise<string> => {
+    if (!active) return "";
+    const names = [...new Set([...text.matchAll(/(?:^|\s)@([\w./@-]+)/g)].map((m) => m[1] as string))].filter((n) => files.includes(n)).slice(0, 5);
+    const parts: string[] = [];
+    for (const n of names) { const c = await bridge.host.read(active.root, n).catch(() => null); if (c !== null) parts.push(`Contents of ${n}${c.length > 6000 ? " (first 6,000 characters)" : ""}:\n${c.slice(0, 6000)}`); }
+    return parts.join("\n\n");
+  };
+  const exec = (text: string): void => {
+    if (!active) return;
+    setError(undefined);
+    void mentioned(text).then((extra) => ctl.run(active.id, text, { perm, source: "local", ...(extra ? { extra } : {}) })).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  };
+  const at = /(?:^|\s)@([\w./@-]*)$/.exec(task);
+  const atMatches = at ? files.filter((f) => f.toLowerCase().includes((at[1] ?? "").toLowerCase())).slice(0, 8) : [];
+  const pickFile = (f: string): void => { setTask((t) => t.replace(/@([\w./@-]*)$/, `@${f} `)); setSlashAt(0); };
+  const rewind = async (id: string): Promise<void> => {
+    if (!active) return;
+    const r = await ctl.rewind(active.id, id);
+    if (r.ok) { setTask(r.text); setInfo("Rewound: the folder is back to how it was before that task, and the task is in the box so you can change it and run it again."); } else setError(r.error);
+  };
   const contextUsed = [...(active?.turns ?? [])].reverse().find((t) => t.context)?.context ?? 0;
   const contextMax = overviewProps.contextMax;
   const COMMANDS: Array<{ name: string; hint: string; run: () => void }> = active ? [
-    { name: "help", hint: "What you can type here", run: () => setInfo("Type a task and press Enter. While it works you can queue another message (it runs next) or press Esc to stop. Commands: " + "/clear, /compact, /undo, /plan, /ask, /auto, /context, /diff, /model, /tools, /help. Up arrow brings back your earlier tasks. Put instructions for the agent in CLUTOR.md (or AGENTS.md / CLAUDE.md) in the folder.") },
+    { name: "help", hint: "What you can type here", run: () => setInfo("Type a task and press Enter. While it works you can queue another message (it runs next) or press Esc to stop. Commands: " + "/init, /clear, /compact, /undo, /rewind, /plan, /ask, /auto, /context, /diff, /model, /tools, /help. Up arrow brings back your earlier tasks. Put instructions for the agent in CLUTOR.md (or AGENTS.md / CLAUDE.md) in the folder.") },
+    { name: "init", hint: "Write CLUTOR.md: instructions for this project", run: () => exec("Look at this project (its files, how it is built and run) and write a CLUTOR.md in the folder for future tasks: what the project is, how to run and test it, the folder layout, and the conventions to follow. Keep it under 60 lines and only say what you saw in the files.") },
     { name: "clear", hint: "Start a new session in this folder", run: () => { onCreate(active.root); } },
     { name: "compact", hint: "Make later tasks forget the earlier ones (the files stay)", run: () => { ctl.forget(active.id); setInfo("Compacted: later tasks no longer remember the earlier ones in this session. The files in the folder stay as they are."); } },
     { name: "undo", hint: "Undo the last task's changes in the folder", run: () => { if (withChanges?.applied) void undo(); else setInfo("There is nothing to undo."); } },
     { name: "plan", hint: "Plan only: read the project, change nothing", run: () => { onPerm("plan"); setInfo("Plan only: the next tasks read the project and write a plan, and change nothing."); } },
     { name: "ask", hint: "Ask before running anything", run: () => { onPerm("ask"); setInfo("The agent asks before running a command."); } },
     { name: "auto", hint: "Run checks without asking", run: () => { onPerm("auto"); setInfo("Tests and checks run without asking; the network and tools still ask."); } },
+    { name: "rewind", hint: "Go back to before the last task (folder and session)", run: () => { const t = [...(active.turns)].reverse().find((x) => x.status !== "running"); if (t) void rewind(t.id); else setInfo("There is nothing to rewind."); } },
     { name: "context", hint: "How full the model's context is", run: () => setInfo(contextUsed ? `${contextUsed.toLocaleString()} of ${contextMax.toLocaleString()} tokens used (${Math.round((contextUsed / Math.max(1, contextMax)) * 100)}%) after the latest step.` : "No task has run yet in this session.") },
     { name: "diff", hint: "Open the changes", run: () => { onTab("changes"); onPanel(true); } },
     { name: "model", hint: "Choose a model", run: onChooseModel },
@@ -179,6 +203,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
                         <button type="button" className="icon-btn tip" data-tip={copied === t.id ? "Copied" : "Copy"} onClick={() => copyTask(t.id, t.task)} aria-label="Copy the task">{copied === t.id ? <CheckIcon /> : <CopyIcon />}</button>
                         <button type="button" className="icon-btn tip" data-tip="Edit" disabled={running || !ready} onClick={() => { setDraft(t.task); setEditing(t.id); }} aria-label="Edit the task"><EditIcon /></button>
                         <button type="button" className="icon-btn tip" data-tip="Redo" disabled={running || !ready} onClick={() => retry(t.task)} aria-label="Run this task again"><RedoIcon /></button>
+                        <button type="button" className="icon-btn tip" data-tip="Rewind to before this" disabled={running} onClick={() => void rewind(t.id)} aria-label="Rewind the folder and session to before this task"><RewindIcon /></button>
                       </div>
                     </>
                   )}
@@ -220,12 +245,19 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
         <div className="composer-wrap">
           {info ? <div className="notice info-note" role="status"><span>{info}</span><button type="button" className="icon-btn" aria-label="Dismiss" onClick={() => setInfo(undefined)}>×</button></div> : null}
           {queue.length ? <ul className="queued" aria-label="Queued messages">{queue.map((q, i) => <li key={i}><span>Queued</span><em>{q}</em><button type="button" className="icon-btn" aria-label="Remove from the queue" onClick={() => setQueue((all) => all.filter((_, j) => j !== i))}>×</button></li>)}</ul> : null}
+          {atMatches.length ? <ul className="slash-menu" role="listbox" aria-label="Files">{atMatches.map((f, i) => <li key={f} role="option" aria-selected={i === slashAt} className={i === slashAt ? "on" : ""} onMouseEnter={() => setSlashAt(i)} onMouseDown={(e) => { e.preventDefault(); pickFile(f); }}><b>@</b><span>{f}</span></li>)}</ul> : null}
           {slash.length ? <ul className="slash-menu" role="listbox" aria-label="Commands">{slash.map((c, i) => <li key={c.name} role="option" aria-selected={i === slashAt} className={i === slashAt ? "on" : ""} onMouseEnter={() => setSlashAt(i)} onMouseDown={(e) => { e.preventDefault(); runCommand(c); }}><b>/{c.name}</b><span>{c.hint}</span></li>)}</ul> : null}
           <div className={`composer${!ready ? " is-disabled" : ""}`}>
-            <textarea rows={2} value={task} placeholder={!ready ? "Load a model to start" : running ? "Type to queue the next message… (Esc stops the task)" : `What should change in ${folderName(active.root)}? (/ for commands)`} disabled={!ready} aria-label="Task"
+            <textarea rows={2} value={task} placeholder={!ready ? "Load a model to start" : running ? "Type to queue the next message… (Esc stops the task)" : `What should change in ${folderName(active.root)}? (/ for commands, @ for files)`} disabled={!ready} aria-label="Task"
               onChange={(e) => { setTask(e.target.value); setSlashAt(0); }}
               onKeyDown={(e) => {
                 if (e.nativeEvent.isComposing) return;
+                if (atMatches.length) {
+                  if (e.key === "ArrowDown") { e.preventDefault(); setSlashAt((i) => (i + 1) % atMatches.length); return; }
+                  if (e.key === "ArrowUp") { e.preventDefault(); setSlashAt((i) => (i - 1 + atMatches.length) % atMatches.length); return; }
+                  if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); pickFile(atMatches[slashAt] ?? atMatches[0] as string); return; }
+                  if (e.key === "Escape") { setTask((t) => t.replace(/@([\w./@-]*)$/, "")); return; }
+                }
                 if (slash.length) {
                   if (e.key === "ArrowDown") { e.preventDefault(); setSlashAt((i) => (i + 1) % slash.length); return; }
                   if (e.key === "ArrowUp") { e.preventDefault(); setSlashAt((i) => (i - 1 + slash.length) % slash.length); return; }

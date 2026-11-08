@@ -58,7 +58,7 @@ export class AgentController {
   /** /compact and /clear: later tasks no longer remember the ones so far. */
   forget(sessionId: string): void { this.d.change(sessionId, (x) => ({ ...x, forget: x.turns.length })); }
 
-  async run(sessionId: string, text: string, o: { perm: Permission; source: Source; device?: string }): Promise<void> {
+  async run(sessionId: string, text: string, o: { perm: Permission; source: Source; device?: string; /** Text added to what the agent is asked, not shown as part of the task (the files the person mentioned with @). */ extra?: string }): Promise<void> {
     const session = this.d.getSession(sessionId);
     if (!session) throw new Error("that session no longer exists");
     if (this.isRunning(sessionId)) throw new Error("a task is already running in this session");
@@ -77,7 +77,7 @@ export class AgentController {
       release = await this.d.hold();
       const cfg = this.d.config();
       const out = await runCodingTask({
-        host: this.d.host, web: this.d.web, root: session.root, history: sessionMemory(session), session: engine, modelName: cfg.modelName, task, signal: ac.signal, planOnly: o.perm === "plan",
+        host: this.d.host, web: this.d.web, root: session.root, history: sessionMemory(session), session: engine, modelName: cfg.modelName, task: o.extra ? `${task}\n\n${o.extra}` : task, signal: ac.signal, planOnly: o.perm === "plan",
         maxSteps: cfg.maxSteps, contextTokens: cfg.contextTokens, ...(this.d.mcp() ? { mcp: this.d.mcp() as McpManager } : {}),
         approve: (info) => this.approve(sessionId, info, o),
         onContext: (n) => this.patch(sessionId, turn.id, (t) => ({ ...t, context: n })),
@@ -173,6 +173,29 @@ export class AgentController {
     } catch (e) {
       return { ok: false, error: e instanceof ConflictError ? `Not undone, because ${e.paths.join(", ")} changed after the apply.` : e instanceof Error ? e.message : String(e) };
     }
+  }
+
+  /**
+   * Rewind: the folder goes back to how it was before this task (this task's changes and every later one are undone, newest first), and this task and the ones after it are removed
+   * from the session. Returns the task's text so it can be put back in the prompt box. Nothing is removed if an undo fails (for example a file was changed by hand since).
+   */
+  async rewind(sessionId: string, turnId: string): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+    const session = this.d.getSession(sessionId);
+    if (!session) return { ok: false, error: "that session no longer exists" };
+    if (this.isRunning(sessionId)) return { ok: false, error: "stop the running task first" };
+    const at = session.turns.findIndex((t) => t.id === turnId);
+    if (at < 0) return { ok: false, error: "that task no longer exists" };
+    const undone: string[] = [];
+    for (let i = session.turns.length - 1; i >= at; i--) {
+      const t = session.turns[i] as Turn;
+      if (!t.applied) continue;
+      try { await undoCheckpoint(this.d.host, session.root, t.applied); undone.push(t.id); }
+      catch (e) { return { ok: false, error: `${e instanceof ConflictError ? "A file was changed since, so nothing further was undone. " : ""}${e instanceof Error ? e.message : String(e)}` }; }
+    }
+    const text = (session.turns[at] as Turn).task;
+    this.d.change(sessionId, (x) => ({ ...x, turns: x.turns.slice(0, at), ...(x.forget && x.forget > at ? { forget: at } : {}) }));
+    this.d.log?.({ what: `rewound the session to before: ${text.slice(0, 80)}` });
+    return { ok: true, text };
   }
 
   discard(sessionId: string, turnId: string, by?: { device?: string }): Outcome {
