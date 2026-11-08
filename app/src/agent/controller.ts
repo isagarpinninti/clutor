@@ -36,6 +36,8 @@ export interface Deps {
   log?(entry: { device?: string; what: string }): void;
   id(): string;
   titleFrom(text: string): string;
+  /** Commands the user chose to always allow in a folder (kept across restarts). */
+  rules?: { get(root: string): string[]; add(root: string, command: string): void; clear(root: string): void };
 }
 
 export class AgentController {
@@ -53,6 +55,10 @@ export class AgentController {
   /** Starts a task on a session and resolves when it ends. */
   private allowed = new Set<string>();
   /** The user chose "Allow for this session": commands that do not use the network run without asking until the session ends or the app is closed. */
+  /** "Always allow this command" in this folder: stored, and honoured in every later session on it (never for a command that uses the network). */
+  allowAlways(sessionId: string, command: string): void { const s = this.d.getSession(sessionId); if (s) this.d.rules?.add(s.root, command); }
+  rules(sessionId: string): string[] { const s = this.d.getSession(sessionId); return s ? this.d.rules?.get(s.root) ?? [] : []; }
+  clearRules(sessionId: string): void { const s = this.d.getSession(sessionId); if (s) this.d.rules?.clear(s.root); }
   allowSession(sessionId: string): void { this.allowed.add(sessionId); this.emit(); }
   isAllowed(sessionId: string): boolean { return this.allowed.has(sessionId); }
   /** /compact and /clear: later tasks no longer remember the ones so far. */
@@ -117,7 +123,7 @@ export class AgentController {
 
   private approve(sessionId: string, info: { command: string; network: boolean }, o: { perm: Permission; source: Source; device?: string }): Promise<boolean> {
     if (o.perm === "plan") return Promise.resolve(false);
-    if (this.allowed.has(sessionId) && o.source === "local" && !info.network) return Promise.resolve(true);   // "Allow for this session"
+    if (o.source === "local" && !info.network && (this.allowed.has(sessionId) || this.rules(sessionId).includes(info.command))) return Promise.resolve(true);   // "Allow for this session"
     // "Auto-run checks" is only ever given to a task started on this computer, and still asks for anything that uses the network.
     if (o.perm === "auto" && o.source === "local" && !info.network) return Promise.resolve(true);
     return new Promise<boolean>((resolve) => {

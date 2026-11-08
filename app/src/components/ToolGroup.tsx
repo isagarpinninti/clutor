@@ -20,7 +20,7 @@ export function ToolGroup({ tools, verbose, onOpenFile }: { tools: Tool[]; verbo
   return (
     <div className={`tgroup${running ? " running" : ""}${failed ? " failed" : ""}`}>
       <button type="button" className="tgroup-head" aria-expanded={open} onClick={() => setUser(!open)}>
-        <span className="tool-state" aria-hidden="true">{running ? <Spark size={12} /> : failed ? <CloseIcon /> : <CheckIcon />}</span>
+        <span className="tool-state" aria-hidden="true">{running ? <Spark size={20} /> : failed ? <CloseIcon /> : <CheckIcon />}</span>
         <span className="tgroup-text">{live ? <><b className="shimmer">{live}…</b><small>{tools.length > 1 ? ` · ${summarizeTools(tools.filter((t) => t.status !== "running")).toLowerCase()}`.replace(" · planned", "") : ""}</small></> : summarizeTools(tools)}</span>
         <span className={`tool-caret${open ? " open" : ""}`}>›</span>
       </button>

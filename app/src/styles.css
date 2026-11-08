@@ -1011,3 +1011,11 @@ body.resizing * { transition: none !important; }
 .queued li span { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; } .queued li em { flex: 1; min-width: 0; font-style: normal; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .info-note { display: flex; align-items: flex-start; gap: 10px; border-radius: 10px; } .info-note span { flex: 1; line-height: 1.5; }
 .ctx-meter { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; padding: 0 6px; } .ctx-meter.hot { color: var(--warn, #f5b942); }
+
+/* ---- Bigger stage animations ---- */
+.tool-state { width: 26px; height: 26px; } .tool-state svg { width: 16px; height: 16px; }
+.tgroup-head { min-height: 36px; }
+.working { gap: 12px; padding: 6px 0; min-height: 36px; }
+.plan-mark { width: 20px; height: 20px; } .plan li.active .plan-mark { width: 26px; height: 26px; border-color: transparent; }
+.pp-dot { width: 22px; height: 22px; display: grid; place-items: center; flex: none; }
+.pp-line { min-height: 30px; }

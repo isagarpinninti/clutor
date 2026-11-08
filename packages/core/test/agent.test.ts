@@ -452,3 +452,43 @@ describe("continuing a cut-off reply", () => {
   });
 });
 
+
+describe("hooks and helpers", () => {
+  const run = (exit: number, out = "ok"): ((plan: unknown, command: string) => Promise<CommandResult>) => async () => ({ exitCode: exit, output: out, timedOut: false, durationMs: 1 });
+  it("reads a hooks file and ignores anything else", async () => {
+    const { parseHooks } = await import("../src/agent/loop");
+    expect(parseHooks('{"hooks":{"PostToolUse":[{"matcher":"write_file","command":"npm test"}],"Stop":[{"command":"npm test"}]}}')?.post?.[0]?.command).toBe("npm test");
+    expect(parseHooks("not json")).toBeUndefined();
+    expect(parseHooks('{"hooks":{}}')).toBeUndefined();
+  });
+  it("shows a post-call hook's output to the model, and blocks a call when a pre-call hook fails", async () => {
+    const m = llm([() => say("write_file", { path: "a.txt", content: "x" }), () => say("finish", { summary: "ok" })]);
+    await runAgent({ task: "t", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), runCommand: run(0, "lint clean") as never, hooks: { post: [{ matcher: "write_file", command: "npm test" }] } });
+    expect(JSON.stringify(m.seen[1])).toContain("lint clean");
+    const m2 = llm([() => say("write_file", { path: "a.txt", content: "x" }), () => say("finish", { summary: "ok" })]);
+    const ws = new ShadowWorkspace(MemoryProject.from({}));
+    await runAgent({ task: "t", llm: m2, ws, runCommand: run(1, "denied") as never, hooks: { pre: [{ matcher: "write_file", command: "npm test" }] } });
+    expect(ws.size).toBe(0);
+    expect(JSON.stringify(m2.seen[1])).toContain("Blocked by a hook");
+  });
+  it("sends the agent back to work when a stop hook fails", async () => {
+    let calls = 0;
+    const m = llm([() => say("write_file", { path: "a.txt", content: "x" }), () => say("finish", { summary: "done" }), () => say("write_file", { path: "a.txt", content: "y" }), () => say("finish", { summary: "fixed" })]);
+    const r = await runAgent({ task: "t", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), runCommand: (async () => ({ exitCode: ++calls === 1 ? 1 : 0, output: "bad", timedOut: false, durationMs: 1 })) as never, hooks: { stop: [{ command: "npm test" }] } });
+    expect(r.status).toBe("finished");
+    expect(r.summary).toBe("fixed");
+  });
+  it("lets the agent hand a question to a read-only helper", async () => {
+    const m = llm([
+      () => say("delegate", { task: "where is the entry point?" }),
+      () => say("write_file", { path: "x.txt", content: "no" }),   // the helper tries to write
+      () => say("finish", { summary: "It is main.ts." }),            // the helper's report
+      () => say("finish", { summary: "Found it." }),
+    ]);
+    const ws = new ShadowWorkspace(MemoryProject.from({ "main.ts": "x" }));
+    const r = await runAgent({ task: "find the entry point", llm: m, ws });
+    expect(ws.size).toBe(0);
+    expect(r.summary).toBe("Found it.");
+    expect(JSON.stringify(m.seen.at(-1))).toContain("Report from the helper");
+  });
+});

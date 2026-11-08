@@ -36,7 +36,7 @@ export function PlanList({ plan, running, stepSeconds }: { plan: PlanStep[]; run
       <ol>
         {plan.map((s, i) => (
           <li key={i} className={s.state === "active" ? (running ? "active" : "todo") : s.state}>
-            <span className="plan-mark" aria-hidden="true">{s.state === "done" ? <CheckIcon /> : s.state === "active" && running ? <Logo size={16} state="thinking" /> : null}</span>
+            <span className="plan-mark" aria-hidden="true">{s.state === "done" ? <CheckIcon /> : s.state === "active" && running ? <Logo size={24} state="thinking" /> : null}</span>
             <span className="plan-text">{s.text}</span>
             {s.state === "active" && running ? <small className="plan-time">{fmtElapsed(stepSeconds)}</small> : null}
           </li>

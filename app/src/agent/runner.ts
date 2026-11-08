@@ -1,4 +1,4 @@
-import { runAgent, type AgentEvent, type AgentResult } from "@core/agent/loop";
+import { parseHooks, runAgent, type AgentEvent, type AgentResult } from "@core/agent/loop";
 import { ShadowWorkspace } from "@core/agent/workspace";
 import type { AgentHost, WebApi } from "../bridge";
 import { agentWeb } from "../web";
@@ -39,6 +39,7 @@ export async function runCodingTask(t: CodingTask): Promise<{ result: AgentResul
   const ws = new ShadowWorkspace(hostProject(t.host, t.root));
   const external = t.mcp?.external();
   // Project instructions: a file the user keeps in the folder for the agent (the first of these that exists), read at the start of every task.
+  const hooks = parseHooks(await t.host.read(t.root, ".clutor/hooks.json").catch(() => null));
   let instructions = "", instructionsFile = "";
   for (const name of ["CLUTOR.md", "AGENTS.md", "CLAUDE.md"]) {
     const text = await t.host.read(t.root, name).catch(() => null);
@@ -46,7 +47,7 @@ export async function runCodingTask(t: CodingTask): Promise<{ result: AgentResul
   }
   const result = await runAgent({
     task: t.task, ws, llm: engineLlm(t.session, t.modelName, { maxTokens: replyTokens(t.contextTokens), ...(t.onContext ? { onContext: t.onContext } : {}) }),
-    ...(t.planOnly ? { planOnly: true } : {}), maxSteps: t.maxSteps ?? 20, contextChars: Math.max(12_000, Math.min(600_000, Math.round((t.contextTokens ?? 4096) * 2.5))),
+    ...(hooks ? { hooks } : {}), ...(t.planOnly ? { planOnly: true } : {}), maxSteps: t.maxSteps ?? 20, contextChars: Math.max(12_000, Math.min(600_000, Math.round((t.contextTokens ?? 4096) * 2.5))),
     approve: t.approve,
     runCommand: async (plan, command) => {
       const r = await t.host.run(t.root, (await ws.overlayEntries()).map(([path, content]) => ({ path, content })), plan.steps.map((s) => s.argv), 120_000);

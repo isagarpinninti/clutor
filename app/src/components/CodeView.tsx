@@ -9,6 +9,7 @@ import type { OverviewPane } from "./OverviewPane";
 import { SidePanel, type PanelTab } from "./SidePanel";
 import { Alert } from "./Alert";
 import { WorkingLine } from "./ProgressPane";
+import { parseHooks } from "@core/agent/loop";
 import { ToolGroup } from "./ToolGroup";
 import { Logo } from "./Logo";
 import { fmtElapsed } from "./RunProgress";
@@ -108,7 +109,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
   const contextUsed = [...(active?.turns ?? [])].reverse().find((t) => t.context)?.context ?? 0;
   const contextMax = overviewProps.contextMax;
   const COMMANDS: Array<{ name: string; hint: string; run: () => void }> = active ? [
-    { name: "help", hint: "What you can type here", run: () => setInfo("Type a task and press Enter. While it works you can queue another message (it runs next) or press Esc to stop. Commands: " + "/init, /clear, /compact, /undo, /rewind, /plan, /ask, /auto, /context, /diff, /model, /tools, /help. Up arrow brings back your earlier tasks. Put instructions for the agent in CLUTOR.md (or AGENTS.md / CLAUDE.md) in the folder.") },
+    { name: "help", hint: "What you can type here", run: () => setInfo("Type a task and press Enter. While it works you can queue another message (it runs next) or press Esc to stop. Commands: " + "/init, /clear, /compact, /undo, /rewind, /permissions, /hooks, /plan, /ask, /auto, /context, /diff, /model, /tools, /help. Up arrow brings back your earlier tasks. Put instructions for the agent in CLUTOR.md (or AGENTS.md / CLAUDE.md) in the folder.") },
     { name: "init", hint: "Write CLUTOR.md: instructions for this project", run: () => exec("Look at this project (its files, how it is built and run) and write a CLUTOR.md in the folder for future tasks: what the project is, how to run and test it, the folder layout, and the conventions to follow. Keep it under 60 lines and only say what you saw in the files.") },
     { name: "clear", hint: "Start a new session in this folder", run: () => { onCreate(active.root); } },
     { name: "compact", hint: "Make later tasks forget the earlier ones (the files stay)", run: () => { ctl.forget(active.id); setInfo("Compacted: later tasks no longer remember the earlier ones in this session. The files in the folder stay as they are."); } },
@@ -118,6 +119,9 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
     { name: "auto", hint: "Run checks without asking", run: () => { onPerm("auto"); setInfo("Tests and checks run without asking; the network and tools still ask."); } },
     { name: "rewind", hint: "Go back to before the last task (folder and session)", run: () => { const t = [...(active.turns)].reverse().find((x) => x.status !== "running"); if (t) void rewind(t.id); else setInfo("There is nothing to rewind."); } },
     { name: "context", hint: "How full the model's context is", run: () => setInfo(contextUsed ? `${contextUsed.toLocaleString()} of ${contextMax.toLocaleString()} tokens used (${Math.round((contextUsed / Math.max(1, contextMax)) * 100)}%) after the latest step.` : "No task has run yet in this session.") },
+    { name: "permissions", hint: "Commands always allowed in this folder (add /permissions clear to remove them)", run: () => { const r = ctl.rules(active.id); setInfo(r.length ? `Always allowed here: ${r.join(" · ")}. Type /revoke to remove them.` : "No command is always allowed in this folder. Choose \"Always allow this command here\" when asked."); } },
+    { name: "revoke", hint: "Remove every always-allowed command in this folder", run: () => { ctl.clearRules(active.id); setInfo("Removed. Commands ask again."); } },
+    { name: "hooks", hint: "Commands run around the agent's steps (.clutor/hooks.json)", run: () => { void bridge.host.read(active.root, ".clutor/hooks.json").then((t) => { const h = parseHooks(t); setInfo(h ? `Hooks loaded: ${h.pre?.length ?? 0} before a step, ${h.post?.length ?? 0} after a step, ${h.stop?.length ?? 0} when done. They run in the scratch copy with the same allowed programs as commands, without asking.` : 'No hooks. Create .clutor/hooks.json like {"hooks": {"PostToolUse": [{"matcher": "write_file|edit_file", "command": "npm test"}], "Stop": [{"command": "npm test"}]}}'); }); } },
     { name: "diff", hint: "Open the changes", run: () => { onTab("changes"); onPanel(true); } },
     { name: "model", hint: "Choose a model", run: onChooseModel },
     { name: "tools", hint: "Connect tools (MCP servers)", run: onMcp },
@@ -235,7 +239,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
                 <b>{approval.network ? "Allow this, with network access?" : "Allow this to run?"}{approval.source === "remote" ? <span className="tag">asked from {approval.device ?? "your phone"}</span> : null}</b>
                 <code>{approval.command}</code>
                 <small>Commands run in a scratch copy of the project, with a clean environment and a time limit. They can still read files your user can read.</small>
-                <div className="actions"><button type="button" className="btn small" onClick={() => ctl.answer(approval.id, true, { source: "local" })}>Allow once</button>{!approval.network && approval.source === "local" ? <button type="button" className="btn small ghost" onClick={() => { ctl.allowSession(approval.sessionId); ctl.answer(approval.id, true, { source: "local" }); }}>Allow for this session</button> : null}<button type="button" className="btn small ghost" onClick={() => ctl.answer(approval.id, false, { source: "local" })}>Refuse</button></div>
+                <div className="actions"><button type="button" className="btn small" onClick={() => ctl.answer(approval.id, true, { source: "local" })}>Allow once</button>{!approval.network && approval.source === "local" ? <><button type="button" className="btn small ghost" onClick={() => { ctl.allowSession(approval.sessionId); ctl.answer(approval.id, true, { source: "local" }); }}>Allow for this session</button><button type="button" className="btn small ghost" onClick={() => { ctl.allowAlways(approval.sessionId, approval.command); ctl.answer(approval.id, true, { source: "local" }); }}>Always allow this command here</button></> : null}<button type="button" className="btn small ghost" onClick={() => ctl.answer(approval.id, false, { source: "local" })}>Refuse</button></div>
               </div>
             ) : null}
             {error && !panel ? <Alert tone="error" title="That did not work">{error}</Alert> : null}

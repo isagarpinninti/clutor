@@ -28,7 +28,7 @@ export function WorkingLine({ turn, onOpen }: { turn: Turn; onOpen?: () => void 
   const tokens = live ? Math.round(live.chars / 4) : 0;
   return (
     <div className="working" role="status" aria-live="polite">
-      <Logo size={18} state="thinking" />
+      <Logo size={28} state="thinking" />
       <span className="shimmer" key={label}>{label}…</span>
       <small className="stage-time">{fmtElapsed(total)}{tokens > 0 ? ` · ↓ ${tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tokens` : ""}</small>
       {onOpen ? <button type="button" className="link-btn" onClick={onOpen}>Progress</button> : null}
@@ -63,7 +63,7 @@ export function ProgressPane({ turn, onOpenFile }: { turn: Turn | undefined; onO
       <div className="pp-head">
         <p className="pp-task">{turn.task}</p>
         <div className="pp-status">
-          {running ? <><Logo size={18} state="thinking" /><span>Working</span></>
+          {running ? <><Logo size={26} state="thinking" /><span>Working</span></>
             : turn.status === "done" ? <><span className="pp-ok"><CheckIcon /></span><span>Finished</span></>
             : turn.status === "failed" ? <><span className="pp-bad"><CloseIcon /></span><span>Could not finish</span></>
             : turn.status === "stopped" ? <span>Stopped</span> : <span>Interrupted</span>}
@@ -75,7 +75,7 @@ export function ProgressPane({ turn, onOpenFile }: { turn: Turn | undefined; onO
 
       {running ? (
         <section className="pp-now" aria-label="Right now">
-          <div className="pp-now-head"><Logo size={16} state="thinking" /><b>{nowLabel}</b><small>{fmtElapsed(inStep)}</small>{live ? <small className="pp-chars">{kb(live.chars)}</small> : null}</div>
+          <div className="pp-now-head"><Logo size={24} state="thinking" /><b>{nowLabel}</b><small>{fmtElapsed(inStep)}</small>{live ? <small className="pp-chars">{kb(live.chars)}</small> : null}</div>
           {live?.prose && !preview ? <p className="pp-prose">{live.prose.slice(-600)}</p> : null}
           {preview !== undefined ? <pre ref={code} className="pp-code" aria-label="The file as it is written">{preview.split("\n").slice(-8).join("\n") || " "}</pre> : null}
           {!live ? <p className="pp-prose">Reading the task and deciding what to do first…</p> : null}
@@ -92,7 +92,7 @@ export function ProgressPane({ turn, onOpenFile }: { turn: Turn | undefined; onO
               return (
                 <li key={b.id} className={b.status}>
                   <div className="pp-line">
-                    <span className="pp-dot" aria-hidden="true">{b.status === "ok" ? <CheckIcon /> : b.status === "error" ? <CloseIcon /> : <Logo size={12} state="thinking" />}</span>
+                    <span className="pp-dot" aria-hidden="true">{b.status === "ok" ? <CheckIcon /> : b.status === "error" ? <CloseIcon /> : <Logo size={20} state="thinking" />}</span>
                     <span className="pp-label">{b.label}</span>
                     {c ? <span className="counts"><i className="add">+{c.add}</i> <i className="del">−{c.del}</i></span> : null}
                     {b.path ? <button type="button" className="link-btn" onClick={() => onOpenFile(b.path as string)}>open</button> : null}

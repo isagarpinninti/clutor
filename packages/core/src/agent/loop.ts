@@ -3,6 +3,7 @@ import { extractJsonObject, jsonProtocolPrompt, looksCutOff, type ChatMessage, t
 import { workspaceHints } from "./hints";
 import { sealReceipt, type Receipt, type ReceiptDraft, type ReceiptSigner } from "./receipt";
 import { buildRepoMap } from "./repomap";
+import { planCommand } from "./commands";
 import { executeTool, validateToolCall, type CommandResult, type ToolContext, type ToolName } from "./tools";
 import { sha256Hex, type ShadowWorkspace } from "./workspace";
 
@@ -25,7 +26,31 @@ export type AgentEvent =
   | { type: "verify"; command: string; ok: boolean; ran: boolean; attempt: number; output: string }
   | { type: "done"; result: AgentResult };
 
+/** A command the user wants run around the agent's tool calls (from .clutor/hooks.json): before a call (a failure blocks it), after it (its output is shown to the model), and when the agent says it is done (a failure sends it back to work). */
+export interface HookDef { /** Tool names, separated by "|" (for example "write_file|edit_file"); empty means every tool. */ matcher?: string; command: string }
+export interface Hooks { pre?: HookDef[]; post?: HookDef[]; stop?: HookDef[] }
+
+/** Reads the text of a hooks file: {"hooks": {"PreToolUse": [{"matcher": "run_command", "command": "..."}], "PostToolUse": [...], "Stop": [{"command": "npm test"}]}}. Returns nothing for text that is not one. */
+export function parseHooks(text: string | null | undefined): Hooks | undefined {
+  if (!text) return undefined;
+  let j: unknown;
+  try { j = JSON.parse(text); } catch { return undefined; }
+  const h = (j as { hooks?: Record<string, unknown> } | null)?.hooks;
+  if (!h || typeof h !== "object") return undefined;
+  const list = (v: unknown): HookDef[] => (Array.isArray(v) ? v.filter((x): x is { command: string; matcher?: string } => !!x && typeof (x as { command?: unknown }).command === "string").map((x) => ({ command: x.command.slice(0, 500), ...(typeof x.matcher === "string" ? { matcher: x.matcher } : {}) })).slice(0, 8) : []);
+  const out: Hooks = { pre: list(h["PreToolUse"]), post: list(h["PostToolUse"]), stop: list(h["Stop"]) };
+  return out.pre?.length || out.post?.length || out.stop?.length ? out : undefined;
+}
+const hookMatches = (h: HookDef, tool: string): boolean => !h.matcher || h.matcher.split("|").map((s) => s.trim()).includes(tool);
+
 export interface AgentOptions {
+  /** Commands run around tool calls. They run like run_command (the same allowed programs, in the scratch copy) but need no approval, since the user wrote them. */
+  hooks?: Hooks;
+  /** The agent may hand a question to a read-only helper with the `delegate` tool (default true; a helper cannot delegate). */
+  delegation?: boolean;
+  /** Only read and search: no file changes, no commands, no outside tools. Used for helpers. */
+  readOnly?: boolean;
+  depth?: number;
   task: string;
   llm: LlmClient;
   ws: ShadowWorkspace;
@@ -76,6 +101,8 @@ export interface AgentResult {
 
 /** Separates the project map from the task. The map comes first so that every task on the same project shares one long prefix, which a model server can keep in its KV cache. */
 export const TASK_MARKER = "\n\nTask: ";
+
+const WRITE_OR_RUN = new Set(["write_file", "edit_file", "delete_file", "run_command", "use_tool", "delegate"]);
 
 export const SYSTEM_PROMPT = [
   "You are Clutor, a careful software engineer working inside a project folder through tools.",
@@ -157,7 +184,11 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
   const maxRetries = o.maxVerifyRetries ?? 3;
   const limit = o.contextChars ?? 60_000;
   const json = o.llm.toolMode === "json";
-  const ctx: ToolContext = { ws: o.ws, ...(o.runCommand ? { runCommand: o.runCommand } : {}), ...(o.approve ? { approve: o.approve } : {}), ...(o.external ? { external: o.external } : {}), ...(o.web ? { web: o.web } : {}) };
+  const delegate = !o.readOnly && (o.depth ?? 0) === 0 && o.delegation !== false ? async (task: string): Promise<string> => {
+    const sub = await runAgent({ task, llm: o.llm, ws: o.ws, maxSteps: 8, readOnly: true, depth: 1, environmentHints: false, ...(o.signal ? { signal: o.signal } : {}), systemExtra: "You are a research helper. Read and search the project to answer the question, then call finish with a short, concrete report (file names and what they do). You cannot change anything." });
+    return sub.summary || "(the helper found nothing)";
+  } : undefined;
+  const ctx: ToolContext = { ws: o.ws, ...(delegate ? { delegate } : {}), ...(o.runCommand ? { runCommand: o.runCommand } : {}), ...(o.approve ? { approve: o.approve } : {}), ...(o.external ? { external: o.external } : {}), ...(o.web ? { web: o.web } : {}) };
 
   const head: ChatMessage[] = [
     { role: "system", content: [SYSTEM_PROMPT, o.environmentHints === false ? "" : await workspaceHints(o.ws), o.systemExtra ?? "", json ? jsonProtocolPrompt() : ""].filter(Boolean).join("\n\n") },
@@ -253,9 +284,22 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
         emit({ type: "tool_call", step: steps, name: v.call.name, args: v.call.args });
         const wa = v.call.args as { path?: unknown; content?: unknown };
         const again = v.call.name === "write_file" && typeof wa.path === "string" && typeof wa.content === "string" && writtenSame.get(wa.path) === wa.content;
-        const r = again
+        const subst = (c: string): string => c.replace(/\{path\}/g, typeof wa.path === "string" ? wa.path : "");
+        const hook = async (h: HookDef): Promise<{ ok: boolean; text: string }> => {
+          const command = subst(h.command), plan = planCommand(command);
+          if (!plan.ok) return { ok: false, text: `hook \`${command}\` not allowed: ${plan.reason}` };
+          if (!o.runCommand) return { ok: true, text: "" };
+          const x = await o.runCommand(plan, command);
+          return { ok: x.exitCode === 0 && !x.timedOut, text: `hook \`${command}\` ${x.timedOut ? "timed out" : `exit code ${x.exitCode}`}\n${x.output.slice(0, 2000)}` };
+        };
+        let blocked = "";
+        if (o.hooks?.pre) for (const h of o.hooks.pre) if (hookMatches(h, v.call.name)) { const x = await hook(h); if (!x.ok) { blocked = x.text; break; } }
+        const refused = o.readOnly && (WRITE_OR_RUN.has(v.call.name))
+          ? "this helper is read-only: it can read and search, nothing else" : blocked ? `Blocked by a hook, so this call was not made:\n${blocked}` : "";
+        const r = refused ? { ok: false, output: refused } : again
           ? { ok: true, output: `${wa.path as string} was already written with exactly this content. Do not write it again: go on to the next file, or call finish if every file exists.` }
           : await executeTool(ctx, v.call.name as ToolName, v.call.args);
+        if (!refused && !again && r.ok && o.hooks?.post) for (const h of o.hooks.post) if (hookMatches(h, v.call.name)) { const x = await hook(h); if (x.text) r.output = `${r.output}\n\n[${x.text}]`; }
         if (!again && v.call.name === "write_file" && r.ok && typeof wa.path === "string" && typeof wa.content === "string") writtenSame.set(wa.path, wa.content);
         if (r.command) commands.push(r.command);
         out = r;
@@ -290,6 +334,12 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
         (turns[turns.length - 1] as ChatMessage[]).push({ role: "user", content: `You called finish, but these files do not exist: ${missing.join(", ")}. The task or your summary names them. Create each one now with write_file (the whole file in args.content, complete and working, no placeholders), then call finish again. If a file is not needed, say so in finish and do not mention it.` });
         continue;
       }
+    }
+
+    if (finished !== undefined && o.hooks?.stop?.length && o.runCommand && heals < maxRetries) {
+      let failed = "";
+      for (const h of o.hooks.stop) { const plan = planCommand(h.command); if (!plan.ok) continue; const x = await o.runCommand(plan, h.command); if (x.exitCode !== 0 || x.timedOut) { failed = `\`${h.command}\` ${x.timedOut ? "timed out" : `exited with code ${x.exitCode}`}:\n${x.output.slice(0, 3000)}`; break; } }
+      if (failed) { heals++; finished = undefined; turns.push([{ role: "user", content: `A check the user set up failed (attempt ${heals} of ${maxRetries}): ${failed}\nFix the files, then call finish again.` }]); continue; }
     }
 
     if (finished !== undefined) {

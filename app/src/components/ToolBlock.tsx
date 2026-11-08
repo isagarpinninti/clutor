@@ -11,7 +11,7 @@ export function ToolBlock({ block, onOpenFile, verbose }: { block: Extract<Block
   return (
     <div className={`tool ${block.status}`}>
       <button type="button" className="tool-head" onClick={() => setOpen((o) => !o)} aria-expanded={open} disabled={!detail}>
-        <span className="tool-state" aria-label={block.status}>{block.status === "running" ? <Spark size={12} /> : block.status === "ok" ? <CheckIcon /> : <CloseIcon />}</span>
+        <span className="tool-state" aria-label={block.status}>{block.status === "running" ? <Spark size={18} /> : block.status === "ok" ? <CheckIcon /> : <CloseIcon />}</span>
         <span className="tool-label">{block.label}</span>
         {block.path && onOpenFile ? <span role="link" tabIndex={0} className="tool-open" onClick={(e) => { e.stopPropagation(); onOpenFile(block.path as string); }} onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); onOpenFile(block.path as string); } }}>open</span> : null}
         {detail ? <span className={`tool-caret${open ? " open" : ""}`}>›</span> : null}

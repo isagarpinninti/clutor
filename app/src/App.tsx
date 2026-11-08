@@ -197,6 +197,11 @@ export function App() {
     onApprovals: setApprovals,
     log: (e) => { if (e.device) void bridge.remote.log(JSON.stringify({ at: Date.now(), device: e.device, what: e.what })); },
     id: uid, titleFrom,
+    rules: {
+      get: (root) => { try { const all = JSON.parse(localStorage.getItem("clutor.allow") ?? "{}") as Record<string, string[]>; return all[root] ?? []; } catch { return []; } },
+      add: (root, command) => { try { const all = JSON.parse(localStorage.getItem("clutor.allow") ?? "{}") as Record<string, string[]>; all[root] = [...new Set([...(all[root] ?? []), command])].slice(-50); localStorage.setItem("clutor.allow", JSON.stringify(all)); } catch { /* not remembered */ } },
+      clear: (root) => { try { const all = JSON.parse(localStorage.getItem("clutor.allow") ?? "{}") as Record<string, string[]>; delete all[root]; localStorage.setItem("clutor.allow", JSON.stringify(all)); } catch { /* nothing to clear */ } },
+    },
   }), [queue, mcp, setCodeSessions]);
 
   // Phones: what a paired phone sends is checked and carried out here, and each phone is kept up to date with what it is watching.
