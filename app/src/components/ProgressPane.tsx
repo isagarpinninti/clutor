@@ -2,6 +2,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 import { currentStage, type Turn } from "../agent/sessions";
 import { liveStore, parseLive } from "../agent/live";
 import { Logo } from "./Logo";
+import { useVerb } from "./Thinking";
 import { PlanList, fmtElapsed, useSince, useTotal } from "./RunProgress";
 import { Patch } from "./Patch";
 import { CheckIcon, CloseIcon } from "./icons";
@@ -20,13 +21,16 @@ export function WorkingLine({ turn, onOpen }: { turn: Turn; onOpen?: () => void 
   const reply = useLiveReply(turn.id);
   const live = reply ? parseLive(reply) : undefined;
   const stage = currentStage(turn);
-  const label = live && live.label !== "Thinking" ? live.label : stage.label;
-  const secs = useSince(label, true);
+  const idle = !(live && live.label !== "Thinking") && stage.label === "Planning the change";
+  const verb = useVerb(true);
+  const label = live && live.label !== "Thinking" ? live.label : idle ? verb : stage.label;
+  const total = useTotal(turn.created, true);
+  const tokens = live ? Math.round(live.chars / 4) : 0;
   return (
     <div className="working" role="status" aria-live="polite">
       <Logo size={18} state="thinking" />
-      <span className="shimmer">{label}…</span>
-      <small className="stage-time">{fmtElapsed(secs)}</small>
+      <span className="shimmer" key={label}>{label}…</span>
+      <small className="stage-time">{fmtElapsed(total)}{tokens > 0 ? ` · ↓ ${tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tokens` : ""}</small>
       {onOpen ? <button type="button" className="link-btn" onClick={onOpen}>Progress</button> : null}
     </div>
   );

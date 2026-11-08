@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 
-const VERBS = ["Thinking", "Reasoning", "Working it out", "Putting it together", "Almost there"];
+export const VERBS = ["Thinking", "Pondering", "Brewing", "Tinkering", "Working it out", "Sketching it out", "Wiring things up", "Putting it together", "Polishing", "Almost there"];
+
+/** A word that changes every few seconds while `running`, so a long wait keeps moving. */
+export function useVerb(running: boolean, every = 3800): string {
+  const [i, setI] = useState(0);
+  useEffect(() => { if (!running) return; const id = setInterval(() => setI((v) => (v + 1) % VERBS.length), every); return () => clearInterval(id); }, [running, every]);
+  return VERBS[i] as string;
+}
 
 /** A small orb that breathes, with a ripple that fades outward. Calm on purpose: it says "working", not "loading". */
 export function Spark({ size = 22 }: { size?: number }) {

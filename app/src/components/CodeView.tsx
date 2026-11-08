@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { bridge } from "../bridge";
 import type { AgentController, Approval, Permission } from "../agent/controller";
-import { folderName, lastTurn, reviewable, type CodeSession } from "../agent/sessions";
+import { folderName, groupBlocks, lastTurn, reviewable, type CodeSession } from "../agent/sessions";
 import { Markdown } from "./Markdown";
 import { ModePicker, type ModeOption } from "./ModePicker";
 import { PlusMenu } from "./PlusMenu";
@@ -9,7 +9,9 @@ import type { OverviewPane } from "./OverviewPane";
 import { SidePanel, type PanelTab } from "./SidePanel";
 import { Alert } from "./Alert";
 import { WorkingLine } from "./ProgressPane";
-import { ToolBlock } from "./ToolBlock";
+import { ToolGroup } from "./ToolGroup";
+import { Logo } from "./Logo";
+import { fmtElapsed } from "./RunProgress";
 import { CheckIcon, CopyIcon, EditIcon, FolderIcon, RedoIcon, SendIcon, StopIcon } from "./icons";
 
 export type { Permission };
@@ -135,10 +137,12 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
                   )}
                 </div>
                 <div className="turn-body">
-                  {t.blocks.map((b) => b.kind === "text" ? <p key={b.id} className="turn-text">{b.text}</p>
+                  {groupBlocks(t.blocks).map((b) => b.kind === "text" ? <p key={b.id} className="turn-text">{b.text}</p>
                     : b.kind === "note" ? (b.bad ? <Alert key={b.id} tone="error" title="A step went wrong">{b.text}</Alert> : <p key={b.id} className="turn-hint"><RedoSmall />{b.text}{b.count && b.count > 1 ? <i>×{b.count}</i> : null}</p>)
-                    : <ToolBlock key={b.id} block={b} verbose={verbose} onOpenFile={(p) => { setFocusFile(p); onTab("files"); onPanel(true); }} />)}
+                    : b.kind === "group" ? <ToolGroup key={b.id} tools={b.tools} verbose={verbose} onOpenFile={(p) => { setFocusFile(p); onTab("files"); onPanel(true); }} />
+                    : null)}
                   {t.status === "running" && !approval ? <WorkingLine turn={t} onOpen={() => { onTab("overview"); onPanel(true); }} /> : null}
+                  {t.ended && t.status !== "running" && t.blocks.length > 0 ? <p className="worked"><Logo size={14} />{t.status === "stopped" ? "Stopped after" : "Worked for"} {fmtElapsed(Math.max(1, Math.round((t.ended - t.created) / 1000)))}{t.usage ? ` · ${t.usage.steps} step${t.usage.steps === 1 ? "" : "s"} · ${t.usage.tokens.toLocaleString()} tokens` : ""}</p> : null}
                   {t.summary ? <div className="turn-summary"><Markdown text={t.summary} /></div> : null}
                   {t.status === "done" && !t.planOnly && !t.diffs?.length && !t.lost && !t.blocks.some((b) => b.kind === "tool" && b.name === "run_command") ? <Alert tone="warn" title="Nothing was changed" action={ready && !running ? { label: "Try again", onClick: () => retry(t.task) } : undefined}>No files were created or edited. If you asked for a change, the model did not make it: try again, or choose a more capable model.</Alert> : null}
                   {t.status === "interrupted" ? <Alert tone="warn" title="This task was interrupted" action={ready && !running ? { label: "Try again", onClick: () => retry(t.task) } : undefined}>The app was closed while it ran.</Alert> : null}
@@ -184,7 +188,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
                 : <button type="button" className="round send" onClick={start} disabled={!ready || !task.trim()} aria-label="Run"><SendIcon /></button>}
             </div>
           </div>
-          <p className="fineprint">{perm === "plan" ? "Plan only: nothing will be changed." : "Every change is shown to you before it is written."}</p>
+          <p className="fineprint">{perm === "plan" ? "Plan only: nothing will be changed." : "Enter to send · Shift+Enter for a new line · files are written to the folder when the task ends, and Undo restores it."}</p>
         </div>
       </div>
       <SidePanel host={bridge.host} root={active.root} turn={withChanges} progress={last} focusFile={focusFile} onApply={() => void apply()} onDiscard={discard} onUndo={() => void undo()} onClose={() => onPanel(false)} busy={applying || running} error={error} tab={tab} onTab={onTab} hidden={!panel} overview={{ ...overviewProps, session: active }} />

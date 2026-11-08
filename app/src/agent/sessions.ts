@@ -88,6 +88,46 @@ export function toolLabel(name: string, args: Record<string, unknown>): { label:
   }
 }
 
+/** Tool steps that follow each other, shown as one line ("Read 2 files, ran 3 commands") that opens to the steps. */
+export type Item = Block | { id: string; kind: "group"; tools: Array<Extract<Block, { kind: "tool" }>> };
+export function groupBlocks(blocks: Block[]): Item[] {
+  const out: Item[] = [];
+  for (const b of blocks) {
+    if (b.kind !== "tool") { out.push(b); continue; }
+    const last = out[out.length - 1];
+    if (last && last.kind === "group") last.tools.push(b);
+    else out.push({ id: `g${b.id}`, kind: "group", tools: [b] });
+  }
+  return out;
+}
+
+const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
+/** What a run of steps did, in words: "Read 2 files, wrote 1 file, ran 3 commands". */
+export function summarizeTools(tools: Array<Extract<Block, { kind: "tool" }>>): string {
+  const n = { read: 0, search: 0, write: 0, edit: 0, del: 0, run: 0, web: 0, other: 0 };
+  for (const t of tools) {
+    if (t.name === "read_file" || t.name === "list_files" || t.name === "repo_map") n.read++;
+    else if (t.name === "search") n.search++;
+    else if (t.name === "write_file") n.write++;
+    else if (t.name === "edit_file") n.edit++;
+    else if (t.name === "delete_file") n.del++;
+    else if (t.name === "run_command") n.run++;
+    else if (t.name === "web_search" || t.name === "fetch_url") n.web++;
+    else if (t.name !== "update_plan") n.other++;
+  }
+  const parts: string[] = [];
+  if (n.read) parts.push(`read ${plural(n.read, "file")}`);
+  if (n.search) parts.push(`searched ${plural(n.search, "time")}`);
+  if (n.write) parts.push(`wrote ${plural(n.write, "file")}`);
+  if (n.edit) parts.push(`edited ${plural(n.edit, "file")}`);
+  if (n.del) parts.push(`deleted ${plural(n.del, "file")}`);
+  if (n.run) parts.push(`ran ${plural(n.run, "command")}`);
+  if (n.web) parts.push(`browsed ${plural(n.web, "page")}`);
+  if (n.other) parts.push(`used ${plural(n.other, "tool")}`);
+  const s = parts.join(", ");
+  return s ? s[0]!.toUpperCase() + s.slice(1) : "Planned";
+}
+
 /** Folds one agent event into a turn's blocks. */
 export function applyEvent(blocks: Block[], e: AgentEvent): Block[] {
   switch (e.type) {

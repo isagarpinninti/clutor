@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@core/agent/loop";
-import { applyEvent, applyTurnEvent, completePlan, tickPlan, currentStage, groupByProject, parsePlan, newSession, reviewable, sessionDot, toolLabel, toSaved, type CodeSession, type Turn } from "./sessions";
+import { applyEvent, applyTurnEvent, completePlan, tickPlan, groupBlocks, summarizeTools, currentStage, groupByProject, parsePlan, newSession, reviewable, sessionDot, toolLabel, toSaved, type CodeSession, type Turn } from "./sessions";
 
 const turn = (over: Partial<Turn> = {}): Turn => ({ id: "t", task: "x", created: 1, status: "done", blocks: [], ...over });
 const sess = (over: Partial<CodeSession> = {}): CodeSession => ({ ...newSession("/p/app", 1), ...over });
@@ -91,5 +91,18 @@ describe("plan ticking", () => {
   });
   it("marks every step done when the task finishes", () => {
     expect(completePlan(plan)?.every((s) => s.state === "done")).toBe(true);
+  });
+});
+
+describe("grouping steps", () => {
+  const tool = (id: string, name: string, status: "ok" | "running" = "ok") => ({ id, kind: "tool" as const, name, label: name, status });
+  it("joins steps that follow each other and keeps text between them apart", () => {
+    const items = groupBlocks([tool("1", "read_file"), tool("2", "read_file"), { id: "t", kind: "text", text: "hi" }, tool("3", "run_command")]);
+    expect(items.map((i) => i.kind)).toEqual(["group", "text", "group"]);
+    const first = items[0];
+    expect(first && first.kind === "group" ? first.tools.length : 0).toBe(2);
+  });
+  it("says what a run of steps did", () => {
+    expect(summarizeTools([tool("1", "read_file"), tool("2", "read_file"), tool("3", "write_file"), tool("4", "run_command"), tool("5", "run_command"), tool("6", "run_command")])).toBe("Read 2 files, wrote 1 file, ran 3 commands");
   });
 });

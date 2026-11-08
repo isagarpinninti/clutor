@@ -984,3 +984,20 @@ body.resizing * { transition: none !important; }
 .shell { min-width: 0; overflow: hidden; }
 .sidebar { max-width: 50vw; }
 @media (max-width: 1100px) { .side-panel { max-width: 92vw; } }
+
+/* ---- A transcript that keeps you company: grouped steps, a live line, "worked for" ---- */
+.tgroup { margin: 2px 0; }
+.tgroup-head { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 30px; padding: 2px 4px; background: none; border: 0; color: var(--muted); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; border-radius: 8px; }
+.tgroup-head:hover { color: var(--text); background: var(--g1); }
+.tgroup.running .tgroup-head { color: var(--text); }
+.tgroup.failed .tgroup-head .tool-state { color: var(--danger); }
+.tgroup-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .tgroup-text small { color: var(--muted); font-size: 12.5px; }
+.tgroup-body { margin: 0 0 6px 14px; padding-left: 10px; border-left: 1px solid var(--g2); }
+.worked { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; color: var(--muted); font-size: 12.5px; }
+.worked::after { content: ""; flex: 1; height: 1px; background: var(--g1); }
+.working .stage-time { border: 0; padding: 0; background: none; color: var(--muted); font-size: 12.5px; }
+.working .shimmer { font-size: 14px; }
+.composer { transition: border-color .15s, box-shadow .15s; }
+.composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.fineprint { font-size: 12px; color: var(--muted); }
+.turn-text { color: var(--g12, var(--text)); }
