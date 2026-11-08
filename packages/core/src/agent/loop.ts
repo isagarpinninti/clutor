@@ -20,6 +20,7 @@ export type AgentEvent =
   | { type: "partial"; step: number; text: string }   // the reply so far, while the model is still writing it
   | { type: "invalid"; step: number; error: string }
   | { type: "compact"; step: number; dropped: number }
+  | { type: "continue"; step: number }
   | { type: "diff"; diffs: FileDiff[] }
   | { type: "verify"; command: string; ok: boolean; ran: boolean; attempt: number; output: string }
   | { type: "done"; result: AgentResult };
@@ -197,6 +198,16 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
       if (o.signal?.aborted) { status = "aborted"; summary = "stopped by the user"; break; }
       status = "error"; error = e instanceof Error ? e.message : String(e); summary = `the model could not be reached: ${error}`;
       break;
+    }
+    // A reply that hit the length limit in the middle of a tool call (a long file) is continued from where it stopped, not thrown away: the model carries on writing the same call.
+    for (let more = 0; more < 3 && json && o.llm.canContinue && !o.signal?.aborted && looksCutOff(reply.content ?? ""); more++) {
+      emit({ type: "continue", step: steps });
+      try {
+        const next = await o.llm.chat(messages, { ...(o.signal ? { signal: o.signal } : {}), prefill: reply.content ?? "", onPartial: (text) => emit({ type: "partial", step: steps, text }) });
+        if ((next.content ?? "").length <= (reply.content ?? "").length) break;
+        usage.promptTokens += next.usage?.promptTokens ?? 0; usage.completionTokens += next.usage?.completionTokens ?? 0;
+        reply = next;
+      } catch { break; }   // for example the window is full: what there is gets the usual "cut off" handling
     }
     if (o.signal?.aborted) { status = "aborted"; summary = "stopped by the user"; break; }   // a reply cut short by Stop is not acted on or shown
     usage.promptTokens += reply.usage?.promptTokens ?? 0;

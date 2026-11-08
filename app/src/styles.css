@@ -947,7 +947,8 @@ html, body, .app, .main { background: var(--bg); }
 .working .link-btn { margin-left: auto; font-size: 12px; color: var(--muted); }
 
 /* ---- Resizable panels, the session panel, activity ---- */
-.side-panel { width: var(--panel-w, 400px); position: relative; }
+.side-panel { width: var(--panel-w, 400px); }
+@media (min-width: 1101px) { .side-panel { position: relative; } }
 .sidebar { position: relative; }
 .resizer { position: absolute; top: 0; bottom: 0; width: 7px; z-index: 20; cursor: col-resize; touch-action: none; }
 .resizer.left { left: -4px; } .resizer.right { right: -4px; }
@@ -965,4 +966,21 @@ body.resizing * { transition: none !important; }
 .pp-line .counts { font-size: 12px; font-family: var(--mono); } .counts .add { color: var(--ok, #4ade80); font-style: normal; } .counts .del { color: var(--danger); font-style: normal; }
 .pp-detail { margin: 0 0 4px 26px; font-size: 12px; } .pp-detail summary { cursor: pointer; color: var(--muted); }
 .pp-out { margin: 4px 0 0; padding: 8px 10px; max-height: 180px; overflow: auto; background: var(--g1); border: 1px solid var(--g2); font: 11.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
-@media (max-width: 1100px) { .side-panel { width: min(var(--panel-w, 400px), 92vw); } }
+@media (max-width: 1100px) { .side-panel { position: absolute; width: min(var(--panel-w, 400px), 92vw); } }
+
+/* ---- Fixes: scrolling and width of the side panel, compact diffs ---- */
+.side-panel:not([hidden]) { min-width: 280px; } .side-panel { max-width: 75vw; overflow: hidden; }
+.side-panel > .panel-body { min-width: 0; overflow-x: hidden; overflow-y: auto; }
+.session-body { overflow-y: auto; }
+.session-body > * { flex: none; min-width: 0; }
+.panel-body .patch { overflow-x: auto; max-width: 100%; }
+.panel-body .patch div { white-space: pre; }
+.panel-body details, .panel-body .filediff { min-width: 0; max-width: 100%; }
+.pp-steps li, .pp-line, .pp-label { min-width: 0; }
+.patch-more { margin: 4px 0 8px; }
+.pp-code { max-height: 140px; }
+.code-layout { min-width: 0; overflow: hidden; }
+.code-main { min-width: 0; }
+.shell { min-width: 0; overflow: hidden; }
+.sidebar { max-width: 50vw; }
+@media (max-width: 1100px) { .side-panel { max-width: 92vw; } }

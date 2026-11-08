@@ -109,6 +109,7 @@ export function applyEvent(blocks: Block[], e: AgentEvent): Block[] {
       const d = e.diffs.find((x) => x.path === b.path);
       return d?.patch ? { ...b, patch: d.patch } : b;
     });
+    case "continue": return blocks;   // a long file is being finished in a second go; nothing to show
     case "compact": {
       const last = blocks[blocks.length - 1];
       const text = "The conversation was compacted: older steps were replaced by a short record so the task could continue.";
@@ -134,8 +135,25 @@ export function applyTurnEvent(t: Turn, e: AgentEvent): Turn {
     const plan = parsePlan(e.args["steps"]);
     if (plan.length) return { ...t, plan };
   }
-  return { ...t, blocks: applyEvent(t.blocks, e) };
+  const next: Turn = { ...t, blocks: applyEvent(t.blocks, e) };
+  // A weak model often forgets to tick its own plan: a step that names a file is done when that file has been written.
+  if (e.type === "tool_result" && e.ok && WRITES.has(e.name) && next.plan?.length) {
+    const b = [...next.blocks].reverse().find((x): x is Extract<Block, { kind: "tool" }> => x.kind === "tool" && x.name === e.name && x.status === "ok" && !!x.path);
+    if (b?.path) return { ...next, plan: tickPlan(next.plan, b.path) };
+  }
+  return next;
 }
+
+/** Marks the steps that name `path` (or its file name) as done, and makes the first step still to do the active one. */
+export function tickPlan(plan: PlanStep[], path: string): PlanStep[] {
+  const full = path.toLowerCase(), base = (full.split("/").pop() ?? full);
+  let out = plan.map((s) => (s.state !== "done" && (s.text.toLowerCase().includes(full) || s.text.toLowerCase().includes(base)) ? { ...s, state: "done" as const } : s));
+  if (!out.some((s) => s.state === "active")) { const i = out.findIndex((s) => s.state === "todo"); if (i >= 0) out = out.map((s, j) => (j === i ? { ...s, state: "active" as const } : s)); }
+  return out;
+}
+
+/** The task finished: every step of its plan is done. */
+export const completePlan = (plan: PlanStep[] | undefined): PlanStep[] | undefined => plan?.map((s) => ({ ...s, state: "done" as const }));
 
 export type Stage = "planning" | "exploring" | "writing" | "checking" | "researching";
 const STAGE_OF: Record<string, Stage> = { read_file: "exploring", list_files: "exploring", search: "exploring", repo_map: "exploring", write_file: "writing", edit_file: "writing", delete_file: "writing", run_command: "checking", web_search: "researching", fetch_url: "researching", use_tool: "researching" };

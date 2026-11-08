@@ -73,7 +73,7 @@ export function ProgressPane({ turn, onOpenFile }: { turn: Turn | undefined; onO
         <section className="pp-now" aria-label="Right now">
           <div className="pp-now-head"><Logo size={16} state="thinking" /><b>{nowLabel}</b><small>{fmtElapsed(inStep)}</small>{live ? <small className="pp-chars">{kb(live.chars)}</small> : null}</div>
           {live?.prose && !preview ? <p className="pp-prose">{live.prose.slice(-600)}</p> : null}
-          {preview !== undefined ? <pre ref={code} className="pp-code" aria-label="The file as it is written">{preview.split("\n").slice(-40).join("\n") || " "}</pre> : null}
+          {preview !== undefined ? <pre ref={code} className="pp-code" aria-label="The file as it is written">{preview.split("\n").slice(-8).join("\n") || " "}</pre> : null}
           {!live ? <p className="pp-prose">Reading the task and deciding what to do first…</p> : null}
         </section>
       ) : null}

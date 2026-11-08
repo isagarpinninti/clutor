@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "@core/agent/loop";
-import { applyEvent, applyTurnEvent, currentStage, groupByProject, parsePlan, newSession, reviewable, sessionDot, toolLabel, toSaved, type CodeSession, type Turn } from "./sessions";
+import { applyEvent, applyTurnEvent, completePlan, tickPlan, currentStage, groupByProject, parsePlan, newSession, reviewable, sessionDot, toolLabel, toSaved, type CodeSession, type Turn } from "./sessions";
 
 const turn = (over: Partial<Turn> = {}): Turn => ({ id: "t", task: "x", created: 1, status: "done", blocks: [], ...over });
 const sess = (over: Partial<CodeSession> = {}): CodeSession => ({ ...newSession("/p/app", 1), ...over });
@@ -78,5 +78,18 @@ describe("the plan and the stages of a task", () => {
     expect(currentStage(run("read_file", { path: "a.ts" }))).toMatchObject({ stage: "exploring", label: "Reading a.ts" });
     expect(currentStage(run("write_file", { path: "b.ts" }))).toMatchObject({ stage: "writing", label: "Writing b.ts" });
     expect(currentStage(run("write_file", { path: "b.ts" }, "ok")).seen).toEqual(["writing"]);
+  });
+});
+
+describe("plan ticking", () => {
+  const plan = parsePlan("[>] Create index.html\n[ ] Create style.css\n[ ] Check it works");
+  it("marks the step that names a written file as done and moves on to the next", () => {
+    const out = tickPlan(plan, "style.css");
+    expect(out.map((s) => s.state)).toEqual(["active", "done", "todo"]);
+    const both = tickPlan(out, "index.html");
+    expect(both.map((s) => s.state)).toEqual(["done", "done", "active"]);
+  });
+  it("marks every step done when the task finishes", () => {
+    expect(completePlan(plan)?.every((s) => s.state === "done")).toBe(true);
   });
 });

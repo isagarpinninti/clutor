@@ -21,7 +21,9 @@ export interface LlmClient {
   /** `native` sends the tool schemas to the API; `json` asks the model to answer with a JSON object and parses it. */
   readonly toolMode: "native" | "json";
   /** `onPartial` (optional) is called with the reply so far while it is being written, so a long reply (a whole file) can be shown as it grows. */
-  chat(messages: ChatMessage[], opts?: { signal?: AbortSignal; onPartial?: (text: string) => void }): Promise<ChatResult>;
+  chat(messages: ChatMessage[], opts?: { signal?: AbortSignal; onPartial?: (text: string) => void; /** Text of this reply already written: the model carries on from the end of it and the result holds the whole reply. */ prefill?: string }): Promise<ChatResult>;
+  /** True when `chat` honours `prefill`, so a reply that was cut off at the length limit can be continued instead of thrown away. */
+  readonly canContinue?: boolean;
 }
 
 export interface OpenAiClientOptions {

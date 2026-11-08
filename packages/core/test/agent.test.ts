@@ -425,3 +425,30 @@ describe("auto-compact", () => {
     expect(r.status).toBe("finished");
   });
 });
+
+describe("continuing a cut-off reply", () => {
+  it("finishes a long file in a second go instead of discarding the first part", async () => {
+    const full = JSON.stringify({ tool: "write_file", args: { path: "big.html", content: "<p>one</p>\n<p>two</p>\n<p>three</p>" } });
+    const cut = full.slice(0, 50);
+    const calls: Array<string | undefined> = [];
+    const client: LlmClient = {
+      model: "scripted", toolMode: "json", canContinue: true,
+      async chat(_m, o) {
+        calls.push(o?.prefill);
+        if (calls.length === 1) return { content: cut, toolCalls: [] };
+        if (o?.prefill === cut) return { content: full, toolCalls: [] };
+        return say("finish", { summary: "Wrote big.html." });
+      },
+    };
+    const events: AgentEvent[] = [];
+    const ws = new ShadowWorkspace(MemoryProject.from({}));
+    const r = await runAgent({ task: "make big.html", llm: client, ws, onEvent: (e) => events.push(e) });
+    expect(calls[0]).toBeUndefined();
+    expect(calls[1]).toBe(cut);
+    expect(events.some((e) => e.type === "continue")).toBe(true);
+    expect(events.some((e) => e.type === "invalid")).toBe(false);
+    expect((await ws.diffs()).map((d) => d.path)).toEqual(["big.html"]);
+    expect(r.status).toBe("finished");
+  });
+});
+

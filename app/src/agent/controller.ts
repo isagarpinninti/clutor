@@ -4,7 +4,7 @@ import type { AgentSession } from "./llm";
 import type { McpManager } from "./mcp";
 import { runCodingTask } from "./runner";
 import { liveStore } from "./live";
-import { applyTurnEvent, reviewable, type CodeSession, type Turn } from "./sessions";
+import { applyTurnEvent, completePlan, reviewable, type CodeSession, type Turn } from "./sessions";
 
 /**
  * Runs coding tasks, asks for approvals, and applies or undoes changes. It is the one place that does these things, so the desktop screen and a paired phone behave the same:
@@ -84,7 +84,7 @@ export class AgentController {
       const diffs = o.perm === "plan" ? [] : out.result.diffs.filter((x) => x.patch || x.status !== "modified");
       this.d.onUsage({ steps: out.result.steps, tokens: out.result.usage.completionTokens });
       this.patch(sessionId, turn.id, (t) => ({
-        ...t, ended: Date.now(), status: out.result.status === "aborted" ? "stopped" : out.result.status === "error" || out.result.status === "stuck" ? "failed" : "done", summary: out.result.summary,
+        ...t, ...(out.result.status === "finished" && t.plan ? { plan: completePlan(t.plan) as NonNullable<typeof t.plan> } : {}), ended: Date.now(), status: out.result.status === "aborted" ? "stopped" : out.result.status === "error" || out.result.status === "stuck" ? "failed" : "done", summary: out.result.summary,
         usage: { steps: out.result.steps, tokens: out.result.usage.completionTokens }, ...(out.result.status === "stuck" ? { error: "The model kept answering in text and did not use the tools, so nothing was changed. Its last answer is shown above." } : out.result.error ? { error: out.result.error } : {}), ...(diffs.length ? { changes, diffs } : {}),
       }));
     } catch (e) {

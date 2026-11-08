@@ -85,7 +85,9 @@ export class EngineSession {
       if (o.signal?.aborted) onAbort();
       const full = renderChat(this.template, messages, { thinking: o.thinking ?? false }) + (o.prefill ?? "");
       let toSend: string, restarted = false;
+      const same = this.fed !== null && full === this.fed;   // continuing a reply: the engine already holds everything
       if (this.fed !== null && full.length > this.fed.length && full.startsWith(this.fed)) toSend = full.slice(this.fed.length);
+      else if (same) toSend = "";
       else {
         this.t.send({ op: "reset" });
         for (;;) { const e = await this.t.queue.next(); if (!e) throw this.dead(); if (e.ev === "reset") break; }
@@ -93,9 +95,9 @@ export class EngineSession {
         toSend = full;
         restarted = true;
       }
-      this.t.send({ op: "append", text: toSend });
+      if (toSend) this.t.send({ op: "append", text: toSend });
       let newTokens = 0, prefillSecs = 0;
-      for (;;) {
+      if (toSend) for (;;) {
         const e = await this.t.queue.next();
         if (!e) throw this.dead();
         if (e.ev === "progress") { yield { type: "progress", processed: Number(e["done"]), total: Number(e["total"]) }; continue; }
