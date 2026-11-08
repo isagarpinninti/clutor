@@ -166,6 +166,7 @@ static int parse(cl_model *m, const uint8_t *buf, size_t n, char *err, size_t er
   free(rels);
 
   m->n_layers = (uint32_t)find_int(kv, nk, m->arch, "block_count");
+  if (m->n_layers == 0 && !strcmp(m->arch, "clip")) m->n_layers = (uint32_t)find_int(kv, nk, m->arch, "vision.block_count");   /* a vision projector keeps its block count under "vision." */
   m->n_experts = (uint32_t)find_int(kv, nk, m->arch, "expert_count");
   m->n_used = (uint32_t)find_int(kv, nk, m->arch, "expert_used_count");
   if (m->n_layers == 0 || m->n_layers > 4096) { snprintf(err, errlen, "the file does not say how many layers it has"); return -1; }

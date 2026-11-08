@@ -11,7 +11,7 @@ import os
 import subprocess
 import sys
 
-ARCHS = ["olmoe", "qwen3moe", "granitemoe", "qwen2", "llama", "qwen35"]
+ARCHS = ["olmoe", "qwen3moe", "qwen3vlmoe", "granitemoe", "qwen2", "llama", "qwen35"]
 BATCHES = ["64", "7", "1"]
 LONG_BATCHES = ["512", "256", "100"]   # a long prompt: a streamed run takes batches up to 512 tokens, so these cross the 64-token size the short prompt cannot reach
 LONG = " ".join(["the cat is in the room and a rat saw the hat on a mat"] * 14)

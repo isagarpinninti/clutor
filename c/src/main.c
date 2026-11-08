@@ -7,6 +7,7 @@
 #include "chat.h"
 #include "plat.h"
 #include "quant.h"
+#include "vision.h"
 #include <math.h>
 #include <time.h>
 #include <errno.h>
@@ -559,6 +560,42 @@ static int cmd_prefillcheck(int argc, char **argv) {
   return ok ? 0 : 1;
 }
 
+/* clutor-engine vision <mmproj.gguf> <picture.ppm> [--embd 2048] [--max-tokens 256]: runs the Qwen3-VL image encoder on a picture and prints what it produced. */
+static int cmd_vision(int argc, char **argv) {
+  if (argc < 2) { fprintf(stderr, "usage: clutor-engine vision <mmproj.gguf> <picture.ppm> [--embd N] [--max-tokens N]\n"); return 2; }
+  char err[256];
+  int w = 0, h = 0;
+  uint8_t *img = cl_image_load_ppm(argv[1], &w, &h);
+  if (!img) { fprintf(stderr, "cannot read %s (a binary PPM, P6, 8-bit)\n", argv[1]); return 1; }
+  cl_vision *v = cl_vision_open(argv[0], (int)num(argc, argv, "--embd", 2048), err, sizeof err);
+  if (!v) { fprintf(stderr, "%s\n", err); free(img); return 1; }
+  int ow, oh;
+  cl_vision_fit(w, h, (int)num(argc, argv, "--max-tokens", 256), &ow, &oh);
+  uint8_t *fit = (ow == w && oh == h) ? img : cl_image_resize(img, w, h, ow, oh);
+  struct timespec a, b;
+  clock_gettime(CLOCK_MONOTONIC, &a);
+  cl_vision_out o;
+  int rc = fit ? cl_vision_encode(v, fit, ow, oh, &o, err, sizeof err) : (snprintf(err, sizeof err, "out of memory"), 1);
+  clock_gettime(CLOCK_MONOTONIC, &b);
+  if (rc) { fprintf(stderr, "%s\n", err); cl_vision_close(v); return 1; }
+  printf("picture %d x %d -> %d x %d -> %d tokens (%d x %d grid), %d DeepStack sets, %.2f s\n", w, h, ow, oh, o.n, o.gh, o.gw, o.n_ds, (double)(b.tv_sec - a.tv_sec) + (double)(b.tv_nsec - a.tv_nsec) / 1e9);
+  const int E = (int)num(argc, argv, "--embd", 2048);
+  for (int k = -1; k < o.n_ds; k++) {
+    const float *x = k < 0 ? o.emb : o.ds[k];
+    double s = 0, ss = 0;
+    for (size_t i = 0; i < (size_t)o.n * E; i++) { s += x[i]; ss += (double)x[i] * x[i]; }
+    printf("%-9s mean %+.5f rms %.5f  first %+.4f %+.4f %+.4f %+.4f  last %+.4f\n", k < 0 ? "tokens" : "deepstack", s / ((double)o.n * E), sqrt(ss / ((double)o.n * E)), x[0], x[1], x[2], x[3], x[(size_t)o.n * E - 1]);
+  }
+  if (arg(argc, argv, "--out")) {   /* <prefix>.emb.f32 and <prefix>.ds0..2.f32: raw little-endian floats, n x embd each */
+    char name[512];
+    for (int k = -1; k < o.n_ds; k++) { snprintf(name, sizeof name, k < 0 ? "%s.emb.f32" : "%s.ds%d.f32", arg(argc, argv, "--out"), k); FILE *fp = fopen(name, "wb"); if (fp) { fwrite(k < 0 ? o.emb : o.ds[k], sizeof(float), (size_t)o.n * E, fp); fclose(fp); } }
+  }
+  cl_vision_out_free(&o); cl_vision_close(v);
+  if (fit != img) free(fit);
+  free(img);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) { usage(); return 2; }
   if (!strcmp(argv[1], "--version")) { puts(VERSION); return 0; }
@@ -570,6 +607,7 @@ int main(int argc, char **argv) {
   if (!strcmp(argv[1], "logits")) return cmd_logits(argc - 2, argv + 2);
   if (!strcmp(argv[1], "stream")) return cmd_stream(argc - 2, argv + 2);
   if (!strcmp(argv[1], "diskbench")) return cmd_diskbench(argc - 2, argv + 2);
+  if (!strcmp(argv[1], "vision")) return cmd_vision(argc - 2, argv + 2);
   if (!strcmp(argv[1], "prefillcheck")) return cmd_prefillcheck(argc - 2, argv + 2);
   usage();
   return strcmp(argv[1], "--help") ? 2 : 0;

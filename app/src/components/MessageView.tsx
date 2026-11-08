@@ -36,7 +36,7 @@ export function MessageView({ msg, streaming, showReasoning, job, position, onJo
     }
     return (
       <div className="msg user"><div className="who">You</div>
-        <div className="prompt">{msg.content}{msg.files?.length ? <div className="attach-row sent">{msg.files.map((f) => <span key={f.name} className="attach"><FileIcon /><span className="attach-name">{f.name}</span>{f.truncated ? <small>cut to fit</small> : null}</span>)}</div> : null}</div>
+        <div className="prompt">{msg.content}{msg.files?.length ? <div className="attach-row sent">{msg.files.map((f) => <span key={f.name} className="attach">{f.image ? <img className="attach-thumb" src={f.image.thumb} alt={f.name} /> : <FileIcon />}<span className="attach-name">{f.name}</span>{f.truncated ? <small>cut to fit</small> : null}</span>)}</div> : null}</div>
         <div className="msg-actions" role="toolbar" aria-label="Message actions">
           <button type="button" className="icon-btn tip" data-tip={copied ? "Copied" : "Copy"} onClick={copyUser} aria-label="Copy your message">{copied ? <CheckIcon /> : <CopyIcon />}</button>
           {onEdit ? <button type="button" className="icon-btn tip" data-tip="Edit" disabled={busy} onClick={() => { setDraft(msg.content); setEditing(true); }} aria-label="Edit your message"><EditIcon /></button> : null}

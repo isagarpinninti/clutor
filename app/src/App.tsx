@@ -231,7 +231,7 @@ export function App() {
     if (!attached.length) return {};
     const fit = fitAttachments(attached, state.ready?.nCtx ?? settings.ctx);
     if (fit.some((f) => f.truncated)) flash("The files are long, so they were cut to fit the model's context.");
-    return { files: fit.map(({ name, bytes, text, truncated }) => ({ name, bytes, text, truncated })) };
+    return { files: fit.map(({ id, name, bytes, text, truncated, image }) => ({ name, bytes, text, truncated, ...(image ? { id, image } : {}) })) };
   };
 
   const send = async (text: string, attached: Attachment[] = [], again?: { base: Msg[]; files?: Msg["files"] }): Promise<void> => {
@@ -338,7 +338,7 @@ export function App() {
   const haveModel = ready || !!wanted;
   const [prefill, setPrefill] = useState<{ text: string; n: number }>();
   const composer = (home: boolean) => (
-    <Composer busy={busy} disabled={!ready && !wanted} placeholder={ready || wanted ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t, f) => void send(t, f)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
+    <Composer vision={state.ready?.vision} busy={busy} disabled={!ready && !wanted} placeholder={ready || wanted ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t, f) => void send(t, f)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
   );
   const lastAssistant = active?.messages[active.messages.length - 1];
 

@@ -16,7 +16,7 @@ ifeq ($(OS),Windows_NT)
 endif
 # BUILD can point somewhere writable when the source sits in a read-only installed package: make BUILD=$HOME/.clutor/bin
 BUILD ?= build
-SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/quant.c src/meta.c src/xs.c src/forward.c src/tokenizer.c src/stream.c src/chat.c src/bench.c
+SRC = src/gguf.c src/cache.c src/route.c src/kernel.c src/quant.c src/meta.c src/xs.c src/forward.c src/tokenizer.c src/stream.c src/chat.c src/bench.c src/vision.c
 BIN = $(BUILD)/clutor-engine$(EXE)
 
 all: $(BIN)
@@ -56,6 +56,7 @@ GOLDEN_Q3 = build/tiny_qwen3moe.gguf
 GOLDEN_GR = build/tiny_granitemoe.gguf
 GOLDEN_Q2 = build/tiny_qwen2.gguf
 GOLDEN_LL = build/tiny_llama.gguf
+GOLDEN_VL = build/tiny_qwen3vlmoe.gguf
 GOLDEN_Q35 = build/tiny_qwen35.gguf   # default seed: the 8-bit path agrees to 5e-5 on it. Other seeds drift up to ~0.08 in the 8-bit path (rounding flips carried by the recurrent state); the float path agrees to 5e-5 on every seed tried
 golden-files: build
 	python3 test/tiny_olmoe.py write $(GOLDEN_GGUF)
@@ -64,6 +65,7 @@ golden-files: build
 	python3 test/tiny_olmoe.py write $(GOLDEN_Q2) --arch qwen2
 	python3 test/tiny_olmoe.py write $(GOLDEN_LL) --arch llama
 	python3 test/tiny_olmoe.py write $(GOLDEN_Q35) --arch qwen35
+	python3 test/tiny_olmoe.py write $(GOLDEN_VL) --arch qwen3vlmoe
 golden: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q3) --arch qwen3moe
@@ -71,9 +73,10 @@ golden: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q2) --arch qwen2
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_LL) --arch llama
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q35) --arch qwen35
+	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_VL) --arch qwen3vlmoe
 # The chat protocol (the terminal UI's way into the engine) on every architecture, checked against `generate`.
 chat-test: $(BIN) golden-files
-	for g in $(GOLDEN_GGUF) $(GOLDEN_Q3) $(GOLDEN_GR) $(GOLDEN_Q2) $(GOLDEN_LL) $(GOLDEN_Q35); do echo "== $$g"; python3 test/chat_protocol.py $(BIN) $$g || exit 1; done
+	for g in $(GOLDEN_GGUF) $(GOLDEN_Q3) $(GOLDEN_GR) $(GOLDEN_Q2) $(GOLDEN_LL) $(GOLDEN_Q35) $(GOLDEN_VL); do echo "== $$g"; python3 test/chat_protocol.py $(BIN) $$g || exit 1; done
 golden-paths: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q3) --arch qwen3moe
@@ -81,6 +84,7 @@ golden-paths: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q2) --arch qwen2
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_LL) --arch llama
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q35) --arch qwen35
+	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_VL) --arch qwen3vlmoe
 	$(CC) $(PATH_FLAGS) -DCL_FORCE_SCALAR $(SRC) src/main.c -o build/engine-scalar $(LDLIBS)
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check build/engine-scalar $(GOLDEN_Q3) --arch qwen3moe

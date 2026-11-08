@@ -12,17 +12,19 @@
 typedef struct { uint16_t d; uint8_t qs[16]; } b_q4_0;
 typedef struct { uint16_t d; uint8_t qh[4]; uint8_t qs[16]; } b_q5_0;
 typedef struct { uint16_t d; int8_t qs[32]; } b_q8_0;
+typedef struct { uint8_t scales[QK_K / 16]; uint8_t qs[QK_K / 4]; uint16_t d, dmin; } b_q2_K;   /* 2-bit values, 16 groups of 16 each with a 4-bit scale and a 4-bit minimum */
+typedef struct { uint8_t hmask[QK_K / 8]; uint8_t qs[QK_K / 4]; uint8_t scales[12]; uint16_t d; } b_q3_K;   /* 3-bit values (2 low bits + one bit of a mask, set means "not negative"), 16 six-bit scales */
 typedef struct { uint16_t d, dmin; uint8_t scales[12]; uint8_t qs[QK_K / 2]; } b_q4_K;
 typedef struct { uint16_t d, dmin; uint8_t scales[12]; uint8_t qh[QK_K / 8]; uint8_t qs[QK_K / 2]; } b_q5_K;
 typedef struct { uint8_t ql[QK_K / 2]; uint8_t qh[QK_K / 4]; int8_t scales[QK_K / 16]; uint16_t d; } b_q6_K;
-_Static_assert(sizeof(b_q4_K) == 144 && sizeof(b_q5_K) == 176 && sizeof(b_q6_K) == 210 && sizeof(b_q5_0) == 22 && sizeof(b_q8_0) == 34, "block sizes");
+_Static_assert(sizeof(b_q2_K) == 84 && sizeof(b_q3_K) == 110 && sizeof(b_q4_K) == 144 && sizeof(b_q5_K) == 176 && sizeof(b_q6_K) == 210 && sizeof(b_q5_0) == 22 && sizeof(b_q8_0) == 34, "block sizes");
 
 int cl_type_supported(uint32_t t) { return cl_type_block(t) != 0; }
 uint32_t cl_type_block(uint32_t t) {
-  switch (t) { case CL_T_F32: case CL_T_F16: case CL_T_BF16: return 1; case CL_T_Q4_0: case CL_T_Q5_0: case CL_T_Q8_0: return 32; case CL_T_Q4_K: case CL_T_Q5_K: case CL_T_Q6_K: return 256; default: return 0; }
+  switch (t) { case CL_T_F32: case CL_T_F16: case CL_T_BF16: return 1; case CL_T_Q4_0: case CL_T_Q5_0: case CL_T_Q8_0: return 32; case CL_T_Q2_K: case CL_T_Q3_K: case CL_T_Q4_K: case CL_T_Q5_K: case CL_T_Q6_K: return 256; default: return 0; }
 }
 uint32_t cl_type_bytes(uint32_t t) {
-  switch (t) { case CL_T_F32: return 4; case CL_T_F16: case CL_T_BF16: return 2; case CL_T_Q4_0: return 18; case CL_T_Q5_0: return 22; case CL_T_Q8_0: return 34; case CL_T_Q4_K: return 144; case CL_T_Q5_K: return 176; case CL_T_Q6_K: return 210; default: return 0; }
+  switch (t) { case CL_T_F32: return 4; case CL_T_F16: case CL_T_BF16: return 2; case CL_T_Q4_0: return 18; case CL_T_Q5_0: return 22; case CL_T_Q8_0: return 34; case CL_T_Q2_K: return 84; case CL_T_Q3_K: return 110; case CL_T_Q4_K: return 144; case CL_T_Q5_K: return 176; case CL_T_Q6_K: return 210; default: return 0; }
 }
 uint64_t cl_row_bytes(uint32_t t, uint64_t n) { return n / cl_type_block(t) * cl_type_bytes(t); }
 
@@ -100,6 +102,36 @@ static void deq_q6_K(const b_q6_K *x, float *y) {
   }
 }
 
+/* Q2_K / Q3_K. Element e of a block (0..255) sits in group g = e / 16 (a scale each); within the block, 128-element halves n hold four 32-element runs j, run j using bits 2j and 2j+1 of 32 bytes. */
+static inline int q2_val(const b_q2_K *x, int g, int l) { const int n = g / 8, j = (g % 8) / 2, half = g % 2; return (x->qs[32 * n + 16 * half + l] >> (2 * j)) & 3; }
+static inline int q3_val(const b_q3_K *x, int g, int l) {
+  const int n = g / 8, j = (g % 8) / 2, half = g % 2;
+  const int low = (x->qs[32 * n + 16 * half + l] >> (2 * j)) & 3;
+  return low - ((x->hmask[16 * half + l] & (1u << (4 * n + j))) ? 0 : 4);
+}
+/* The sixteen 6-bit scales of a Q3_K block, minus 32 (ggml packs them into 12 bytes). */
+static inline void q3_scales(const uint8_t *s, int8_t *out) {
+  uint32_t a[4];
+  memcpy(a, s, 12);
+  const uint32_t k1 = 0x03030303u, k2 = 0x0f0f0f0fu, tmp = a[2];
+  a[2] = ((a[0] >> 4) & k2) | (((tmp >> 4) & k1) << 4);
+  a[3] = ((a[1] >> 4) & k2) | (((tmp >> 6) & k1) << 4);
+  a[0] = (a[0] & k2) | (((tmp >> 0) & k1) << 4);
+  a[1] = (a[1] & k2) | (((tmp >> 2) & k1) << 4);
+  uint8_t raw[16];
+  memcpy(raw, a, 16);
+  for (int i = 0; i < 16; i++) out[i] = (int8_t)((int)raw[i] - 32);
+}
+static void deq_q2_K(const b_q2_K *x, float *y) {
+  const float d = cl_f16_to_f32(x->d), mn = cl_f16_to_f32(x->dmin);
+  for (int g = 0; g < 16; g++) { const float dl = d * (float)(x->scales[g] & 0xF), ml = mn * (float)(x->scales[g] >> 4); for (int l = 0; l < 16; l++) y[16 * g + l] = dl * (float)q2_val(x, g, l) - ml; }
+}
+static void deq_q3_K(const b_q3_K *x, float *y) {
+  const float d = cl_f16_to_f32(x->d);
+  int8_t sc[16];
+  q3_scales(x->scales, sc);
+  for (int g = 0; g < 16; g++) for (int l = 0; l < 16; l++) y[16 * g + l] = d * (float)sc[g] * (float)q3_val(x, g, l);
+}
 void cl_dequant_row(uint32_t type, const void *src, float *dst, int n) {
   const uint8_t *p = src;
   switch (type) {
@@ -122,6 +154,8 @@ void cl_dequant_row(uint32_t type, const void *src, float *dst, int n) {
       const b_q8_0 *x = (const b_q8_0 *)(const void *)(p + (size_t)b * 34); float d = cl_f16_to_f32(x->d);
       for (int j = 0; j < 32; j++) dst[b * 32 + j] = x->qs[j] * d;
     } return;
+    case CL_T_Q2_K: for (int b = 0; b < n / QK_K; b++) deq_q2_K((const b_q2_K *)(const void *)(p + (size_t)b * 84), dst + b * QK_K); return;
+    case CL_T_Q3_K: for (int b = 0; b < n / QK_K; b++) deq_q3_K((const b_q3_K *)(const void *)(p + (size_t)b * 110), dst + b * QK_K); return;
     case CL_T_Q4_K: for (int b = 0; b < n / QK_K; b++) deq_q4_K((const b_q4_K *)(const void *)(p + (size_t)b * 144), dst + b * QK_K); return;
     case CL_T_Q5_K: for (int b = 0; b < n / QK_K; b++) deq_q5_K((const b_q5_K *)(const void *)(p + (size_t)b * 176), dst + b * QK_K); return;
     case CL_T_Q6_K: for (int b = 0; b < n / QK_K; b++) deq_q6_K((const b_q6_K *)(const void *)(p + (size_t)b * 210), dst + b * QK_K); return;
@@ -146,7 +180,7 @@ const char *cl_quant_path(void) {
   return "scalar";
 #endif
 }
-int cl_type_integer_dot(uint32_t t) { return t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K; }
+int cl_type_integer_dot(uint32_t t) { return t == CL_T_Q2_K || t == CL_T_Q3_K || t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K; }
 
 int cl_xq_init(cl_xq *q, int n) { q->n = n; q->b = n % 256 == 0 ? malloc((size_t)(n / 256) * sizeof(cl_q8k)) : NULL; return q->b != NULL; }
 void cl_xq_free(cl_xq *q) { free(q->b); q->b = NULL; q->n = 0; }
@@ -422,7 +456,143 @@ static void dotb_q6_K(int nblk, const b_q6_K *x, const cl_xq *xq, int nb, float 
     }
   }
 }
+/* Q2_K / Q3_K, batched: a block's 256 weights are unpacked to int8 once and multiplied with every token of the tile. */
+static inline void unpack_q2_K(const b_q2_K *x, int8_t *q) {
+  const uint8x16_t m3 = vdupq_n_u8(3);
+  for (int n = 0; n < 2; n++) {
+    const uint8x16_t q0 = vld1q_u8(x->qs + 32 * n), q1 = vld1q_u8(x->qs + 32 * n + 16);
+    for (int j = 0; j < 4; j++) {
+      const int8x16_t sh = vdupq_n_s8((int8_t)(-2 * j));
+      vst1q_s8(q + 128 * n + 32 * j, vreinterpretq_s8_u8(vandq_u8(vshlq_u8(q0, sh), m3)));
+      vst1q_s8(q + 128 * n + 32 * j + 16, vreinterpretq_s8_u8(vandq_u8(vshlq_u8(q1, sh), m3)));
+    }
+  }
+}
+static inline void unpack_q3_K(const b_q3_K *x, int8_t *q) {
+  const uint8x16_t m3 = vdupq_n_u8(3), one = vdupq_n_u8(1);
+  const int8x16_t four = vdupq_n_s8(4);
+  const uint8x16_t h0 = vld1q_u8(x->hmask), h1 = vld1q_u8(x->hmask + 16);
+  for (int n = 0; n < 2; n++) {
+    const uint8x16_t q0 = vld1q_u8(x->qs + 32 * n), q1 = vld1q_u8(x->qs + 32 * n + 16);
+    for (int j = 0; j < 4; j++) {
+      const int8x16_t sh = vdupq_n_s8((int8_t)(-2 * j)), shb = vdupq_n_s8((int8_t)(-(4 * n + j)));
+      const uint8x16_t b0 = vshlq_n_u8(vandq_u8(vshlq_u8(h0, shb), one), 2), b1 = vshlq_n_u8(vandq_u8(vshlq_u8(h1, shb), one), 2);
+      vst1q_s8(q + 128 * n + 32 * j, vsubq_s8(vreinterpretq_s8_u8(vaddq_u8(vandq_u8(vshlq_u8(q0, sh), m3), b0)), four));
+      vst1q_s8(q + 128 * n + 32 * j + 16, vsubq_s8(vreinterpretq_s8_u8(vaddq_u8(vandq_u8(vshlq_u8(q1, sh), m3), b1)), four));
+    }
+  }
+}
+static void dotb_q2_K(int nblk, const b_q2_K *x, const cl_xq *xq, int nb, float *sum) {
+  for (int b = 0; b < nb; b++) sum[b] = 0;
+  for (int i = 0; i < nblk; i++) {
+    int8_t q[256];
+    unpack_q2_K(&x[i], q);
+    uint8_t sc[16], mn[16];
+    for (int g = 0; g < 16; g++) { sc[g] = x[i].scales[g] & 0xF; mn[g] = x[i].scales[g] >> 4; }
+    const float d = cl_f16_to_f32(x[i].d), dm = cl_f16_to_f32(x[i].dmin);
+    for (int b = 0; b < nb; b++) {
+      const cl_q8k *y = &xq[b].b[i];
+      int32x4_t acc = vdupq_n_s32(0);
+      for (int g = 0; g < 16; g++) acc = vmlaq_n_s32(acc, vdotq_s32(vdupq_n_s32(0), vld1q_s8(q + 16 * g), vld1q_s8(y->qs + 16 * g)), sc[g]);
+      int32_t summs = 0;
+      for (int g = 0; g < 16; g++) summs += mn[g] * y->bsums[g];
+      sum[b] += y->d * (d * (float)vaddvq_s32(acc) - dm * (float)summs);
+    }
+  }
+}
+static void dotb_q3_K(int nblk, const b_q3_K *x, const cl_xq *xq, int nb, float *sum) {
+  for (int b = 0; b < nb; b++) sum[b] = 0;
+  for (int i = 0; i < nblk; i++) {
+    int8_t q[256], sc[16];
+    unpack_q3_K(&x[i], q);
+    q3_scales(x[i].scales, sc);
+    const float d = cl_f16_to_f32(x[i].d);
+    for (int b = 0; b < nb; b++) {
+      const cl_q8k *y = &xq[b].b[i];
+      int32x4_t acc = vdupq_n_s32(0);
+      for (int g = 0; g < 16; g++) acc = vmlaq_n_s32(acc, vdotq_s32(vdupq_n_s32(0), vld1q_s8(q + 16 * g), vld1q_s8(y->qs + 16 * g)), sc[g]);
+      sum[b] += d * y->d * (float)vaddvq_s32(acc);
+    }
+  }
+}
 #endif
+
+/* The integer dot products with a block of Q8_K activations (ggml's vec_dot_q2_K_q8_K and vec_dot_q3_K_q8_K): exact integer sums per group, then one scaling per block. */
+static float dot_q2_K(int nb, const b_q2_K *x, const cl_q8k *y) {
+  float sum = 0;
+  for (int i = 0; i < nb; i++) {
+    int32_t isum = 0, summs = 0;
+#ifdef CL_Q_NEON
+    {   /* two 128-value halves; in each, run j takes bits 2j and 2j+1 of 32 bytes, as two 16-value groups with a scale each */
+      const uint8x16_t m3 = vdupq_n_u8(3);
+      int32x4_t acc = vdupq_n_s32(0);
+      for (int n = 0; n < 2; n++) {
+        const uint8x16_t q0 = vld1q_u8(x[i].qs + 32 * n), q1 = vld1q_u8(x[i].qs + 32 * n + 16);
+        for (int j = 0; j < 4; j++) {
+          const int g0 = 8 * n + 2 * j, g1 = g0 + 1;
+          const int8x16_t v0 = vreinterpretq_s8_u8(vandq_u8(vshlq_u8(q0, vdupq_n_s8((int8_t)(-2 * j))), m3)), v1 = vreinterpretq_s8_u8(vandq_u8(vshlq_u8(q1, vdupq_n_s8((int8_t)(-2 * j))), m3));
+          acc = vmlaq_n_s32(acc, vdotq_s32(vdupq_n_s32(0), v0, vld1q_s8(y[i].qs + 16 * g0)), x[i].scales[g0] & 0xF);
+          acc = vmlaq_n_s32(acc, vdotq_s32(vdupq_n_s32(0), v1, vld1q_s8(y[i].qs + 16 * g1)), x[i].scales[g1] & 0xF);
+        }
+      }
+      isum = vaddvq_s32(acc);
+      for (int g = 0; g < 16; g++) summs += (x[i].scales[g] >> 4) * y[i].bsums[g];
+    }
+#else
+    for (int g = 0; g < 16; g++) {
+      int32_t a = 0;
+      const int8_t *q8 = y[i].qs + 16 * g;
+      const int n = g / 8, j = (g % 8) / 2, half = g % 2, sh = 2 * j;
+      const uint8_t *q = x[i].qs + 32 * n + 16 * half;
+      for (int l = 0; l < 16; l++) a += q8[l] * ((q[l] >> sh) & 3);
+      isum += (x[i].scales[g] & 0xF) * a;
+      summs += (x[i].scales[g] >> 4) * y[i].bsums[g];
+    }
+#endif
+    sum += y[i].d * (cl_f16_to_f32(x[i].d) * (float)isum - cl_f16_to_f32(x[i].dmin) * (float)summs);
+  }
+  return sum;
+}
+static float dot_q3_K(int nb, const b_q3_K *x, const cl_q8k *y) {
+  float sum = 0;
+  for (int i = 0; i < nb; i++) {
+    int8_t sc[16];
+    q3_scales(x[i].scales, sc);
+    int32_t isum = 0;
+#ifdef CL_Q_NEON
+    {   /* value = low two bits + 4 * (mask bit) - 4, so a group's dot product is dot(low + 4 * bit, q8) - 4 * (sum of its q8), and the sums are already known */
+      const uint8x16_t m3 = vdupq_n_u8(3), one = vdupq_n_u8(1);
+      const uint8x16_t h0 = vld1q_u8(x[i].hmask), h1 = vld1q_u8(x[i].hmask + 16);
+      int32x4_t acc = vdupq_n_s32(0);
+      for (int n = 0; n < 2; n++) {
+        const uint8x16_t q0 = vld1q_u8(x[i].qs + 32 * n), q1 = vld1q_u8(x[i].qs + 32 * n + 16);
+        for (int j = 0; j < 4; j++) {
+          const int g0 = 8 * n + 2 * j, g1 = g0 + 1, bit = 4 * n + j;
+          const int8x16_t sh2 = vdupq_n_s8((int8_t)(-2 * j)), shb = vdupq_n_s8((int8_t)(-bit));
+          const uint8x16_t b0 = vshlq_n_u8(vandq_u8(vshlq_u8(h0, shb), one), 2), b1 = vshlq_n_u8(vandq_u8(vshlq_u8(h1, shb), one), 2);
+          const int8x16_t v0 = vreinterpretq_s8_u8(vaddq_u8(vandq_u8(vshlq_u8(q0, sh2), m3), b0)), v1 = vreinterpretq_s8_u8(vaddq_u8(vandq_u8(vshlq_u8(q1, sh2), m3), b1));
+          acc = vmlaq_n_s32(acc, vdotq_s32(vdupq_n_s32(0), v0, vld1q_s8(y[i].qs + 16 * g0)), sc[g0]);
+          acc = vmlaq_n_s32(acc, vdotq_s32(vdupq_n_s32(0), v1, vld1q_s8(y[i].qs + 16 * g1)), sc[g1]);
+        }
+      }
+      isum = vaddvq_s32(acc);
+      for (int g = 0; g < 16; g++) isum -= 4 * sc[g] * y[i].bsums[g];
+    }
+#else
+    for (int g = 0; g < 16; g++) {
+      int32_t a = 0;
+      const int8_t *q8 = y[i].qs + 16 * g;
+      const int n = g / 8, j = (g % 8) / 2, half = g % 2, sh = 2 * j;
+      const uint8_t *q = x[i].qs + 32 * n + 16 * half, *hm = x[i].hmask + 16 * half;
+      const uint32_t bit = 1u << (4 * n + j);
+      for (int l = 0; l < 16; l++) a += q8[l] * (((q[l] >> sh) & 3) - ((hm[l] & bit) ? 0 : 4));
+      isum += sc[g] * a;
+    }
+#endif
+    sum += y[i].d * cl_f16_to_f32(x[i].d) * (float)isum;
+  }
+  return sum;
+}
 
 /* ---- thread pool: persistent workers claim chunks of a batch; the caller works too ---- */
 #include <stdatomic.h>
@@ -462,7 +632,7 @@ static void do_rows(const cl_mv *j, int r0, int r1) {
   float *out = j->out;
   const size_t os = j->out_stride;
 #ifdef CL_Q_NEON
-  if (nb > 1 && xq && (t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K)) {
+  if (nb > 1 && xq && (t == CL_T_Q2_K || t == CL_T_Q3_K || t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K)) {
     /* The batch is walked in tiles of CL_TILE tokens: a weight row is re-read for each tile (from the processor's cache, it is only a few KB), but the tile's activations stay in
      * the fastest cache, which is where a large batch used to lose most of its speed. */
     float sums[CL_TILE];
@@ -470,7 +640,9 @@ static void do_rows(const cl_mv *j, int r0, int r1) {
       const int nt = nb - b0 < CL_TILE ? nb - b0 : CL_TILE;
       for (int r = r0; r < r1; r++) {
         const void *row = w + (size_t)r * rb;
-        if (t == CL_T_Q4_K) dotb_q4_K(j->cols / 256, (const b_q4_K *)row, xq + b0, nt, sums);
+        if (t == CL_T_Q2_K) dotb_q2_K(j->cols / 256, (const b_q2_K *)row, xq + b0, nt, sums);
+        else if (t == CL_T_Q3_K) dotb_q3_K(j->cols / 256, (const b_q3_K *)row, xq + b0, nt, sums);
+        else if (t == CL_T_Q4_K) dotb_q4_K(j->cols / 256, (const b_q4_K *)row, xq + b0, nt, sums);
         else if (t == CL_T_Q5_K) dotb_q5_K(j->cols / 256, (const b_q5_K *)row, xq + b0, nt, sums);
         else dotb_q6_K(j->cols / 256, (const b_q6_K *)row, xq + b0, nt, sums);
         for (int b = 0; b < nt; b++) out[(size_t)(b0 + b) * os + r] = sums[b];
@@ -479,7 +651,9 @@ static void do_rows(const cl_mv *j, int r0, int r1) {
     return;
   }
 #endif
-  if (t == CL_T_Q4_K && xq) for (int r = r0; r < r1; r++) { const b_q4_K *row = (const b_q4_K *)(const void *)(w + (size_t)r * rb); for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = dot_q4_K(j->cols / 256, row, xq[b].b); }
+  if (t == CL_T_Q2_K && xq) for (int r = r0; r < r1; r++) { const b_q2_K *row = (const b_q2_K *)(const void *)(w + (size_t)r * rb); for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = dot_q2_K(j->cols / 256, row, xq[b].b); }
+  else if (t == CL_T_Q3_K && xq) for (int r = r0; r < r1; r++) { const b_q3_K *row = (const b_q3_K *)(const void *)(w + (size_t)r * rb); for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = dot_q3_K(j->cols / 256, row, xq[b].b); }
+  else if (t == CL_T_Q4_K && xq) for (int r = r0; r < r1; r++) { const b_q4_K *row = (const b_q4_K *)(const void *)(w + (size_t)r * rb); for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = dot_q4_K(j->cols / 256, row, xq[b].b); }
   else if (t == CL_T_Q5_K && xq) for (int r = r0; r < r1; r++) { const b_q5_K *row = (const b_q5_K *)(const void *)(w + (size_t)r * rb); for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = dot_q5_K(j->cols / 256, row, xq[b].b); }
   else if (t == CL_T_Q6_K && xq) for (int r = r0; r < r1; r++) { const b_q6_K *row = (const b_q6_K *)(const void *)(w + (size_t)r * rb); for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = dot_q6_K(j->cols / 256, row, xq[b].b); }
   else {   /* any other type (or exact float math): dequantize a block at a time and use the float vectors */

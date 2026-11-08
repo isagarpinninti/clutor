@@ -1,15 +1,21 @@
 import type { EngineSession } from "@engine/session";
-import type { ChatMessage } from "@engine/stream";
-import { withAttachments } from "./attachments";
+import type { ChatImage, ChatMessage } from "@engine/stream";
+import { imageRgb, withAttachments } from "./attachments";
 import type { Msg, MsgStats, Settings } from "./store";
 
 export interface ReplyUpdate { content: string; reasoning: string; stats?: MsgStats; error?: string; interrupted?: boolean }
 
 /** What goes to the model: the instructions, then the conversation (without replies that failed or are still empty). */
+/** The pictures of a message that are still in memory, as the engine takes them. */
+function imagesOf(m: Msg): { images?: ChatImage[] } {
+  const images = (m.files ?? []).flatMap((f) => { const rgb = f.id && f.image ? imageRgb(f.id) : undefined; return rgb && f.image ? [{ w: f.image.w, h: f.image.h, rgb }] : []; });
+  return images.length ? { images } : {};
+}
+
 export function toChatMessages(history: Msg[], settings: Pick<Settings, "system">): ChatMessage[] {
   return [
     { role: "system", content: settings.system },
-    ...history.filter((m) => !m.error && (m.content || m.role === "user")).map((m): ChatMessage => ({ role: m.role, content: m.role === "user" ? withAttachments(m.content, m.files) : m.content })),
+    ...history.filter((m) => !m.error && (m.content || m.role === "user")).map((m): ChatMessage => ({ role: m.role, content: m.role === "user" ? withAttachments(m.content, m.files) : m.content, ...(m.role === "user" ? imagesOf(m) : {}) })),
   ];
 }
 

@@ -4,6 +4,7 @@
 #include "forward.h"
 #include "tokenizer.h"
 #include "quant.h"
+#include "vision.h"
 #include <math.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -162,6 +163,7 @@ static int utf8_complete(const unsigned char *p, int n) {
 struct cl_chat {
   cl_fwd f;
   cl_meta meta; uint8_t *tokmap; size_t tokmap_size; cl_tok *tok;
+  cl_vision *vis; int pad_id;   /* the Qwen3-VL picture encoder (when a projector file was given) and the id of the <|image_pad|> token */
   int ctx, nhist, have_logits;
   float *logits; int32_t *hist;
   cl_chat_emit emit; void *user;
@@ -229,12 +231,20 @@ cl_chat *cl_chat_open(int argc, const char *const *argv, cl_chat_emit emit, void
   if (cl_fwd_open(&c->f, argv[0], ctx, &fo, err, errlen)) { cl_tok_free(c->tok); free(c->tokmap); free(c); return NULL; }
   if (c->f.n_ctx_max > 0 && ctx > c->f.n_ctx_max) ctx = c->f.n_ctx_max;   /* the model's own limit; the caller reads the real size from the ready event */
   c->ctx = ctx;
+  c->pad_id = -1;
+  { const char *mm = arg_of(argc, argv, "--mmproj");
+    if (mm && c->f.n_deepstack) {   /* a projector given for a model that does not take pictures is ignored, so an app can pass one whenever it finds one next to the model */
+      c->vis = cl_vision_open(mm, c->f.n_embd, err, errlen);
+      if (!c->vis) { cl_fwd_close(&c->f); cl_tok_free(c->tok); free(c->tokmap); free(c); return NULL; }
+      int32_t pid[4];
+      if (cl_tok_encode(c->tok, "<|image_pad|>", 13, 1, pid, 4) == 1) c->pad_id = pid[0];
+    } }
   c->logits = malloc((size_t)c->f.n_vocab * sizeof *c->logits);
   c->hist = malloc((size_t)ctx * sizeof *c->hist);   /* every token in the KV cache, for the repetition penalty */
   if (!c->logits || !c->hist) { snprintf(err, errlen, "out of memory"); cl_chat_close(c); return NULL; }
   cl_str tpl = {0};
   cl_meta_str(&c->meta, "tokenizer.chat_template", &tpl);
-  ob_fmt(&c->out, "{\"ev\":\"ready\",\"arch\":\"%s\",\"name\":\"%s\",\"nCtx\":%d,\"nVocab\":%d,\"nLayer\":%d,\"threads\":%d,\"streaming\":%s,\"autoStream\":%s,\"locked\":%s,\"addBos\":%s,\"nCtxTrain\":%d,\"kvBytesPerToken\":%zu,\"template\":", c->f.arch, c->f.model.name, ctx, c->f.n_vocab, c->f.n_layer, cl_get_threads(), c->f.xs ? "true" : "false", c->f.auto_stream ? "true" : "false", c->f.locked ? "true" : "false", cl_tok_add_bos(c->tok) ? "true" : "false", c->f.n_ctx_train, (size_t)4 * (size_t)c->f.n_kv_layers * (size_t)c->f.n_kvw);
+  ob_fmt(&c->out, "{\"ev\":\"ready\",\"arch\":\"%s\",\"name\":\"%s\",\"nCtx\":%d,\"nVocab\":%d,\"nLayer\":%d,\"threads\":%d,\"streaming\":%s,\"autoStream\":%s,\"locked\":%s,\"addBos\":%s,\"nCtxTrain\":%d,\"kvBytesPerToken\":%zu,\"vision\":%s,\"template\":", c->f.arch, c->f.model.name, ctx, c->f.n_vocab, c->f.n_layer, cl_get_threads(), c->f.xs ? "true" : "false", c->f.auto_stream ? "true" : "false", c->f.locked ? "true" : "false", cl_tok_add_bos(c->tok) ? "true" : "false", c->f.n_ctx_train, (size_t)4 * (size_t)c->f.n_kv_layers * (size_t)c->f.n_kvw, c->vis ? "true" : "false");
   ob_json(&c->out, tpl.p ? tpl.p : "", tpl.p ? (int)(tpl.len < 12000 ? tpl.len : 12000) : 0);
   ob_put(&c->out, "}", 1);
   flush_event(c);
@@ -246,9 +256,66 @@ void cl_chat_cancel(cl_chat *c) { atomic_store(&c->cancel, 1); }
 
 void cl_chat_close(cl_chat *c) {
   if (!c) return;
-  cl_fwd_close(&c->f);
+  cl_fwd_close(&c->f); cl_vision_close(c->vis);
   cl_tok_free(c->tok); cl_meta_free(&c->meta); free(c->tokmap); free(c->logits); free(c->hist); free(c->out.p);
   free(c);
+}
+
+static int b64v(int ch) { return ch >= 'A' && ch <= 'Z' ? ch - 'A' : ch >= 'a' && ch <= 'z' ? ch - 'a' + 26 : ch >= '0' && ch <= '9' ? ch - '0' + 52 : ch == '+' ? 62 : ch == '/' ? 63 : -1; }
+static uint8_t *b64_decode(const char *s, size_t len, size_t *outn) {
+  uint8_t *o = malloc(len / 4 * 3 + 4);
+  if (!o) return NULL;
+  size_t n = 0; unsigned acc = 0; int bits = 0;
+  for (size_t i = 0; i < len; i++) { int v = b64v((unsigned char)s[i]); if (v < 0) continue; acc = acc << 6 | (unsigned)v; bits += 6; if (bits >= 8) { bits -= 8; o[n++] = (uint8_t)(acc >> bits); acc &= (1u << bits) - 1; } }
+  *outn = n;
+  return o;
+}
+
+/* The pictures of an append: {"images":[{"w":448,"h":448,"rgb":"<base64 of w*h*3 bytes>"} or {"path":"picture.ppm"}, ...]}, each encoded to the vectors the model reads. Returns how many (or -1 after an error event). */
+static int load_images(cl_chat *c, const char *line, cl_vision_out **outs) {
+  const char *v = jfind(line, "images");
+  *outs = NULL;
+  if (!v || *v != '[') return 0;
+  int cap = 0, n = 0;
+  cl_vision_out *list = NULL;
+  const char *p = v + 1;
+  char err[256];
+  while (*p) {
+    while (*p && *p != '{' && *p != ']') p++;
+    if (*p != '{') break;
+    const char *e = p;
+    while (*e && *e != '}') e++;
+    if (!*e) break;
+    char *obj = malloc((size_t)(e - p) + 2);
+    memcpy(obj, p, (size_t)(e - p) + 1); obj[e - p + 1] = 0;
+    p = e + 1;
+    int w = (int)jnum(obj, "w", 0), h = (int)jnum(obj, "h", 0);
+    uint8_t *rgb = NULL;
+    size_t blen = 0;
+    char *b64 = jstr(obj, "rgb", &blen), *path = b64 ? NULL : jstr(obj, "path", NULL);
+    if (b64) { size_t got = 0; rgb = b64_decode(b64, blen, &got); if (rgb && (w < 1 || h < 1 || got != (size_t)w * h * 3)) { free(rgb); rgb = NULL; } }
+    else if (path) rgb = cl_image_load_ppm(path, &w, &h);
+    free(b64); free(path); free(obj);
+    if (!c->vis) { ev_error(c, "this model was opened without a vision projector (--mmproj), so it cannot take pictures"); free(rgb); goto bad; }
+    if (!rgb) { ev_error(c, "a picture could not be read (it needs w, h and rgb, or the path of a P6 PPM file)"); goto bad; }
+    int ow, oh;
+    cl_vision_fit(w, h, 1024, &ow, &oh);   /* at most 1,024 tokens: one 1,024 x 1,024 picture */
+    uint8_t *fit = (ow == w && oh == h) ? rgb : cl_image_resize(rgb, w, h, ow, oh);
+    if (fit != rgb) free(rgb);
+    if (!fit) { ev_error(c, "out of memory"); goto bad; }
+    if (n == cap) { cap = cap ? cap * 2 : 2; cl_vision_out *nl = realloc(list, (size_t)cap * sizeof *list); if (!nl) { free(fit); ev_error(c, "out of memory"); goto bad; } list = nl; }
+    double t0 = now_s();
+    if (cl_vision_encode(c->vis, fit, ow, oh, &list[n], err, sizeof err)) { free(fit); ev_error(c, err); goto bad; }
+    free(fit);
+    ob_fmt(&c->out, "{\"ev\":\"vision\",\"tokens\":%d,\"width\":%d,\"height\":%d,\"seconds\":%.3f}", list[n].n, ow, oh, now_s() - t0); flush_event(c);
+    n++;
+  }
+  *outs = list;
+  return n;
+bad:
+  for (int i = 0; i < n; i++) cl_vision_out_free(&list[i]);
+  free(list);
+  return -1;
 }
 
 int cl_chat_run(cl_chat *c, const char *line) {
@@ -265,31 +332,54 @@ int cl_chat_run(cl_chat *c, const char *line) {
     size_t len = 0;
     char *text = jstr(line, "text", &len);
     if (!text) { ev_error(c, "append needs \"text\""); goto done; }
+    cl_vision_out *imgs = NULL;
+    int n_img = load_images(c, line, &imgs);
+    if (n_img < 0) { free(text); goto done; }
     int cap = (int)len + 8;
     int32_t *ids = malloc((size_t)cap * sizeof *ids);
     int n = 0;
     if (f->pos == 0 && cl_tok_add_bos(c->tok) && cl_tok_bos(c->tok) >= 0) ids[n++] = cl_tok_bos(c->tok);
     int k = cl_tok_encode(c->tok, text, len, 1, ids + n, cap - n);
-    if (k < 0) { ev_error(c, "could not tokenize that text"); free(ids); free(text); goto done; }
+    if (k < 0) { ev_error(c, "could not tokenize that text"); free(ids); free(text); for (int i = 0; i < n_img; i++) cl_vision_out_free(&imgs[i]); free(imgs); goto done; }
     n += k;
+    int n_pads = 0, extra = 0;   /* the picture tokens replace one <|image_pad|> each */
+    if (c->vis && c->pad_id >= 0) for (int i = 0; i < n; i++) if (ids[i] == c->pad_id && n_pads < n_img) { extra += imgs[n_pads].n - 1; n_pads++; }
+    if (n_pads != n_img || (n_img > 0 && ids[n - 1] == c->pad_id)) {
+      ev_error(c, n_pads != n_img ? "the text must hold one <|image_pad|> for each picture" : "a picture cannot be the last thing in a prompt: some text must follow it");
+      free(ids); free(text); for (int i = 0; i < n_img; i++) cl_vision_out_free(&imgs[i]); free(imgs); goto done;
+    }
+    n += extra;
     if (f->pos + n + 1 > c->ctx) {
       ob_fmt(&c->out, "{\"ev\":\"error\",\"msg\":\"the conversation does not fit in the context window\",\"code\":\"context\",\"pos\":%d,\"need\":%d,\"nCtx\":%d}", f->pos, n, c->ctx);
-      flush_event(c); free(ids); free(text); goto done;
+      flush_event(c); free(ids); free(text); for (int i = 0; i < n_img; i++) cl_vision_out_free(&imgs[i]); free(imgs); goto done;
     }
     double t0 = now_s();
     cl_xs_stats a0 = f->xs ? cl_xs_get_stats(f->xs) : (cl_xs_stats){0};
-    int fed = 0, cut = 0;
-    while (fed < n) {
-      const int piece = f->xs && !f->hybrid ? CL_PS_B : CL_PF_B;   /* streamed experts: a bigger piece shares each disk read among more tokens */
-      int nb = n - fed < piece ? n - fed : piece;
-      if (cl_fwd_prefill(f, ids + fed, nb, fed + nb == n ? c->logits : NULL, err, sizeof err)) { ev_error(c, err); c->have_logits = 0; cut = 1; break; }
-      for (int i = 0; i < nb; i++) c->hist[c->nhist++] = ids[fed + i];
-      fed += nb;
+    int fed = 0, cut = 0, at = 0, img_at = 0;   /* `at` walks the encoded text; `fed` counts every token in the cache, picture tokens included */
+    const int n_text = n - extra;
+    while (at < n_text && !cut) {
+      if (c->vis && ids[at] == c->pad_id && img_at < n_img) {   /* a picture: its vectors go in as one chunk */
+        const cl_vision_out *im = &imgs[img_at++];
+        cl_mm_image mi = {im->n, im->gh, im->gw, im->n_ds, im->emb, {im->ds[0], im->ds[1], im->ds[2]}};
+        if (cl_fwd_image(f, &mi, err, sizeof err)) { ev_error(c, err); c->have_logits = 0; cut = 1; break; }
+        for (int i = 0; i < im->n; i++) c->hist[c->nhist++] = c->pad_id;
+        fed += im->n; at++;
+      } else {
+        int run = 1;   /* the text up to the next picture */
+        while (at + run < n_text && !(c->vis && ids[at + run] == c->pad_id)) run++;
+        const int piece = f->xs && !f->hybrid ? CL_PS_B : CL_PF_B;   /* streamed experts: a bigger piece shares each disk read among more tokens */
+        int nb = run < piece ? run : piece;
+        if (cl_fwd_prefill(f, ids + at, nb, at + nb == n_text ? c->logits : NULL, err, sizeof err)) { ev_error(c, err); c->have_logits = 0; cut = 1; break; }
+        for (int i = 0; i < nb; i++) c->hist[c->nhist++] = ids[at + i];
+        fed += nb; at += nb;
+      }
       if (n > 16) {
         ob_fmt(&c->out, "{\"ev\":\"progress\",\"done\":%d,\"total\":%d}", fed, n); flush_event(c);
-        if (fed < n && cancelled(c)) { cut = 1; break; }
+        if (at < n_text && cancelled(c)) { cut = 1; break; }
       }
     }
+    for (int i = 0; i < n_img; i++) cl_vision_out_free(&imgs[i]);
+    free(imgs);
     c->have_logits = !cut && fed > 0;
     ob_fmt(&c->out, "{\"ev\":\"appended\",\"tokens\":%d,\"requested\":%d,\"pos\":%d,\"seconds\":%.3f,\"cancelled\":%s", fed, n, f->pos, now_s() - t0, cut ? "true" : "false");
     if (f->xs) {   /* what the prompt cost in disk reads: the hit rate, the bytes read, and how long the compute thread sat waiting for them */

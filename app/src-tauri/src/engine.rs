@@ -49,6 +49,20 @@ fn stop(running: Running) {
 }
 
 /// Loads a model into the engine and returns its first ("ready") event as JSON. Later events arrive as `engine-event` events.
+
+/// The vision projector that goes with a model: a file with "mmproj" in its name next to it, preferring one whose name starts like the model's (the part before the quantization).
+fn find_mmproj(model: &str) -> Option<String> {
+    let path = std::path::Path::new(model);
+    let dir = path.parent()?;
+    let name = path.file_name()?.to_string_lossy().to_string();
+    let mut base = name.trim_end_matches(".gguf").to_string();
+    for cut in [".i1-", ".Q", ".IQ", "-Q", "-IQ", ".BF16", ".F16"] { if let Some(i) = base.find(cut) { base.truncate(i); } }
+    let mut found: Vec<String> = std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.to_lowercase().contains("mmproj") && n.to_lowercase().ends_with(".gguf")).collect();
+    found.sort();
+    let pick = found.iter().find(|n| !base.is_empty() && n.starts_with(&base)).cloned().or_else(|| if found.len() == 1 { found.first().cloned() } else { None })?;
+    Some(dir.join(pick).display().to_string())
+}
+
 #[tauri::command]
 pub async fn engine_open(app: AppHandle, state: State<'_, EngineState>, path: String, ctx: u32, lock: bool) -> Result<String, String> {
     let old = state.0.lock().map_err(|e| e.to_string())?.take();   // the lock is released here, before any await
@@ -58,7 +72,9 @@ pub async fn engine_open(app: AppHandle, state: State<'_, EngineState>, path: St
     let (ready_tx, ready_rx): (Sender<Result<String, String>>, Receiver<Result<String, String>>) = channel();
     let (ops_tx, ops_rx) = channel::<String>();
     let (chat_tx, chat_rx) = channel::<usize>();
+    let mmproj = find_mmproj(&path);
     let mut args = vec![path, "--ctx".to_string(), ctx.to_string()];
+    if let Some(m) = mmproj { args.push("--mmproj".to_string()); args.push(m); }
     if lock { args.push("--lock".to_string()); }
     let ctx_box = Box::new(Ctx { app, ready: Mutex::new(Some(ready_tx.clone())) });
     let worker = std::thread::spawn(move || {

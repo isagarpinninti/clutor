@@ -9,7 +9,9 @@ import type { ChatMessage, StreamEvent } from "./stream";
 
 export interface NativeReady { arch: string; name: string; nCtx: number; nVocab: number; nLayer: number; threads: number; streaming: boolean; /** True when the model did not fit in memory and the engine chose to stream its experts from disk by itself. */ autoStream?: boolean; locked?: boolean; addBos: boolean; template: string;
   /** The longest context the model was trained for, and the memory the attention cache takes per token (both from the engine). */
-  nCtxTrain?: number; kvBytesPerToken?: number }
+  nCtxTrain?: number; kvBytesPerToken?: number;
+  /** The model was opened with a vision projector and takes pictures. */
+  vision?: boolean }
 
 export interface Ev { ev: string; [k: string]: unknown }
 

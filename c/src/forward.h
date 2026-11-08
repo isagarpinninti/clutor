@@ -78,6 +78,11 @@ typedef struct {
   int locked;              /* the mapped weights are pinned in memory */
   int auto_stream;         /* the model did not fit in memory and no cache size was given, so the engine chose to stream its experts */
   int pos;                 /* tokens already in the KV cache */
+  /* Qwen3-VL: a picture takes many cache entries but advances the rotary position by only the larger side of its token grid, so later text sits at cache position + rope_delta. */
+  int rope_delta;
+  int n_deepstack;         /* qwen3vlmoe: how many of the first layers receive DeepStack features from the picture encoder (3), else 0 */
+  int mrope_h, mrope_w;    /* qwen3vlmoe: rotation pairs (in threes) that follow a picture's row and column */
+  const struct cl_mm_batch *mm;   /* set while a batch of picture tokens is processed */
 } cl_fwd;
 
 /* What the router chose for the token just processed: n_layer rows of n_used experts, best first, with the weight each was given. `logits` (if not NULL)
@@ -95,6 +100,12 @@ typedef struct { uint64_t cache_bytes; int stage_slots, io_threads, os_bypass, p
 uint64_t cl_auto_cache_bytes(uint64_t ram, uint64_t avail, uint64_t experts);
 /* Whether to pin a model of this size in memory (see forward.c). `ram` and `avail` 0 mean unknown. */
 int cl_should_lock(uint64_t file_bytes, uint64_t ram, uint64_t avail);
+/* A picture as the language model takes it (see vision.h): n vectors of the embedding width that stand in for n tokens, laid out on a gh x gw grid, plus the DeepStack vectors that are
+ * added to the outputs of the first layers. Only for architectures that state n_deepstack_layers (qwen3vlmoe). */
+typedef struct cl_mm_batch { const float *emb; const int *rp; const float *ds[3]; int n_ds; } cl_mm_batch;
+typedef struct { int n, gh, gw, n_ds; const float *emb; const float *ds[3]; } cl_mm_image;
+/* Feeds a picture into the context. Its tokens take the next n cache positions; their rotary positions are (t, t + row, t + column) for t = the next rotary position. */
+int cl_fwd_image(cl_fwd *f, const cl_mm_image *img, char *err, size_t errlen);
 int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen);
 void cl_fwd_close(cl_fwd *f);
 void cl_fwd_reset(cl_fwd *f);

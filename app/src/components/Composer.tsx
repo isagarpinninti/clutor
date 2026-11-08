@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { fmtBytes } from "../store";
-import { MAX_FILES, readAttachment, type Attachment } from "../attachments";
+import { MAX_FILES, readAttachment, readImage, type Attachment } from "../attachments";
 import { PlusMenu } from "./PlusMenu";
 import { CloseIcon, FileIcon, GlobeIcon, SendIcon, StopIcon, ThinkIcon } from "./icons";
 
@@ -13,6 +13,8 @@ interface Props {
   browse: boolean;
   onBrowse: (v: boolean) => void;
   onSend: (text: string, files: Attachment[]) => void;
+  /** The loaded model takes pictures: images can be attached. */
+  vision?: boolean | undefined;
   /** Runs the question as a background job: the reply keeps generating while you do other things. */
   onBackground: (text: string, files: Attachment[]) => void;
   notice?: string | undefined;
@@ -25,7 +27,7 @@ interface Props {
   onStop: () => void;
 }
 
-export function Composer({ busy, disabled, placeholder, thinking, onThinking, browse, onBrowse, onSend, onBackground, notice, onStop, picker, prefill, home }: Props) {
+export function Composer({ busy, disabled, placeholder, thinking, onThinking, browse, onBrowse, onSend, onBackground, vision, notice, onStop, picker, prefill, home }: Props) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Attachment[]>([]);
   const [problem, setProblem] = useState<string>();
@@ -41,7 +43,8 @@ export function Composer({ busy, disabled, placeholder, thinking, onThinking, br
     for (const f of incoming) {
       if (next.length >= MAX_FILES) { problems.push(`at most ${MAX_FILES} files`); break; }
       if (next.some((x) => x.name === f.name && x.bytes === f.size)) continue;
-      const r = await readAttachment(f, `${Date.now().toString(36)}${next.length}`);
+      const id = `${Date.now().toString(36)}${next.length}`;
+      const r = vision && f.type.startsWith("image/") ? await readImage(f, id) : await readAttachment(f, id);
       if (r.ok) next.push(r.file); else problems.push(`${r.name}: ${r.reason}`);
     }
     setFiles(next);
@@ -88,7 +91,7 @@ export function Composer({ busy, disabled, placeholder, thinking, onThinking, br
         {files.length ? (
           <div className="attach-row">
             {files.map((f) => (
-              <span key={f.id} className="attach" title={`${f.name} · ${fmtBytes(f.bytes)}`}><FileIcon /><span className="attach-name">{f.name}</span><small>{fmtBytes(f.bytes)}</small>
+              <span key={f.id} className="attach" title={`${f.name} · ${fmtBytes(f.bytes)}`}>{f.image ? <img className="attach-thumb" src={f.image.thumb} alt="" /> : <FileIcon />}<span className="attach-name">{f.name}</span><small>{fmtBytes(f.bytes)}</small>
                 <button type="button" onClick={() => setFiles((l) => l.filter((x) => x.id !== f.id))} aria-label={`Remove ${f.name}`}><CloseIcon /></button></span>
             ))}
           </div>

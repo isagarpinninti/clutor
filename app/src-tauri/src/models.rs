@@ -54,7 +54,7 @@ pub fn system_info(app: AppHandle) -> Result<SystemInfo, String> {
 
 fn is_model_file(name: &str) -> bool {
     let n = name.to_lowercase();
-    if !n.ends_with(".gguf") || n.starts_with("mmproj") { return false; }
+    if !n.ends_with(".gguf") || n.to_lowercase().contains("mmproj") { return false; }
     // later parts of a split model are not models you can open on their own
     match n.rsplit_once("-of-") {
         Some((head, _)) => head.rsplit('-').next().and_then(|p| p.parse::<u32>().ok()).map_or(true, |p| p <= 1),

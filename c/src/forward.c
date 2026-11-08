@@ -42,6 +42,7 @@ static const arch_spec ARCHS[] = {
   /* name        qk-norm  renorm  pair-rope  expert_feed_forward_length  granite multipliers  dense  qkv bias */
   {"olmoe",      1,       0,      0,         0,                          0,                   0,     0,        0},
   {"qwen3moe",   2,       1,      0,         1,                          0,                   0,     0,        0},
+  {"qwen3vlmoe", 2,       1,      0,         1,                          0,                   0,     0,        0},   /* Qwen3-VL's language model: qwen3moe with multi-axis rope, which for text (every axis at the same position) is the plain rope; its vision part is not here */
   {"granitemoe", 0,       1,      1,         0,                          1,                   0,     0,        0},
   {"qwen2",      0,       0,      0,         0,                          0,                   1,     1,        0},
   {"llama",      0,       0,      1,         0,                          0,                   1,     0,        0},
@@ -110,7 +111,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   if (cl_model_open(&f->model, path, err, errlen)) return 1;
   const arch_spec *spec = NULL;
   for (size_t i = 0; i < sizeof ARCHS / sizeof *ARCHS; i++) if (!strcmp(f->model.arch, ARCHS[i].name)) spec = &ARCHS[i];
-  if (!spec) { snprintf(err, errlen, "the forward pass supports the \"olmoe\", \"qwen3moe\", \"granitemoe\", \"qwen2\" (dense), \"llama\" (dense) and \"qwen35\" (hybrid) architectures, not \"%s\"", f->model.arch); goto fail; }
+  if (!spec) { snprintf(err, errlen, "the forward pass supports the \"olmoe\", \"qwen3moe\", \"qwen3vlmoe\" (text only), \"granitemoe\", \"qwen2\" (dense), \"llama\" (dense) and \"qwen35\" (hybrid) architectures, not \"%s\"", f->model.arch); goto fail; }
   snprintf(f->arch, sizeof f->arch, "%s", spec->name);
   f->qk_mode = spec->qk_mode; f->qk_per_head = spec->qk_mode == 2; f->norm_topk = spec->norm_topk; f->rope_pairs = spec->rope_pairs; f->dense = spec->dense; f->qkv_bias = spec->qkv_bias; f->hybrid = spec->hybrid;
   const int NU = spec->dense ? 1 : 0;   /* a dense model has no experts, but its single feed-forward needs the same scratch as one expert */
@@ -140,6 +141,15 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   f->head_dim = f->n_embd / f->n_head;
   { char k[96]; uint64_t v_; AKEY(k, "attention.key_length"); if (cl_meta_u64(&f->meta, k, &v_) && v_ >= 2 && v_ <= 1024 && v_ % 2 == 0) f->head_dim = (int)v_; }   /* qwen3moe: 128, not n_embd / n_head */
   if (f->n_head_kv < 1 || f->n_head_kv > f->n_head || f->n_head % f->n_head_kv) { snprintf(err, errlen, "implausible head counts (%d query heads, %d key/value heads)", f->n_head, f->n_head_kv); goto fail; }
+  f->mrope_h = f->mrope_w = 20;
+  if (!strcmp(f->arch, "qwen3vlmoe")) {
+    uint64_t nd = 0; char k_[96]; AKEY(k_, "n_deepstack_layers");
+    if (cl_meta_u64(&f->meta, k_, &nd) && nd <= 3) f->n_deepstack = (int)nd;
+    uint64_t ns = 0; AKEY(k_, "rope.dimension_sections");
+    int32_t *sec = cl_meta_i32_array(&f->meta, k_, &ns);
+    if (sec && ns >= 3 && sec[1] > 0 && sec[2] > 0) { f->mrope_h = sec[1]; f->mrope_w = sec[2]; }
+    free(sec);
+  }
   f->rope_dim = f->head_dim;
   { char k[96]; uint64_t v_; AKEY(k, "rope.dimension_count");
     if (cl_meta_u64(&f->meta, k, &v_) && (int)v_ != f->head_dim) {
@@ -351,7 +361,7 @@ void cl_fwd_close(cl_fwd *f) {
 }
 
 void cl_fwd_reset(cl_fwd *f) {
-  f->pos = 0;
+  f->pos = 0; f->rope_delta = 0;
   if (f->hybrid) {   /* the recurrent state is the conversation: forgetting it means zeroing it */
     const size_t CC = (size_t)(2 * f->ssm_state * f->ssm_groups + f->ssm_state * f->ssm_heads);
     memset(f->conv_state, 0, (size_t)f->n_rec * CC * (size_t)(f->ssm_conv - 1) * 4);
@@ -380,6 +390,18 @@ static void rope_neox(float *v, int hd, int pos, float base, const float *ff) {
   for (int i = 0; i < half; i++) {
     float theta = (float)pos * powf(base, -2.0f * (float)i / (float)hd) / (ff ? ff[i] : 1.0f), c = cosf(theta), s = sinf(theta);
     float a = v[i], b = v[i + half];
+    v[i] = a * c - b * s; v[i + half] = a * s + b * c;
+  }
+}
+
+/* Qwen3-VL's interleaved multi-axis rope: rotation pair i follows the row position when i % 3 == 1 (for the first 3 * h pairs), the column position when i % 3 == 2 (first 3 * w), else the
+ * time position. Text has all three equal, which makes this the plain rope. */
+static void rope_mrope(float *v, int hd, int pt, int ph, int pw, float base, int sh, int sw) {
+  const int half = hd / 2;
+  for (int i = 0; i < half; i++) {
+    const int pos = (i % 3 == 1 && i < 3 * sh) ? ph : (i % 3 == 2 && i < 3 * sw) ? pw : pt;
+    const float theta = (float)pos * powf(base, -2.0f * (float)i / (float)hd), c = cosf(theta), s = sinf(theta);
+    const float a = v[i], b = v[i + half];
     v[i] = a * c - b * s; v[i + half] = a * s + b * c;
   }
 }
@@ -768,8 +790,8 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
       rmsnorm(f->q, f->q, y->qn_f, f->n_q, f->rms_eps);
       rmsnorm(f->k, f->k, y->kn_f, f->n_kvw, f->rms_eps);
     }
-    for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->q + h * hd, hd, pos, f->rope_base, f->rope_factors);
-    for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->k + h * hd, hd, pos, f->rope_base, f->rope_factors);
+    for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->q + h * hd, hd, pos + f->rope_delta, f->rope_base, f->rope_factors);
+    for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->k + h * hd, hd, pos + f->rope_delta, f->rope_base, f->rope_factors);
     uint16_t *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
     kv_store(kc, f->k, KW); kv_store(vc, f->v, KW);
     PD(2);
@@ -942,6 +964,7 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
   float *X = f->ps_x, *XN = f->ps_xn, *Q = f->ps_q, *K = f->ps_k, *V = f->ps_v, *ATT = f->ps_att, *HD = f->ps_hd;
   for (int b = 0; b < nb; b++) {
     float *x = X + (size_t)b * E;
+    if (f->mm) { memcpy(x, f->mm->emb + (size_t)b * E, (size_t)E * sizeof(float)); continue; }   /* a picture token: its vector replaces the embedding */
     cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)tok[b] * cl_row_bytes(f->tok_embd.type, (uint64_t)E), x, E);
     if (f->embed_scale != 1.0f) for (int i = 0; i < E; i++) x[i] *= f->embed_scale;
   }
@@ -958,8 +981,15 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
       if (f->qk_mode == 0) { /* no QK-norm */ }
       else if (f->qk_per_head) { for (int h = 0; h < H; h++) rmsnorm(q + h * hd, q + h * hd, y->qn_f, hd, f->rms_eps); for (int h = 0; h < KVH; h++) rmsnorm(k + h * hd, k + h * hd, y->kn_f, hd, f->rms_eps); }
       else { rmsnorm(q, q, y->qn_f, NQ, f->rms_eps); rmsnorm(k, k, y->kn_f, KW, f->rms_eps); }
-      for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(q + h * hd, hd, pos, f->rope_base, f->rope_factors);
-      for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(k + h * hd, hd, pos, f->rope_base, f->rope_factors);
+      if (f->mm) {
+        const int *rp = f->mm->rp + 3 * b;
+        for (int h = 0; h < H; h++) rope_mrope(q + h * hd, hd, rp[0], rp[1], rp[2], f->rope_base, f->mrope_h, f->mrope_w);
+        for (int h = 0; h < KVH; h++) rope_mrope(k + h * hd, hd, rp[0], rp[1], rp[2], f->rope_base, f->mrope_h, f->mrope_w);
+      } else {
+        const int rpos = pos + f->rope_delta;
+        for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(q + h * hd, hd, rpos, f->rope_base, f->rope_factors);
+        for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(k + h * hd, hd, rpos, f->rope_base, f->rope_factors);
+      }
       uint16_t *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
       kv_store(kc, k, KW); kv_store(vc, v, KW);
     }
@@ -1058,6 +1088,7 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
     }
     PA(8);
     for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->resid_scale * f->ps_moe[i];
+    if (f->mm && l < f->mm->n_ds && f->mm->ds[l]) for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->mm->ds[l][i];   /* DeepStack: the picture's intermediate features join the first layers */
     PA(8);
   }
   f->pos += nb;
@@ -1068,6 +1099,29 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
     if (f->logit_scale != 1.0f) for (int i = 0; i < f->n_vocab; i++) logits[i] /= f->logit_scale;
   }
   PA(9);
+  return 0;
+}
+
+int cl_fwd_image(cl_fwd *f, const cl_mm_image *img, char *err, size_t errlen) {
+  if (!f->n_deepstack || f->hybrid || f->dense) { snprintf(err, errlen, "this model does not take pictures"); return 1; }
+  if (img->n < 1 || img->gh * img->gw != img->n) { snprintf(err, errlen, "the picture has no tokens"); return 1; }
+  if (f->pos + img->n + 1 > f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
+  if (ps_alloc(f)) { snprintf(err, errlen, "out of memory"); return 1; }
+  const int E = f->n_embd, t0 = f->pos + f->rope_delta;
+  int *rp = malloc((size_t)f->ps_cap * 3 * sizeof(int));
+  if (!rp) { snprintf(err, errlen, "out of memory"); return 1; }
+  for (int i = 0; i < img->n; i += f->ps_cap) {
+    const int nb = img->n - i < f->ps_cap ? img->n - i : f->ps_cap;
+    for (int b = 0; b < nb; b++) { const int k = i + b; rp[3 * b] = t0; rp[3 * b + 1] = t0 + k / img->gw; rp[3 * b + 2] = t0 + k % img->gw; }
+    cl_mm_batch mb = {img->emb + (size_t)i * E, rp, {NULL, NULL, NULL}, img->n_ds < f->n_deepstack ? img->n_ds : f->n_deepstack};
+    for (int d = 0; d < 3; d++) mb.ds[d] = img->ds[d] ? img->ds[d] + (size_t)i * E : NULL;
+    f->mm = &mb;
+    const int rc = run_std(f, NULL, nb, NULL, err, errlen);
+    f->mm = NULL;
+    if (rc) { free(rp); return 1; }
+  }
+  free(rp);
+  f->rope_delta += (img->gh > img->gw ? img->gh : img->gw) - img->n;   /* the cache advanced by n, the rotary position by the larger side of the grid */
   return 0;
 }
 

@@ -43,7 +43,7 @@ def configure(arch):
         HYBRID, LAYERS = True, 4
     elif arch == "qwen2":   # dense Qwen2.5 style: GQA 4/2, head 64, biases on Q/K/V, tied output, a feed-forward twice the width of an expert
         HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE, DENSE, QKVBIAS, FF = 4, 2, 64, "qwen2", 1e-6, 1000000.0, False, False, 0, True, True, 512
-    elif arch == "qwen3moe":
+    elif arch in ("qwen3moe", "qwen3vlmoe"):   # qwen3vlmoe: the same language model under Qwen3-VL's name (its multi-axis rope is the plain rope for text)
         HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE = 4, 2, 128, "qwen2", 1e-6, 1000000.0, True, True, 2
     elif arch == "granitemoe":   # no QK-norm, adjacent-pair rotary embeddings, granite's four multipliers, renormalised expert weights, the "refact" pre-tokenizer
         HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE = 4, 2, 64, "refact", 1e-6, 10000.0, False, True, 0
@@ -196,10 +196,10 @@ def write(path, seed=1):
     meta = [
         kv("general.architecture", 8, A), kv("general.name", 8, "tiny-%s-test" % A),
         kv(A + ".block_count", 4, LAYERS), kv(A + ".context_length", 4, CTX), kv(A + ".embedding_length", 4, E),
-        kv(A + (".expert_feed_forward_length" if ARCH == "qwen3moe" else ".feed_forward_length"), 4, FF), kv(A + ".attention.head_count", 4, HEADS), kv(A + ".attention.head_count_kv", 4, KVH),
+        kv(A + (".expert_feed_forward_length" if ARCH in ("qwen3moe", "qwen3vlmoe") else ".feed_forward_length"), 4, FF), kv(A + ".attention.head_count", 4, HEADS), kv(A + ".attention.head_count_kv", 4, KVH),
         kv(A + ".rope.freq_base", 6, THETA), kv(A + ".attention.layer_norm_rms_epsilon", 6, EPS),
     ] + ([] if DENSE else [kv(A + ".expert_used_count", 4, USED), kv(A + ".expert_count", 4, NEXP)]) + [
-    ] + ([kv(A + ".attention.key_length", 4, HD), kv(A + ".attention.value_length", 4, HD)] if ARCH == "qwen3moe" else []) + (
+    ] + ([kv(A + ".attention.key_length", 4, HD), kv(A + ".attention.value_length", 4, HD)] if ARCH in ("qwen3moe", "qwen3vlmoe") else []) + ([kv(A + ".n_deepstack_layers", 4, 3)] if ARCH == "qwen3vlmoe" else []) + (
         [kv(A + ".rope.dimension_count", 4, HD), kv(A + ".attention.scale", 6, ATTN_SCALE), kv(A + ".embedding_scale", 6, EMB_SCALE), kv(A + ".residual_scale", 6, RES_SCALE), kv(A + ".logit_scale", 6, LOGIT_SCALE)] if ARCH == "granitemoe" else [kv(A + ".rope.dimension_count", 4, HD)] if ARCH == "llama" else
         [kv(A + ".attention.key_length", 4, HD), kv(A + ".attention.value_length", 4, HD), kv(A + ".rope.dimension_count", 4, ROPE_DIM), kv(A + ".ssm.conv_kernel", 4, SSM_CK), kv(A + ".ssm.state_size", 4, SSM_S),
          kv(A + ".ssm.group_count", 4, SSM_HK), kv(A + ".ssm.time_step_rank", 4, SSM_HV), kv(A + ".ssm.inner_size", 4, SSM_S * SSM_HV), kv(A + ".full_attention_interval", 4, 4)] if ARCH == "qwen35" else []) + [

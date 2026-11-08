@@ -2,7 +2,9 @@ import { parseSse } from "../sse";
 
 /** Streams one chat completion from an OpenAI-compatible server (llama-server reports more: prompt progress and timings). */
 
-export interface ChatMessage { role: "system" | "user" | "assistant"; content: string }
+/** A picture sent with a message: `rgb` is the base64 of w * h * 3 bytes (8-bit RGB, row by row). The engine resizes it if its sides are not multiples of 32. */
+export interface ChatImage { w: number; h: number; rgb: string }
+export interface ChatMessage { role: "system" | "user" | "assistant"; content: string; /** Pictures that come before the text (user messages, for a model that takes pictures). */ images?: ChatImage[] }
 
 export type StreamEvent =
   | { type: "content"; text: string }

@@ -34,3 +34,17 @@ describe("withAttachments", () => {
     expect(withAttachments("hi", undefined)).toBe("hi");
   });
 });
+
+describe("pictures", () => {
+  it("are resized to multiples of 32 with at most 256 model tokens, keeping their shape", async () => {
+    const { fitImage } = await import("./attachments");
+    expect(fitImage(448, 448)).toEqual({ w: 448, h: 448 });
+    const big = fitImage(4000, 3000);
+    expect(big.w % 32 === 0 && big.h % 32 === 0 && big.w * big.h <= 256 * 1024 && big.w > big.h).toBe(true);
+    expect(fitImage(10, 10)).toEqual({ w: 64, h: 64 });
+  });
+  it("are not sent to the model as text", async () => {
+    const { withAttachments } = await import("./attachments");
+    expect(withAttachments("what is this?", [{ name: "a.png", text: "", truncated: false, image: { w: 64, h: 64, thumb: "" } }])).toBe("what is this?");
+  });
+});

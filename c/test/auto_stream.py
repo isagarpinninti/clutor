@@ -11,7 +11,7 @@ usage: auto_stream.py <engine> <dir with tiny_<arch>.gguf>
 import json, os, subprocess, sys
 
 ENGINE, FOLDER = sys.argv[1], sys.argv[2]
-MOE = ["olmoe", "qwen3moe", "granitemoe"]
+MOE = ["olmoe", "qwen3moe", "qwen3vlmoe", "granitemoe"]
 DENSE = ["qwen2", "llama"]
 failed = 0
 

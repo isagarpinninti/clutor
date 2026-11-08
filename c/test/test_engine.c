@@ -4,6 +4,7 @@
 #include "kernel.h"
 #include "forward.h"
 #include "quant.h"
+#include "vision.h"
 #include "meta.h"
 #include "xs.h"
 #include <math.h>
@@ -391,6 +392,135 @@ static void test_integer_dot(void) {
   cl_xq_free(&q);
 }
 
+/* Q2_K and Q3_K: the dequantizers are checked against a literal transcription of ggml's loops (a different way of indexing the same layout), and the integer dot products against
+ * "dequantize and multiply", on random blocks. */
+static void ref_q2_K(const uint8_t *b, float *y) {
+  uint16_t dh, mh; memcpy(&dh, b + 80, 2); memcpy(&mh, b + 82, 2);
+  const float d = cl_f16_to_f32(dh), mn = cl_f16_to_f32(mh);
+  const uint8_t *sc = b, *q = b + 16;
+  int is = 0;
+  for (int n = 0; n < 256; n += 128) {
+    int shift = 0;
+    for (int j = 0; j < 4; j++) {
+      uint8_t c = sc[is++];
+      float dl = d * (float)(c & 0xF), ml = mn * (float)(c >> 4);
+      for (int l = 0; l < 16; l++) *y++ = dl * (float)((q[l] >> shift) & 3) - ml;
+      c = sc[is++]; dl = d * (float)(c & 0xF); ml = mn * (float)(c >> 4);
+      for (int l = 0; l < 16; l++) *y++ = dl * (float)((q[l + 16] >> shift) & 3) - ml;
+      shift += 2;
+    }
+    q += 32;
+  }
+}
+static void ref_q3_K(const uint8_t *b, float *y) {
+  uint16_t dh; memcpy(&dh, b + 108, 2);
+  const float dall = cl_f16_to_f32(dh);
+  const uint8_t *hm = b, *q = b + 32;
+  uint32_t aux[4]; memcpy(aux, b + 96, 12);
+  const uint32_t k1 = 0x03030303u, k2 = 0x0f0f0f0fu, tmp = aux[2];
+  aux[2] = ((aux[0] >> 4) & k2) | (((tmp >> 4) & k1) << 4); aux[3] = ((aux[1] >> 4) & k2) | (((tmp >> 6) & k1) << 4);
+  aux[0] = (aux[0] & k2) | (((tmp >> 0) & k1) << 4); aux[1] = (aux[1] & k2) | (((tmp >> 2) & k1) << 4);
+  const int8_t *scales = (const int8_t *)(const void *)aux;
+  uint8_t m = 1;
+  int is = 0;
+  for (int n = 0; n < 256; n += 128) {
+    int shift = 0;
+    for (int j = 0; j < 4; j++) {
+      float dl = dall * (float)(scales[is++] - 32);
+      for (int l = 0; l < 16; l++) *y++ = dl * (float)((int)((q[l] >> shift) & 3) - ((hm[l] & m) ? 0 : 4));
+      dl = dall * (float)(scales[is++] - 32);
+      for (int l = 0; l < 16; l++) *y++ = dl * (float)((int)((q[l + 16] >> shift) & 3) - ((hm[l + 16] & m) ? 0 : 4));
+      shift += 2; m = (uint8_t)(m << 1);
+    }
+    q += 32;
+  }
+}
+static void test_q2_q3(void) {
+  enum { ROWS = 24, NBLK = 3, COLS = NBLK * 256 };
+  uint32_t s = 4242;
+  static float x[COLS];
+  for (int i = 0; i < COLS; i++) { s = s * 1664525u + 1013904223u; x[i] = ((float)(s >> 8) / (1 << 24) - 0.5f) * (i % 53 == 0 ? 6.0f : 1.0f); }
+  cl_xq q;
+  CHECK(cl_xq_init(&q, COLS), "Q2_K/Q3_K: activation buffer");
+  cl_xq_quantize(&q, x);
+  float xd[COLS];
+  for (int b = 0; b < NBLK; b++) for (int j = 0; j < 256; j++) xd[b * 256 + j] = q.b[b].d * q.b[b].qs[j];
+  for (int pass = 0; pass < 2; pass++) {
+    const uint32_t type = pass ? CL_T_Q3_K : CL_T_Q2_K;
+    const int bs = pass ? 110 : 84;
+    CHECK(cl_type_supported(type) && cl_type_block(type) == 256 && cl_type_bytes(type) == (uint32_t)bs && cl_type_integer_dot(type), "%s: the engine knows the type", pass ? "Q3_K" : "Q2_K");
+    static uint8_t w[ROWS * NBLK * 110];
+    for (int i = 0; i < ROWS * NBLK * bs; i++) { s = s * 1664525u + 1013904223u; w[i] = (uint8_t)(s >> 16); }
+    for (int b = 0; b < ROWS * NBLK; b++) {   /* sane half-precision scales */
+      uint16_t d = (uint16_t)(0x2400 + (b % 16) * 8), dm = (uint16_t)(0x2000 + (b % 7) * 8);
+      if (pass) memcpy(w + (size_t)b * bs + 108, &d, 2); else { memcpy(w + (size_t)b * bs + 80, &d, 2); memcpy(w + (size_t)b * bs + 82, &dm, 2); }
+    }
+    int badq = 0;
+    float a[256], r[256];
+    for (int b = 0; b < ROWS * NBLK; b++) {
+      cl_dequant_row(type, w + (size_t)b * bs, a, 256);
+      if (pass) ref_q3_K(w + (size_t)b * bs, r); else ref_q2_K(w + (size_t)b * bs, r);
+      for (int i = 0; i < 256; i++) if (fabsf(a[i] - r[i]) > 1e-6f * (fabsf(r[i]) + 1.0f)) { badq++; break; }
+    }
+    CHECK(badq == 0, "%s dequantization equals ggml's reference loops on %d of %d blocks", pass ? "Q3_K" : "Q2_K", ROWS * NBLK - badq, ROWS * NBLK);
+    static float out[ROWS];
+    cl_mv job = {type, w, ROWS, COLS, x, &q, out};
+    cl_matvec_batch(&job, 1);
+    int bad = 0;
+    float row[COLS];
+    for (int rw = 0; rw < ROWS; rw++) {
+      cl_dequant_row(type, w + (size_t)rw * cl_row_bytes(type, COLS), row, COLS);
+      double ref = 0, mag = 0;
+      for (int c = 0; c < COLS; c++) { ref += (double)row[c] * xd[c]; mag += fabs((double)row[c] * xd[c]); }
+      if (fabs(ref - out[rw]) > 1e-4 * mag + 1e-6) bad++;
+    }
+    CHECK(bad == 0, "%s integer dot matches dequantize-and-multiply on %d of %d rows", pass ? "Q3_K" : "Q2_K", ROWS - bad, ROWS);
+    {   /* a batch of tokens (prompt processing) takes the batched kernel: every token's result must equal its own single-token product */
+      enum { NB = 11 };
+      static float xb[NB * COLS], ob[NB * ROWS];
+      static cl_xq qb[NB];
+      for (int b = 0; b < NB; b++) { for (int i = 0; i < COLS; i++) { s = s * 1664525u + 1013904223u; xb[b * COLS + i] = ((float)(s >> 8) / (1 << 24) - 0.5f) * (i % 41 == 0 ? 5.0f : 1.0f); } cl_xq_init(&qb[b], COLS); cl_xq_quantize(&qb[b], xb + b * COLS); }
+      cl_mv bj = {type, w, ROWS, COLS, xb, qb, ob, NB, (size_t)COLS, (size_t)ROWS};
+      cl_matvec_batch(&bj, 1);
+      int badb = 0;
+      for (int b = 0; b < NB; b++) {
+        static float one[ROWS];
+        cl_mv sj = {type, w, ROWS, COLS, xb + b * COLS, &qb[b], one, 1, 0, 0};
+        cl_matvec_batch(&sj, 1);
+        for (int rw = 0; rw < ROWS; rw++) if (fabsf(one[rw] - ob[b * ROWS + rw]) > 1e-4f * (fabsf(one[rw]) + 1.0f)) badb++;
+      }
+      CHECK(badb == 0, "%s batched product equals the single-token product on every token and row (%d mismatches)", pass ? "Q3_K" : "Q2_K", badb);
+      for (int b = 0; b < NB; b++) cl_xq_free(&qb[b]);
+    }
+  }
+  cl_xq_free(&q);
+}
+
+/* Pictures: how big one is made before the encoder sees it, and the resize that does it. */
+static void test_pictures(void) {
+  int w, h;
+  cl_vision_fit(448, 448, 256, &w, &h);
+  CHECK(w == 448 && h == 448, "a 448 x 448 picture is left as it is (%d x %d)", w, h);
+  cl_vision_fit(4000, 3000, 256, &w, &h);
+  CHECK(w % 32 == 0 && h % 32 == 0 && w * h <= 256 * 1024 && w * h > 150 * 1024 && w > h, "a large picture shrinks to at most 256 tokens, keeping its shape (%d x %d)", w, h);
+  cl_vision_fit(10, 10, 256, &w, &h);
+  CHECK(w == 64 && h == 64, "a tiny picture grows to the minimum (%d x %d)", w, h);
+  cl_vision_fit(1000, 100, 256, &w, &h);
+  CHECK(w % 32 == 0 && h % 32 == 0 && h >= 64 && w > 8 * h / 2, "a wide strip keeps its shape (%d x %d)", w, h);
+  uint8_t flat[8 * 8 * 3];
+  memset(flat, 77, sizeof flat);
+  uint8_t *r = cl_image_resize(flat, 8, 8, 64, 64);
+  int same = r != NULL;
+  for (int i = 0; r && i < 64 * 64 * 3; i++) if (r[i] != 77) same = 0;
+  CHECK(same, "growing a flat picture keeps it flat");
+  free(r);
+  static uint8_t big[256 * 256 * 3];
+  for (int y = 0; y < 256; y++) for (int x = 0; x < 256; x++) for (int c = 0; c < 3; c++) big[((size_t)y * 256 + x) * 3 + c] = (uint8_t)((x / 128 + y / 128) % 2 ? 200 : 100);   /* four 128 x 128 squares */
+  r = cl_image_resize(big, 256, 256, 64, 64);
+  CHECK(r && r[(10 * 64 + 10) * 3] == 100 && r[(10 * 64 + 50) * 3] == 200 && r[(50 * 64 + 10) * 3] == 200 && r[(50 * 64 + 50) * 3] == 100, "shrinking keeps the squares' colours where they were");
+  free(r);
+}
+
 static void test_xs(const char *fixture) {
   if (!fixture) return;
   FILE *fp = fopen(fixture, "rb");
@@ -430,7 +560,7 @@ static void test_xs(const char *fixture) {
 }
 
 int main(int argc, char **argv) {
-  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_integer_dot(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
+  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_integer_dot(); test_q2_q3(); test_pictures(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   test_gguf(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;

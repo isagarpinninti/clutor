@@ -1061,3 +1061,4 @@ body.resizing * { transition: none !important; }
 .cloud-form .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; } .cloud-form .field span { color: var(--muted); font-size: 12px; }
 .cloud-form input[type="text"], .cloud-form input:not([type]), .cloud-form input[type="password"], .cloud-form input[type="number"], .cloud-form select, .cloud-form textarea { background: var(--g1); border: 1px solid var(--g2); border-radius: 8px; padding: 8px 10px; color: var(--text); font: inherit; }
 .cloud-form .check { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.attach-thumb { width: 32px; height: 32px; object-fit: cover; border-radius: 6px; flex: none; }

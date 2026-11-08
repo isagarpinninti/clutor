@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* ggml tensor type ids this engine can compute with (see gguf.c for the full table). */
-enum { CL_T_F32 = 0, CL_T_F16 = 1, CL_T_Q4_0 = 2, CL_T_Q5_0 = 6, CL_T_Q8_0 = 8, CL_T_Q4_K = 12, CL_T_Q5_K = 13, CL_T_Q6_K = 14, CL_T_BF16 = 30 };
+enum { CL_T_F32 = 0, CL_T_F16 = 1, CL_T_Q4_0 = 2, CL_T_Q5_0 = 6, CL_T_Q8_0 = 8, CL_T_Q2_K = 10, CL_T_Q3_K = 11, CL_T_Q4_K = 12, CL_T_Q5_K = 13, CL_T_Q6_K = 14, CL_T_BF16 = 30 };
 
 /* 1 when cl_dequant_row / cl_matvec understand this type. */
 int cl_type_supported(uint32_t type);
