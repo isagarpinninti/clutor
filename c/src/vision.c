@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "vision.h"
 #include "gguf.h"
 #include "meta.h"
