@@ -4,7 +4,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { AgentHost, Bridge, CloudApi, DiskSpeed, InspectApi, RemoteApi, RemoteDevice, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
+import type { AgentHost, Bridge, CloudApi, FileInfo, DiskSpeed, InspectApi, RemoteApi, RemoteDevice, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
 /** The engine runs inside this process (src-tauri links it); its events arrive as Tauri events and its operations go out as commands. */
 class TauriTransport implements Transport {
@@ -124,6 +124,7 @@ export const tauriBridge: Bridge = {
   inspect,
   system: () => invoke<SystemInfo>("system_info"),
   listModels: (folders) => invoke<ModelInfo[]>("list_models", { folders: folders ?? [] }),
+  scanFiles: (folders) => invoke<FileInfo[]>("scan_files", { folders: folders ?? [] }),
   catalog: () => invoke<CatalogItem[]>("model_catalog"),
   revealModels: () => invoke("reveal_models"),
   async notify(title, body) {

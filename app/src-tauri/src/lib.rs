@@ -23,6 +23,7 @@ pub fn run() {
             engine::engine_close,
             models::system_info,
             models::list_models,
+            models::scan_files,
             models::model_catalog,
             models::reveal_models,
             models::download_model,

@@ -30,6 +30,7 @@ import { Sidebar } from "./components/Sidebar";
 import type { EngineSession } from "@engine/session";
 import { useEngine } from "./engine";
 import { isActive, JobQueue, localJobStore, uid as jobUid, type Job } from "./jobs";
+import { toModelInfo, useLibrary } from "./library";
 import { modelForMode, recordSpeed, loadConversations, loadSettings, saveConversations, saveSettings, titleFrom, uid, type Conversation, type Msg, type Settings } from "./store";
 
 const newConversation = (): Conversation => ({ id: uid(), title: "New chat", updated: Date.now(), messages: [] });
@@ -50,6 +51,7 @@ export function App() {
   const [system, setSystem] = useState<SystemInfo>();
   const [dialog, setDialog] = useState<"models" | "settings" | "jobs" | "mcp" | "usage" | null>(null);
   const folders = useMemo(() => (settings.modelsDir ? [settings.modelsDir] : []), [settings.modelsDir]);
+  const lib = useLibrary(folders, system?.ramBytes);
   const [lastModel, setLastModel] = useState<ModelInfo>();
   const [mode, setMode] = useState<"chat" | "code">(() => { try { return localStorage.getItem("clutor.mode") === "code" ? "code" : "chat"; } catch { return "chat"; } });
   const [servers, setServers] = useState<McpServerConfig[]>(loadServers);
@@ -163,13 +165,15 @@ export function App() {
   const jobAction = (id: string, a: JobAction): void => { if (a === "pause") queue.pause(id); else if (a === "resume") queue.resume(id); else if (a === "cancel") queue.cancel(id); else queue.retry(id); };
 
   /** The model this mode should run: the shared one, or the one chosen for this mode when they differ. */
-  const modelFor = (m: "chat" | "code"): ModelInfo | undefined => modelForMode(settings, lastModel, m);
+  const autoOn = settings.autoModel !== false;
+  const modelFor = (m: "chat" | "code"): ModelInfo | undefined => { const a = autoOn ? lib.auto[m].choice : undefined; return a ? toModelInfo(a) : modelForMode(settings, lastModel, m); };
   const wanted = modelFor(mode);
   /** Which mode a choice in the model dialog is for (the dialog can be opened from Settings for either). */
   const [pickFor, setPickFor] = useState<"chat" | "code" | null>(null);
   const pickModel = (m: ModelInfo): void => {
     const target = pickFor ?? mode;
     setPickFor(null);
+    setSettings((s) => ({ ...s, autoModel: false }));   // choosing a model yourself turns the automatic pick off
     // By default one choice serves both modes; with "same model" off it only changes the mode you are in.
     if (settings.sameModel === false) setSettings((s) => ({ ...s, model: s.model ?? m, models: { ...s.models, [target]: m } }));
     else { setSettings((s) => { const { models: _m, ...rest } = s; void _m; return { ...rest, model: m }; }); setLastModel(m); }
@@ -250,7 +254,10 @@ export function App() {
     abort.current = ac;
     setBusy(true);
     if (!session.current || (wanted && state.model?.path !== wanted.path)) flash(`Loading ${wanted?.name ?? "your model"} first…`);
-    const s = await ensureModel();
+    // A picture in the message: if the model in use cannot read pictures, the library's picture-reading model is loaded for it (when Auto is on).
+    const visionPick = autoOn && attached.some((f) => f.image) && !state.ready?.vision ? lib.auto.vision.choice : undefined;
+    if (visionPick) flash(`Switching to ${visionPick.model.name} to read your picture…`);
+    const s = visionPick ? await load(toModelInfo(visionPick.model), settings, system?.ramBytes) : await ensureModel();
     if (!s) { update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? { ...m, error: "The model could not be loaded." } : m)) })); abort.current = null; setBusy(false); return; }
     // Auto-compact: the context is nearly full, so the conversation so far is replaced by a summary before this message goes in.
     let sendHistory = history;
@@ -310,7 +317,7 @@ export function App() {
   const ready = state.status === "ready";
   const note = state.ready?.autoStream ? "streaming from disk" : state.ready?.locked ? "pinned" : state.unpinned ? "not pinned" : undefined;
   const loadedIsWanted = !!wanted && state.model?.path === wanted.path;
-  const picker = <ModelPicker current={wanted} folders={folders} same={settings.sameModel !== false} onSame={(v) => setSettings((s) => ({ ...s, sameModel: v, ...(v ? {} : { models: { chat: s.model, code: s.model } }) }))} status={loadedIsWanted ? state.status : state.status === "loading" ? "loading" : "idle"} note={note} onPick={pickModel} onMore={() => setDialog("models")} />;
+  const picker = <ModelPicker auto={autoOn} autoReason={lib.auto[mode].reason} onAuto={() => { setSettings((s) => ({ ...s, autoModel: true })); lib.rescan(); }} current={wanted} folders={folders} same={settings.sameModel !== false} onSame={(v) => setSettings((s) => ({ ...s, sameModel: v, ...(v ? {} : { models: { chat: s.model, code: s.model } }) }))} status={loadedIsWanted ? state.status : state.status === "loading" ? "loading" : "idle"} note={note} onPick={pickModel} onMore={() => setDialog("models")} />;
   const usage = chatUsage(active?.messages ?? [], state.ready?.nCtx ?? settings.ctx);
   const pct = contextPercent(usage);
   const here = `${mode}|${mode === "chat" ? activeId : codeId}`;
@@ -338,7 +345,7 @@ export function App() {
   const haveModel = ready || !!wanted;
   const [prefill, setPrefill] = useState<{ text: string; n: number }>();
   const composer = (home: boolean) => (
-    <Composer vision={state.ready?.vision} busy={busy} disabled={!ready && !wanted} placeholder={ready || wanted ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t, f) => void send(t, f)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
+    <Composer vision={state.ready?.vision || (autoOn && !!lib.auto.vision.choice)} busy={busy} disabled={!ready && !wanted} placeholder={ready || wanted ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t, f) => void send(t, f)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
   );
   const lastAssistant = active?.messages[active.messages.length - 1];
 
@@ -419,7 +426,7 @@ export function App() {
       </main>
       </div>
       {settings.onboarded ? null : <Onboarding onDone={(name) => setSettings((s) => ({ ...s, onboarded: true, ...(name ? { userName: name } : {}) }))} />}
-      {dialog === "models" ? <ModelDialog contextTokens={settings.ctx} folders={folders} onFolder={(p) => setSettings((s) => ({ ...s, modelsDir: p }))} system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}
+      {dialog === "models" ? <ModelDialog lib={lib} contextTokens={settings.ctx} folders={folders} onFolder={(p) => setSettings((s) => ({ ...s, modelsDir: p }))} system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
       {dialog === "usage" ? <UsageDialog state={state} ramBytes={system?.ramBytes} usage={usage} agent={agentUsage} {...(lastAgentContext ? { agentContext: { used: lastAgentContext, max: state.ready?.nCtx ?? settings.ctx } } : {})} jobs={{ active: activeJobs, done: jobList.filter((j) => j.status === "done").length }} onClose={() => setDialog(null)} /> : null}
       {dialog === "mcp" ? <McpDialog servers={servers} manager={mcp} onChange={setServers} onClose={() => setDialog(null)} /> : null}

@@ -76,6 +76,38 @@ fn walk(dir: &Path, depth: u32, out: &mut Vec<ModelInfo>) {
     }
 }
 
+#[derive(Serialize)]
+pub struct FileInfo { path: String, name: String, bytes: u64 }
+
+fn walk_all(dir: &Path, depth: u32, out: &mut Vec<FileInfo>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') { continue; }
+        let Ok(meta) = e.metadata() else { continue };
+        let n = name.to_lowercase();
+        if meta.is_dir() { if depth > 0 { walk_all(&p, depth - 1, out); } }
+        else if meta.is_file() && (n.ends_with(".gguf") || n.ends_with(".safetensors")) {
+            out.push(FileInfo { path: p.display().to_string(), name, bytes: meta.len() });
+        }
+    }
+}
+
+/// Every model-like file (GGUF and safetensors, the projector and companion files too) in the chosen folders, the app's own and the command line's. The interface reads their
+/// headers and works out what each is and which belong together.
+#[tauri::command]
+pub fn scan_files(app: AppHandle, folders: Option<Vec<String>>) -> Result<Vec<FileInfo>, String> {
+    let mut dirs: Vec<PathBuf> = folders.unwrap_or_default().into_iter().filter(|f| !f.is_empty()).map(PathBuf::from).collect();
+    dirs.push(models_dir(&app)?);
+    if let Ok(home) = app.path().home_dir() { dirs.push(home.join(".clutor").join("models")); dirs.push(home.join("clutor-models")); }
+    let mut found = Vec::new();
+    for d in dirs { walk_all(&d, 4, &mut found); }
+    found.sort_by(|a, b| a.path.cmp(&b.path));
+    found.dedup_by(|a, b| a.path == b.path);
+    Ok(found)
+}
+
 #[tauri::command]
 pub fn list_models(app: AppHandle, folders: Option<Vec<String>>) -> Result<Vec<ModelInfo>, String> {
     // The folders the user chose come first, then the app's own.

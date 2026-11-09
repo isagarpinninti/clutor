@@ -5,6 +5,9 @@ import { bridge, type CatalogItem, type DownloadProgress, type ModelInfo, type S
 import { fmtBytes } from "../store";
 import { ChipIcon, DownloadIcon, FolderIcon } from "./icons";
 import { CloudPane } from "./CloudPane";
+import { LibraryCard } from "./LibraryCard";
+import type { Auto } from "../library";
+import type { Library } from "@core/models/library";
 
 interface Props {
   /** The context window the check assumes (Settings > Models). */
@@ -15,9 +18,11 @@ interface Props {
   current: string | undefined;
   onPick: (m: ModelInfo) => void;
   onClose: () => void;
+  /** What the models folder holds and what Clutor picks from it (see library.ts). */
+  lib?: { library: Library; auto: Auto; scanning: boolean; rescan: () => void };
 }
 
-export function ModelDialog({ contextTokens, folders, onFolder, system, current, onPick, onClose }: Props) {
+export function ModelDialog({ contextTokens, folders, onFolder, system, current, onPick, onClose, lib }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
@@ -53,6 +58,7 @@ export function ModelDialog({ contextTokens, folders, onFolder, system, current,
         </div>
         {tab === "local" ? (
           <div className="list">
+            {lib ? <LibraryCard library={lib.library} auto={lib.auto} scanning={lib.scanning} onRescan={lib.rescan} /> : null}
             {models.length === 0 ? <p className="empty-hint">No models yet. Open “Get a model”, or put a .gguf file in the models folder.</p> : null}
             {models.map((m) => (
               <div key={m.path} className="model-item">

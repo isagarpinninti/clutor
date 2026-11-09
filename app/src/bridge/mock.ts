@@ -170,6 +170,7 @@ export const mockBridge: Bridge = {
     async cancel() { /* the canned answer is short */ },
   },
   async system(): Promise<SystemInfo> { return { os: "preview", arch: "browser", ramBytes: 16 * 2 ** 30, cores: 8, modelsDir: "~/.clutor/models" }; },
+  async scanFiles() { return MODELS.map((m) => ({ path: m.path, name: m.path.split("/").pop() as string, bytes: m.bytes })); },
   async listModels(folders) { return folders?.length ? [...MODELS, { path: `${folders[0]}/Custom-Model-7B-Q4_K_M.gguf`, name: "Custom-Model-7B-Q4_K_M", bytes: 4_400_000_000 }] : MODELS; },
   async catalog() { return CATALOG; },
   async revealModels() { /* nothing to open in a browser */ },

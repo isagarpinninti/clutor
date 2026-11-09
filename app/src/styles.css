@@ -1062,3 +1062,8 @@ body.resizing * { transition: none !important; }
 .cloud-form input[type="text"], .cloud-form input:not([type]), .cloud-form input[type="password"], .cloud-form input[type="number"], .cloud-form select, .cloud-form textarea { background: var(--g1); border: 1px solid var(--g2); border-radius: 8px; padding: 8px 10px; color: var(--text); font: inherit; }
 .cloud-form .check { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
 .attach-thumb { width: 32px; height: 32px; object-fit: cover; border-radius: 6px; flex: none; }
+
+.lib-card .lib-row { display: flex; gap: 12px; align-items: baseline; padding: 3px 0; font-size: 13px; } .lib-label { width: 64px; flex: none; color: var(--muted); font-size: 12px; } .lib-none { color: var(--muted); }
+.lib-why { margin: -1px 0 4px 76px; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.lib-other { margin: 8px 0 4px; font-size: 12.5px; } .lib-other summary { cursor: pointer; color: var(--muted); } .lib-other ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; } .lib-other li b { display: block; font-weight: 500; overflow-wrap: anywhere; } .lib-other li small { color: var(--muted); }
+.menu-item.auto small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }

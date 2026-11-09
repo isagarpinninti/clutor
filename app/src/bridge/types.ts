@@ -1,6 +1,7 @@
 import type { NativeReady, Transport } from "@engine/session";
 
 export interface SystemInfo { os: string; arch: string; ramBytes: number; cores: number; modelsDir: string }
+export interface FileInfo { path: string; name: string; bytes: number }
 export interface ModelInfo { path: string; name: string; bytes: number; /** Set for a cloud model: the provider's name. The path is then `cloud:<provider id>:<model>`. */ cloud?: string }
 export interface CatalogItem { id: string; name: string; bytes: number; description: string }
 export interface DownloadProgress { id: string; done: number; total: number; state: "downloading" | "verifying" | "done" | "error"; error?: string }
@@ -93,6 +94,8 @@ export interface Bridge {
   system(): Promise<SystemInfo>;
   /** The models in the app's folder, the command line's, and any folders you chose. */
   listModels(folders?: string[]): Promise<ModelInfo[]>;
+  /** Every model-like file (GGUF and safetensors) in the folders, with its size: what the library reads headers from. */
+  scanFiles(folders?: string[]): Promise<FileInfo[]>;
   catalog(): Promise<CatalogItem[]>;
   download(id: string, onProgress: (p: DownloadProgress) => void): Promise<void>;
   openEngine(path: string, ctx: number, lock: boolean): Promise<OpenEngine>;

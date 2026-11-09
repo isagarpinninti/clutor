@@ -14,12 +14,17 @@ interface Props {
   /** Chat and Code share one model (the default). */
   same?: boolean;
   onSame?: (v: boolean) => void;
+  /** Clutor picks the model for each task from the folder. */
+  auto?: boolean;
+  /** Why the automatic pick chose the model it did. */
+  autoReason?: string;
+  onAuto?: () => void;
   onPick: (m: ModelInfo) => void;
   onMore: () => void;
 }
 
 /** The model chooser that sits under the message box: the loaded model's name, and a small menu of the models on this device. */
-export function ModelPicker({ current, status, note, folders, same, onSame, onPick, onMore }: Props) {
+export function ModelPicker({ current, status, note, folders, same, onSame, auto, autoReason, onAuto, onPick, onMore }: Props) {
   const [open, setOpen] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const box = useRef<HTMLDivElement>(null);
@@ -33,7 +38,7 @@ export function ModelPicker({ current, status, note, folders, same, onSame, onPi
     return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
   }, [open]);
 
-  const label = status === "loading" ? "Loading…" : current ? current.name : "Choose a model";
+  const label = status === "loading" ? "Loading…" : current ? (auto ? `Auto · ${current.name}` : current.name) : "Choose a model";
   return (
     <div className="picker" ref={box}>
       <button type="button" className={`picker-btn ${status}`} onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open}>
@@ -44,6 +49,7 @@ export function ModelPicker({ current, status, note, folders, same, onSame, onPi
       </button>
       {open ? (
         <div className="pmenu" role="listbox" aria-label="Models">
+          {onAuto ? <button type="button" role="menuitemcheckbox" aria-checked={!!auto} className={`menu-item auto${auto ? " on" : ""}`} onClick={() => { setOpen(false); onAuto(); }} title={autoReason}><span>Auto: the best model for each task</span><small>{auto && autoReason ? autoReason.slice(0, 70) : "from your models folder"}</small></button> : null}
           {models.length === 0 && loadProviders().length === 0 ? <p className="menu-empty">No models on this device yet.</p> : null}
           {models.map((m) => (
             <button type="button" role="option" aria-selected={m.path === current?.path} key={m.path} className={`menu-item${m.path === current?.path ? " on" : ""}`} onClick={() => { setOpen(false); if (m.path !== current?.path) onPick(m); }}>

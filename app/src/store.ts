@@ -19,6 +19,8 @@ export interface Settings {
   /** The model used last time: it is selected again when the app opens (and loaded when you first need it). */
   model?: ModelInfo;
   /** True (the default) when Chat and Code use the same model; false lets each have its own. */
+  /** Clutor picks the model for each task from the models folder (the default). Choosing a model yourself turns this off; "Auto" in the model menu turns it back on. */
+  autoModel?: boolean;
   sameModel?: boolean;
   /** The model for each mode, used only when `sameModel` is false. */
   models?: { chat?: ModelInfo; code?: ModelInfo };
