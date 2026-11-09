@@ -83,6 +83,21 @@ export interface CloudApi {
   cancel(id: string): Promise<void>;
 }
 
+/** Image generation inside the app (see src-tauri/src/image.rs). */
+export interface ImageRequest { diffusion: string; text_encoder: string; vae: string; prompt: string; negative?: string; width: number; height: number; steps: number; cfg: number; seed: number; turbo: boolean; low_memory: boolean }
+export interface ImageProgress { step: number; steps: number; seconds: number }
+export interface ImageApi {
+  /** True when this build includes the image engine. */
+  available(): Promise<boolean>;
+  /** Makes one picture and saves it; resolves with where. Rejects with the reason (or "stopped"). */
+  generate(req: ImageRequest, onProgress: (p: ImageProgress) => void): Promise<{ path: string; seconds: number }>;
+  cancel(): Promise<void>;
+  /** The picture as base64 PNG. */
+  read(path: string): Promise<string>;
+  /** Asks where to save a copy and saves it; false if the person cancelled. */
+  saveAs(path: string, suggestedName: string): Promise<boolean>;
+}
+
 /** Everything the interface needs from the machine it runs on. The real app implements it with Tauri commands; a browser preview with a mock. */
 export interface Bridge {
   readonly native: boolean;
@@ -91,6 +106,7 @@ export interface Bridge {
   readonly remote: RemoteApi;
   readonly inspect: InspectApi;
   readonly cloud: CloudApi;
+  readonly image: ImageApi;
   system(): Promise<SystemInfo>;
   /** The models in the app's folder, the command line's, and any folders you chose. */
   listModels(folders?: string[]): Promise<ModelInfo[]>;

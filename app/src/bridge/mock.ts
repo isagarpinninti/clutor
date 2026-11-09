@@ -156,6 +156,21 @@ export const mockBridge: Bridge = {
   web: mockWeb,
   remote,
   inspect: mockInspect,
+  image: {
+    async available() { return true; },
+    async generate(req, onProgress) {
+      for (let s = 1; s <= req.steps; s++) { await new Promise((r) => setTimeout(r, 250)); onProgress({ step: s, steps: req.steps, seconds: 0.25 }); }
+      return { path: "/preview/picture.png", seconds: req.steps * 0.25 };
+    },
+    async cancel() { /* the preview picture is quick */ },
+    async read() {
+      const c = document.createElement("canvas"); c.width = c.height = 256;
+      const x = c.getContext("2d");
+      if (x) { const g = x.createLinearGradient(0, 0, 256, 256); g.addColorStop(0, "#3150e0"); g.addColorStop(1, "#c0392b"); x.fillStyle = g; x.fillRect(0, 0, 256, 256); x.fillStyle = "#fff"; x.font = "16px sans-serif"; x.fillText("preview picture", 70, 130); }
+      return c.toDataURL("image/png").split(",")[1] as string;
+    },
+    async saveAs() { return true; },
+  },
   cloud: {
     async keySet() { /* nothing is stored in a browser preview */ },
     async keyHas() { return true; },

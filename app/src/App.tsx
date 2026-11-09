@@ -91,10 +91,14 @@ export function App() {
   const [notice, setNotice] = useState<string>();
   const [sidebar, setSidebar] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [imageMode, setImageMode] = useState(false);
+  const [imageAvail, setImageAvail] = useState(false);
+  const imaging = useRef(false);
+  useEffect(() => { void bridge.image.available().then(setImageAvail); }, []);
   const abort = useRef<AbortController | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
-  const { state, session, load } = useEngine();
+  const { state, session, load, unload } = useEngine();
 
   // ---- background jobs: the queue lives for the life of the app; its changes are written into the conversation message each job answers ----
   const settingsRef = useRef(settings);
@@ -239,6 +243,7 @@ export function App() {
   };
 
   const send = async (text: string, attached: Attachment[] = [], again?: { base: Msg[]; files?: Msg["files"] }): Promise<void> => {
+    if (imageMode && !again) { void makeImage(text); return; }
     if (!active || (!session.current && !wanted)) return;
     setPrefill(undefined);
     const convId = active.id;
@@ -291,7 +296,33 @@ export function App() {
     setBusy(false);
   };
 
-  const stop = (): void => abort.current?.abort();
+  const stop = (): void => { if (imaging.current) void bridge.image.cancel(); abort.current?.abort(); };
+
+  /** Makes a picture from the description: the chat model is unloaded first (the two do not fit side by side), the image model makes it, and the chat model loads again on the next message. */
+  const makeImage = async (prompt: string): Promise<void> => {
+    if (!active || imaging.current) return;
+    const convId = active.id;
+    const pipe = lib.auto.image.choice;
+    const size = settings.imageSize ?? 512;
+    const turbo = !!pipe?.diffusion.turbo;
+    const steps = turbo ? 8 : 25;
+    const user: Msg = { id: uid(), role: "user", content: prompt };
+    const reply: Msg = { id: uid(), role: "assistant", content: "", ...(pipe?.textEncoder && pipe.vae ? { making: { step: 0, steps, stage: "loading" as const, startedAt: Date.now() } } : { error: `There is no complete image model in the models folder: ${lib.auto.image.reason}.` }) };
+    update(convId, (c) => ({ ...c, title: c.messages.length ? c.title : titleFrom(prompt), updated: Date.now(), messages: [...c.messages, user, reply] }));
+    stick.current = true;
+    if (!pipe?.textEncoder || !pipe.vae) return;
+    const patch = (f: (m: Msg) => Msg): void => update(convId, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === reply.id ? f(m) : m)) }));
+    imaging.current = true; setBusy(true);
+    try {
+      await unload();
+      const r = await bridge.image.generate({ diffusion: pipe.diffusion.path, text_encoder: pipe.textEncoder.path, vae: pipe.vae.path, prompt, width: size, height: size, steps, cfg: turbo ? 1 : 4, seed: Math.floor(Math.random() * 2 ** 31), turbo, low_memory: false }, (p) =>
+        patch((m) => ({ ...m, making: { step: p.step, steps, stage: p.steps === steps ? "sampling" : "finishing", ...(p.steps === steps && p.seconds > 0 ? { secsPerStep: p.seconds } : m.making?.secsPerStep ? { secsPerStep: m.making.secsPerStep } : {}), startedAt: m.making?.startedAt ?? Date.now() } })));
+      patch((m) => { const { making: _k, ...rest } = m; void _k; return { ...rest, image: { path: r.path, w: size, h: size, seconds: r.seconds, prompt } }; });
+    } catch (e) {
+      const text = e instanceof Error ? e.message : String(e);
+      patch((m) => { const { making: _k, ...rest } = m; void _k; return text === "stopped" ? { ...rest, interrupted: true } : { ...rest, error: text }; });
+    } finally { imaging.current = false; setBusy(false); }
+  };
   /** Sends a message again from where it was: what came after it is replaced by the new reply. With `text`, the message is edited first. */
   const resendFrom = (userId: string, text?: string): void => {
     if (!active || busy) return;
@@ -345,7 +376,7 @@ export function App() {
   const haveModel = ready || !!wanted;
   const [prefill, setPrefill] = useState<{ text: string; n: number }>();
   const composer = (home: boolean) => (
-    <Composer vision={state.ready?.vision || (autoOn && !!lib.auto.vision.choice)} busy={busy} disabled={!ready && !wanted} placeholder={ready || wanted ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t, f) => void send(t, f)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
+    <Composer imageReady={imageAvail && !!lib.auto.image.choice} imageMode={imageMode} onImageMode={setImageMode} imageSize={settings.imageSize ?? 512} onImageSize={(n) => setSettings((s) => ({ ...s, imageSize: n }))} vision={state.ready?.vision || (autoOn && !!lib.auto.vision.choice)} busy={busy} disabled={!ready && !wanted && !imageMode} placeholder={imageMode ? "Describe the picture you want…" : ready || wanted ? "Message Clutor" : "Choose a model to start"} thinking={settings.thinking} onThinking={(v) => setSettings((s) => ({ ...s, thinking: v }))} browse={settings.browse} onBrowse={(v) => { setSettings((s) => ({ ...s, browse: v })); if (v) flash("Browse is on: your message goes to a search service (DuckDuckGo) and the pages are fetched from the internet."); }} onSend={(t, f) => void send(t, f)} onBackground={sendBackground} notice={notice} onStop={stop} picker={picker} home={home} prefill={prefill} />
   );
   const lastAssistant = active?.messages[active.messages.length - 1];
 

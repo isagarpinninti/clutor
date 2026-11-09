@@ -1067,3 +1067,10 @@ body.resizing * { transition: none !important; }
 .lib-why { margin: -1px 0 4px 76px; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
 .lib-other { margin: 8px 0 4px; font-size: 12.5px; } .lib-other summary { cursor: pointer; color: var(--muted); } .lib-other ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; } .lib-other li b { display: block; font-weight: 500; overflow-wrap: anywhere; } .lib-other li small { color: var(--muted); }
 .menu-item.auto small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+.gen-image { margin: 8px 0; max-width: 560px; } .gen-image img { width: 100%; height: auto; border-radius: 12px; display: block; background: var(--g1); }
+.gen-image figcaption { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.gen-skel { display: grid; place-items: center; background: var(--g1); border-radius: 12px; color: var(--muted); font-size: 13px; max-width: 560px; }
+.making { margin: 8px 0; padding: 12px 14px; background: var(--g1); border-radius: 12px; max-width: 560px; } .making-head { display: flex; align-items: center; gap: 10px; font-size: 13.5px; } .making-head small { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.making .bar { display: block; margin-top: 8px; } .making-note { margin: 8px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+.size-select { background: var(--g1); border: 1px solid var(--g2); border-radius: 8px; color: var(--text); font: inherit; font-size: 12px; padding: 4px 6px; }

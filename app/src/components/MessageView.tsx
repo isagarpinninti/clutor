@@ -5,6 +5,7 @@ import { Markdown } from "./Markdown";
 import { CheckIcon, CloseIcon, CopyIcon, EditIcon, FileIcon, RedoIcon } from "./icons";
 import { Logo } from "./Logo";
 import { Spark, Thinking } from "./Thinking";
+import { GeneratedImage, MakingImage } from "./GeneratedImage";
 import { bridge } from "../bridge";
 import type { Job } from "../jobs";
 import { JobStrip, type JobAction } from "./JobStrip";
@@ -58,6 +59,8 @@ export function MessageView({ msg, streaming, showReasoning, job, position, onJo
           </details>
         ) : null}
         {job && onJobAction ? <JobStrip job={job} position={position ?? 0} onAction={onJobAction} /> : null}
+        {msg.making ? <MakingImage making={msg.making} /> : null}
+        {msg.image ? <GeneratedImage image={msg.image} /> : null}
         {msg.content ? <Markdown text={msg.content} streaming={streaming} /> : (streaming || job?.status === "running") && !msg.reasoning ? <Thinking orb={false} /> : null}
         {msg.web ? (
           <div className={`websearch ${msg.web.state}`} role="status">

@@ -2,9 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { EventQueue, NativeError, type Ev, type NativeReady, type Transport } from "@engine/session";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { AgentHost, Bridge, CloudApi, FileInfo, DiskSpeed, InspectApi, RemoteApi, RemoteDevice, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
+import type { AgentHost, Bridge, CloudApi, FileInfo, ImageApi, ImageProgress, DiskSpeed, InspectApi, RemoteApi, RemoteDevice, WebApi, CatalogItem, DownloadProgress, ModelInfo, OpenEngine, SystemInfo } from "./types";
 
 /** The engine runs inside this process (src-tauri links it); its events arrive as Tauri events and its operations go out as commands. */
 class TauriTransport implements Transport {
@@ -103,6 +103,24 @@ const cloud: CloudApi = {
   cancel: (id) => invoke("cloud_cancel", { id }),
 };
 
+const image: ImageApi = {
+  available: () => invoke<boolean>("image_available").catch(() => false),
+  async generate(req, onProgress) {
+    const un = await listen<ImageProgress>("image-progress", (e) => onProgress(e.payload));
+    try { return await invoke<{ path: string; seconds: number }>("image_generate", { req }); }
+    catch (e) { throw new Error(String(e), { cause: e }); }
+    finally { un(); }
+  },
+  cancel: () => invoke("image_cancel"),
+  read: (path) => invoke<string>("image_read", { path }),
+  async saveAs(path, suggestedName) {
+    const dest = await save({ defaultPath: suggestedName, filters: [{ name: "PNG picture", extensions: ["png"] }] });
+    if (!dest) return false;
+    await invoke("image_save_as", { path, dest });
+    return true;
+  },
+};
+
 const inspect: InspectApi = {
   size: (path) => invoke("model_size", { path }),
   async read(path, offset, length) {
@@ -120,6 +138,7 @@ export const tauriBridge: Bridge = {
   host,
   web,
   cloud,
+  image,
   remote,
   inspect,
   system: () => invoke<SystemInfo>("system_info"),

@@ -15,6 +15,12 @@ interface Props {
   onSend: (text: string, files: Attachment[]) => void;
   /** The loaded model takes pictures: images can be attached. */
   vision?: boolean | undefined;
+  /** An image model is available: the Image option is shown. */
+  imageReady?: boolean;
+  imageMode?: boolean;
+  onImageMode?: (v: boolean) => void;
+  imageSize?: number;
+  onImageSize?: (n: number) => void;
   /** Runs the question as a background job: the reply keeps generating while you do other things. */
   onBackground: (text: string, files: Attachment[]) => void;
   notice?: string | undefined;
@@ -27,7 +33,7 @@ interface Props {
   onStop: () => void;
 }
 
-export function Composer({ busy, disabled, placeholder, thinking, onThinking, browse, onBrowse, onSend, onBackground, vision, notice, onStop, picker, prefill, home }: Props) {
+export function Composer({ busy, disabled, placeholder, thinking, onThinking, browse, onBrowse, onSend, onBackground, vision, imageReady, imageMode, onImageMode, imageSize, onImageSize, notice, onStop, picker, prefill, home }: Props) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Attachment[]>([]);
   const [problem, setProblem] = useState<string>();
@@ -108,6 +114,8 @@ export function Composer({ busy, disabled, placeholder, thinking, onThinking, br
           ]} />
           <button type="button" className={`toggle${thinking ? " on" : ""}`} aria-pressed={thinking} onClick={() => onThinking(!thinking)} title="Let thinking models reason before answering (slower, often better)"><ThinkIcon />Think</button>
           <button type="button" className={`toggle${browse ? " on" : ""}`} aria-pressed={browse} onClick={() => onBrowse(!browse)} title="Look things up on the web first; your message goes to a search service"><GlobeIcon />Browse</button>
+          {imageReady && onImageMode ? <button type="button" className={`toggle${imageMode ? " on" : ""}`} aria-pressed={!!imageMode} onClick={() => onImageMode(!imageMode)} title="Make a picture from your description with the image model (the chat model is unloaded while it works)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3" /><circle cx="9" cy="10" r="1.6" /><path d="m4 18 5-5 4 4 3-3 4 4" /></svg>Image</button> : null}
+          {imageReady && imageMode && onImageSize ? <select className="size-select" value={imageSize ?? 512} onChange={(e) => onImageSize(Number(e.target.value))} aria-label="Picture size"><option value={512}>512 · fastest</option><option value={768}>768</option><option value={1024}>1024 · slowest</option></select> : null}
           <span className="spacer" />
           {picker}
           {busy

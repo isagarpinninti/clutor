@@ -2,7 +2,7 @@ import type { ModelInfo } from "./bridge";
 
 export interface MsgStats { tokens: number; tps?: number; promptTokens?: number; ms: number; cache?: { hitRate: number; gbRead: number } }
 export interface Source { title: string; url: string }
-export interface Msg { id: string; role: "user" | "assistant"; content: string; sources?: Source[]; files?: Array<{ name: string; bytes: number; text: string; truncated: boolean; id?: string; image?: { w: number; h: number; thumb: string } }>; web?: { query: string; state: "searching" | "done" | "failed"; error?: string }; jobId?: string; reasoning?: string; stats?: MsgStats; error?: string; interrupted?: boolean }
+export interface Msg { id: string; role: "user" | "assistant"; content: string; sources?: Source[]; files?: Array<{ name: string; bytes: number; text: string; truncated: boolean; id?: string; image?: { w: number; h: number; thumb: string } }>; web?: { query: string; state: "searching" | "done" | "failed"; error?: string }; jobId?: string; /** A picture this message holds (made by the image model); `making` while it is being made. */ image?: { path: string; w: number; h: number; seconds?: number; prompt: string }; making?: { step: number; steps: number; stage: "loading" | "sampling" | "finishing"; secsPerStep?: number; startedAt: number }; reasoning?: string; stats?: MsgStats; error?: string; interrupted?: boolean }
 export interface Conversation { id: string; title: string; updated: number; messages: Msg[] }
 
 export interface Settings {
@@ -21,6 +21,8 @@ export interface Settings {
   /** True (the default) when Chat and Code use the same model; false lets each have its own. */
   /** Clutor picks the model for each task from the models folder (the default). Choosing a model yourself turns this off; "Auto" in the model menu turns it back on. */
   autoModel?: boolean;
+  /** The side of a generated picture in pixels (512, 768 or 1024). */
+  imageSize?: number;
   sameModel?: boolean;
   /** The model for each mode, used only when `sameModel` is false. */
   models?: { chat?: ModelInfo; code?: ModelInfo };
@@ -60,7 +62,7 @@ function write(key: string, value: unknown): void {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage full or blocked: the app still works, it just forgets */ }
 }
 
-export const loadConversations = (): Conversation[] => read<Conversation[]>(CONV, []);
+export const loadConversations = (): Conversation[] => read<Conversation[]>(CONV, []).map((c) => ({ ...c, messages: c.messages.map((m) => { if (!m.making) return m; const { making: _m, ...rest } = m; void _m; return { ...rest, interrupted: true }; }) }));
 export const saveConversations = (c: Conversation[]): void => write(CONV, c.slice(0, 200));
 /** 4096 was the old default and is too small for the coding agent (its instructions and one file fill it), so a saved 4096 is raised to the new default. */
 /** The generation speed seen for each model on this computer (tokens per second, smoothed over the replies so far), kept so the time estimates can use a measurement instead of a guess. */

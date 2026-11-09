@@ -1,5 +1,6 @@
 mod cloud;
 mod engine;
+mod image;
 mod models;
 mod inspect;
 mod project;
@@ -54,6 +55,11 @@ pub fn run() {
             remote::commands::remote_kick,
             remote::commands::remote_log,
             remote::commands::remote_log_read,
+            image::image_available,
+            image::image_cancel,
+            image::image_generate,
+            image::image_read,
+            image::image_save_as,
             cloud::cloud_key_set,
             cloud::cloud_key_has,
             cloud::cloud_key_clear,

@@ -21,5 +21,24 @@ fn main() {
     if os == "linux" { println!("cargo:rustc-link-lib=m"); println!("cargo:rustc-link-lib=pthread"); }
     if os == "windows" { println!("cargo:rustc-link-lib=psapi"); }
     println!("cargo:rerun-if-changed=../../c/src");
+    // The image engine (stable-diffusion.cpp, MIT) is linked in when its built libraries are found: CLUTOR_SD_DIR, else a checkout next to this repository. Without them the app builds
+    // without it and reports that the image engine is not included.
+    println!("cargo::rustc-check-cfg=cfg(has_image)");
+    println!("cargo:rerun-if-env-changed=CLUTOR_SD_DIR");
+    println!("cargo:rerun-if-changed=image");
+    let sd = std::env::var("CLUTOR_SD_DIR").ok().map(std::path::PathBuf::from).unwrap_or_else(|| Path::new("../../../clutor-tools/stable-diffusion.cpp").to_path_buf());
+    let lib = sd.join("build").join("libstable-diffusion.a");
+    if os == "macos" && arch == "aarch64" && lib.exists() {
+        let mut s = cc::Build::new();
+        s.file("image/clutor_image.c").include("image").include(sd.join("include")).opt_level(2).warnings(false).flag_if_supported("-std=gnu11");
+        s.compile("clutor_image");
+        let g = sd.join("build").join("ggml").join("src");
+        for dir in [sd.join("build"), g.clone(), g.join("ggml-metal"), g.join("ggml-blas")] { println!("cargo:rustc-link-search=native={}", dir.display()); }
+        for l in ["stable-diffusion", "ggml", "ggml-metal", "ggml-blas", "ggml-cpu", "ggml-base"] { println!("cargo:rustc-link-lib=static={l}"); }
+        for f in ["Accelerate", "Metal", "MetalKit", "Foundation", "CoreFoundation"] { println!("cargo:rustc-link-lib=framework={f}"); }
+        println!("cargo:rustc-link-lib=c++");
+        println!("cargo:rustc-link-lib=objc");
+        println!("cargo:rustc-cfg=has_image");
+    }
     tauri_build::build();
 }
