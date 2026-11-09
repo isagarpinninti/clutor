@@ -49,7 +49,7 @@ export function ModelPicker({ current, status, note, folders, same, onSame, auto
       </button>
       {open ? (
         <div className="pmenu" role="listbox" aria-label="Models">
-          {onAuto ? <button type="button" role="menuitemcheckbox" aria-checked={!!auto} className={`menu-item auto${auto ? " on" : ""}`} onClick={() => { setOpen(false); onAuto(); }} title={autoReason}><span>Auto: the best model for each task</span><small>{auto && autoReason ? autoReason.slice(0, 70) : "from your models folder"}</small></button> : null}
+          {onAuto ? <button type="button" role="menuitemcheckbox" aria-checked={!!auto} className={`menu-item two auto${auto ? " on" : ""}`} onClick={() => { setOpen(false); onAuto(); }} title={autoReason}><span className="mi-text"><b>Auto</b><small>{auto && autoReason ? autoReason : "the best model for each task, from your models folder"}</small></span></button> : null}
           {models.length === 0 && loadProviders().length === 0 ? <p className="menu-empty">No models on this device yet.</p> : null}
           {models.map((m) => (
             <button type="button" role="option" aria-selected={m.path === current?.path} key={m.path} className={`menu-item${m.path === current?.path ? " on" : ""}`} onClick={() => { setOpen(false); if (m.path !== current?.path) onPick(m); }}>

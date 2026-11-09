@@ -32,7 +32,7 @@ export function useLibrary(folders: string[], ramBytes: number | undefined): { l
   const [files, setFiles] = useState<Classified[]>([]);
   const [scanning, setScanning] = useState(false);
   const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; }, []);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);   // set again on mount: React's development mode mounts, unmounts and mounts again
   const rescan = useCallback((): void => {
     setScanning(true);
     loadLibrary(folders).then((f) => { if (alive.current) setFiles(f); }, () => { if (alive.current) setFiles([]); }).finally(() => { if (alive.current) setScanning(false); });

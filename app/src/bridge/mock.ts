@@ -143,10 +143,55 @@ if (typeof window !== "undefined") {
 /** The preview has no files: a pretend model file whose header says it is a large mixture-of-experts model, and a pretend disk. */
 const SPEC_SMALL: SyntheticModelSpec = { arch: "llama", name: "Llama 3.2 1B (preview)", layers: 16, embedding: 2048, heads: 32, kvHeads: 8, contextLength: 131072, expertCount: 0, expertsUsed: 0, expertFfn: 0, denseFfn: 8192, vocab: 128256 };
 const SPEC_BIG: SyntheticModelSpec = { arch: "qwen3moe", name: "Qwen3 235B-A22B (preview)", layers: 94, embedding: 4096, heads: 64, kvHeads: 4, contextLength: 262144, expertCount: 128, expertsUsed: 8, expertFfn: 1536, denseFfn: 0, vocab: 151936, sharedExperts: 0, quantType: 12 };
-const specFor = (path: string): SyntheticModelSpec => (/qwen/i.test(path) ? SPEC_BIG : SPEC_SMALL);
+const SPEC_VL: SyntheticModelSpec = { arch: "qwen3vlmoe", name: "Qwen3-VL-30B-A3B (preview)", layers: 48, embedding: 2048, heads: 32, kvHeads: 4, contextLength: 262144, expertCount: 128, expertsUsed: 8, expertFfn: 768, denseFfn: 0, vocab: 151936, quantType: 10 };
+const specFor = (path: string): SyntheticModelSpec => (/qwen3-vl/i.test(path) ? SPEC_VL : /qwen/i.test(path) ? SPEC_BIG : SPEC_SMALL);
+
+/** The preview's pretend models folder: a chat model or two, a picture-reading model with its projector, and an image generator with its text encoder and VAE. */
+const GB = 1_000_000_000;
+const PREVIEW_FILES = [
+  { path: "/preview/Llama-3.2-1B-Instruct-Q4_K_M.gguf", bytes: buildGgufHeader(SPEC_SMALL).dataOffset + buildGgufHeader(SPEC_SMALL).dataSize },
+  { path: "/preview/Qwen3-VL-30B-A3B-Instruct.i1-Q2_K.gguf", bytes: Math.round(10.5 * GB) },
+  { path: "/preview/Qwen3-VL-30B-A3B-Instruct.mmproj-f16.gguf", bytes: GB },
+  { path: "/preview/qwen-image-2.1-turbo-Q4_K_M.gguf", bytes: 4 * GB },
+  { path: "/preview/qwen3vl_8b_int8_convrot.safetensors", bytes: Math.round(9.3 * GB) },
+  { path: "/preview/qwen_image_2.1_vae_bf16.safetensors", bytes: 680_000_000 },
+];
+const previewHeader = (path: string): { head: Uint8Array; size: number } | undefined => {
+  const n = path.toLowerCase();
+  const file = PREVIEW_FILES.find((f) => f.path === path);
+  if (!file) return undefined;
+  const enc = new TextEncoder();
+  const gguf = (kv: Array<[string, string]>, tensors: Array<{ name: string; dims: number[]; type: number }>): Uint8Array => {
+    const out: number[] = [];
+    const u32 = (v: number): void => { out.push(v & 255, (v >> 8) & 255, (v >> 16) & 255, (v >>> 24) & 255); };
+    const u64 = (v: number): void => { u32(v); u32(Math.floor(v / 2 ** 32)); };
+    const str = (s: string): void => { const b = enc.encode(s); u64(b.length); out.push(...b); };
+    out.push(0x47, 0x47, 0x55, 0x46); u32(3); u64(tensors.length); u64(kv.length);
+    for (const [k, v] of kv) { str(k); u32(8); str(v); }
+    let off = 0;
+    for (const t of tensors) { str(t.name); u32(t.dims.length); for (const d of t.dims) u64(d); u32(t.type); u64(off); off += 1 << 12; }
+    while (out.length % 32) out.push(0);
+    return Uint8Array.from(out);
+  };
+  if (n.endsWith(".safetensors")) {
+    const names = n.includes("vae") ? ["encoder.conv1.weight", "decoder.conv1.weight", "decoder.head.2.weight"] : ["model.embed_tokens.weight", "model.layers.0.self_attn.q_proj.weight"];
+    const json = enc.encode(JSON.stringify(Object.fromEntries(names.map((k) => [k, { dtype: "BF16", shape: [1], data_offsets: [0, 2] }]))));
+    const head = new Uint8Array(8 + json.length);
+    new DataView(head.buffer).setBigUint64(0, BigInt(json.length), true);
+    head.set(json, 8);
+    return { head, size: file.bytes };
+  }
+  if (n.includes("mmproj")) return { head: gguf([["general.architecture", "clip"], ["general.type", "mmproj"], ["clip.projector_type", "qwen3vl_merger"]], []), size: file.bytes };
+  if (n.includes("qwen-image")) {
+    const head = gguf([], [{ name: "model.diffusion_model.time_text_embed.timestep_embedder.linear_1.weight", dims: [64, 64], type: 12 }, { name: "model.diffusion_model.transformer_blocks.0.img_mlp.out.weight", dims: [64, 64], type: 12 }]);
+    return { head, size: head.length + 4 * (1 << 12) + 4096 };
+  }
+  const b = buildGgufHeader(specFor(path));
+  return { head: b.header, size: b.dataOffset + b.dataSize };
+};
 const mockInspect: InspectApi = {
-  async size(path) { const b = buildGgufHeader(specFor(path)); return b.dataOffset + b.dataSize; },
-  async read(path, offset, length) { const { header } = buildGgufHeader(specFor(path)); return header.subarray(offset, Math.min(header.length, offset + length)); },
+  async size(path) { const p = previewHeader(path); if (p) return p.size; const b = buildGgufHeader(specFor(path)); return b.dataOffset + b.dataSize; },
+  async read(path, offset, length) { const p = previewHeader(path); const head = p ? p.head : buildGgufHeader(specFor(path)).header; return head.subarray(offset, Math.min(head.length, offset + length)); },
   async diskBench() { await new Promise((r) => setTimeout(r, 600)); return { sequentialBytesPerSec: 2.4e9, scatteredBytesPerSec: 1.1e9, seconds: 4 }; },
 };
 
@@ -185,7 +230,7 @@ export const mockBridge: Bridge = {
     async cancel() { /* the canned answer is short */ },
   },
   async system(): Promise<SystemInfo> { return { os: "preview", arch: "browser", ramBytes: 16 * 2 ** 30, cores: 8, modelsDir: "~/.clutor/models" }; },
-  async scanFiles() { return MODELS.map((m) => ({ path: m.path, name: m.path.split("/").pop() as string, bytes: m.bytes })); },
+  async scanFiles() { return PREVIEW_FILES.map((f) => ({ path: f.path, name: f.path.split("/").pop() as string, bytes: f.bytes })); },
   async listModels(folders) { return folders?.length ? [...MODELS, { path: `${folders[0]}/Custom-Model-7B-Q4_K_M.gguf`, name: "Custom-Model-7B-Q4_K_M", bytes: 4_400_000_000 }] : MODELS; },
   async catalog() { return CATALOG; },
   async revealModels() { /* nothing to open in a browser */ },

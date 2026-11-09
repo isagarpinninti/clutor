@@ -11,6 +11,9 @@
 </p>
 
 <p align="center">
+  <a href="#see-it"><b>See it</b></a> ·
+  <a href="#what-it-does"><b>Features</b></a> ·
+  <a href="#measured-on-this-hardware"><b>Numbers</b></a> ·
   <a href="#the-app"><b>App</b></a> ·
   <a href="#the-idea"><b>The idea</b></a> ·
   <a href="#install-and-run"><b>Install</b></a> ·
@@ -22,13 +25,39 @@
 
 ---
 
-Clutor is a local AI workbench built around its own inference engine. It has three parts:
+Clutor is a local AI workbench built around its own inference engine: chat, a coding agent, models that read pictures, and a picture generator, all running on your own computer. Point it at a folder of models and it works out what each file is and which one to use for which task.
+
+It has three parts:
 
 | Part | What it is |
 | --- | --- |
 | **Engine** (`c/`) | Plain C with no dependencies. Reads GGUF files directly, runs the forward pass, and for mixture-of-experts models streams only the experts a token needs from disk through an adaptive cache with prefetch. |
 | **App** (`app/`) | A desktop app (Tauri 2: Rust shell, system web view, React) with **Chat**, a **Code** agent, background jobs and MCP tools. Dark only, no Electron. |
 | **Planner, CLI and agent** (`packages/`) | TypeScript. Answers "will this model fit, and how fast could the disk possibly let it go", and provides the terminal UI and the sandboxed coding agent. |
+
+## See it
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/chat.png" alt="Chat"><br><sub><b>Chat</b>: streaming replies, web sources, think mode, background jobs.</sub></td>
+<td width="50%"><img src="docs/screenshots/coding-mode.png" alt="Coding mode"><br><sub><b>Code</b>: a plan that ticks off, grouped steps, approvals, a live activity panel.</sub></td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/models-folder.png" alt="The models folder, understood"><br><sub><b>Models folder</b>: what each file is, and which model each task will use.</sub></td>
+<td><img src="docs/screenshots/image-generation.png" alt="Image generation"><br><sub><b>Pictures</b>: describe it, the chat model steps aside, the image model makes it.</sub></td>
+</tr>
+</table>
+
+<sub>The screenshots are the interface running in a browser preview with sample data (see `app/src/bridge/mock.ts` and `scripts/capture-screenshots.mjs`), so the chat reply in the first one says that no model is running. The picture in the last one is a real output of Qwen-Image-2.1 Turbo made by Clutor on an Apple M2 (`docs/screenshots/sample-picture.jpg`, 512 × 512, 155 s); the rest of that screen, including its timing, is the preview's.</sub>
+
+## What it does
+
+- **Chat, with pictures.** Attach a picture and ask about it: Qwen3-VL models read it through their vision encoder (written in C in this repository; checked against an independent implementation and against llama.cpp). Chat can also use cloud models from a provider you set up (below).
+- **A coding agent.** Plans, edits a private copy, runs your tests after asking, then writes the files to your folder with an undo point. Slash commands (`/help /clear /compact /undo /rewind /plan /init ...`), `@file` mentions, project instructions from `CLUTOR.md` (or `AGENTS.md`, `CLAUDE.md`), hooks (`.clutor/hooks.json`), read-only helper agents, saved command permissions, automatic compaction of a long session.
+- **A picture generator, inside the app.** Qwen-Image-2.1 (and other models that stable-diffusion.cpp runs) is linked into the program itself. Turn on **Image** in the chat box; the chat model is unloaded while the picture is made, and loads again on your next message.
+- **A models folder, understood.** Give it one folder. It reads the header of every GGUF and safetensors file and works out what each is (chat model, picture-reading model with its projector, image generator with its text encoder and VAE) and picks the most capable model that runs comfortably on this computer for chat, code, pictures and image generation. Turn **Auto** off any time to choose yourself.
+- **Honest time estimates.** "Will it run?" says how much memory a model needs and how long a chat answer or a small coding task should take, labelled as estimated or measured; once a model has answered, its measured speed replaces the guess.
+- **Cloud models, if you want them.** Anthropic, OpenAI, Google Gemini, OpenRouter, DeepSeek, Groq, Mistral, Together, Ollama or LM Studio on a machine you run, or any OpenAI-compatible address. The API key is kept by the app's native side and never shown again; using a provider needs a tick confirming that your messages leave this computer. Local models never send anything.
 
 ## The app
 
@@ -83,6 +112,20 @@ Rough physics, computed, not measured (disk assumed at 3 GB/s):
 
 So large MoE models are usable for slow, background work, and dense models of that size are not. The app's background jobs exist for exactly that case. Run `clutor plan <model> --ram N` for the arithmetic on your machine, and see [docs/ENGINE.md](docs/ENGINE.md).
 
+## Measured on this hardware
+
+Everything below was measured on one computer: **an Apple M2 with 16 GB of memory**, running the models with nothing else heavy open. They are single runs, not benchmarks; other machines will differ.
+
+| What | Result |
+| --- | --- |
+| Qwen3-VL-30B-A3B at **2-bit** (Q2_K/Q3_K, 10.5 GiB, fits in memory) | about **20 tokens/s** generating once the file is in memory; about **25 tokens/s** reading a prompt in a warm run |
+| A picture to that model (448 × 448, 196 tokens) | 7.7 s to encode, about 25 s to read; about 35 s before the answer starts |
+| Qwen3-30B-A3B at Q4_K_M (17.3 GiB, larger than memory), experts streamed from disk | about **4.7 tokens/s** with a 4 GiB cache, about 10 with 8 GiB (earlier run; the file is no longer on the machine) |
+| Qwen-Image-2.1 **Turbo** Q4_K_M, 512 × 512, 8 steps | **155 s** inside the app; peak memory **8.0 GB** (15.9 GB without memory mapping) |
+| Qwen-Image-2.1 **full** model, 512 × 512 | about 27 s per step, so 9 to 10 minutes for 20 steps (stopped early; not completed) |
+
+**Not measured:** 768 and 1024 pictures, any machine other than this one, the engine on Windows or Linux. Picture generation on Windows and Linux uses the processor only (no GPU backend is built there yet), so expect it to be much slower than on this Mac; that is a guess, not a measurement.
+
 ## Install and run
 
 ### The desktop app (from source)
@@ -95,6 +138,12 @@ npm install
 cd app && npm install
 npm run tauri dev                  # run it
 npx tauri build --bundles app      # macOS: builds src-tauri/target/release/bundle/macos/Clutor.app
+```
+
+**The image engine (optional).** Pictures come from [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (MIT), linked into the app. `scripts/build-sd.sh` builds it from a pinned revision (macOS with Apple silicon uses the Apple GPU; Linux and Windows build for the processor); the app's build links it in when `CLUTOR_SD_DIR` points at the result, or when it finds a checkout at `../clutor-tools/stable-diffusion.cpp`. Without it the app builds and runs as before and says that the image engine is not included. CI builds it for macOS, Linux and Windows; only macOS has been run by the author.
+
+```bash
+CLUTOR_SD_DIR=$(scripts/build-sd.sh) npx tauri build --bundles app     # from app/
 ```
 
 Put `.gguf` files in the app's models folder (shown in the app; override with `CLUTOR_MODELS=/path`), or use **Get a model** in the picker. The build is unsigned, so macOS may ask you to right-click the app and choose Open the first time.
@@ -121,6 +170,11 @@ The native engine runs a real forward pass, checked against llama.cpp, for these
 | Llama 3.x (`llama`) | dense | whole model read per token |
 | Qwen2.5 (`qwen2`) | dense | |
 | Qwen3.5 (`qwen35`) | hybrid dense (Gated DeltaNet + attention) | thinking models supported |
+| Qwen3-VL (`qwen3vlmoe`) | MoE, **reads pictures** | text and pictures; needs the `mmproj` projector file next to it; checked on a 30B-A3B abliterated Q2_K build |
+
+Weight formats: F32, F16, BF16, Q8_0, Q5_0, Q4_0 and the K-quants **Q2_K, Q3_K, Q4_K, Q5_K, Q6_K** (integer dot products; NEON kernels on Apple and ARM, AVX2 for Q4_K to Q6_K on x86, while Q2_K and Q3_K use plain C there). The IQ formats are not supported.
+
+**Image models** (through stable-diffusion.cpp, in the app): Qwen-Image-2.1 and Turbo as GGUF, with the Qwen3-VL-8B text encoder and the VAE. Only the Turbo Q4_K_M has been run here. Its licence (qwen-research) does not allow commercial use, and Clutor does not ship it: you download the files yourself. Other models the runtime supports (FLUX, Stable Diffusion and others) are recognised by the models folder but have not been tried.
 
 DeepSeek, GLM, Kimi and Mixtral are known to the planner by their published shapes, but the engine has never opened one. Details and the exact agreement figures per model are in [docs/MODELS.md](docs/MODELS.md).
 
@@ -146,7 +200,10 @@ For every layer of every token the engine routes (top-k experts), looks the expe
 What was verified, and what was not:
 
 - **Verified:** the engine matches llama.cpp on tokenization and top tokens for the architectures above; the engine builds and passes its chat-protocol tests on Linux, macOS and Windows (MinGW) in CI; the app's agent, apply/undo, MCP client, job queue and usage logic are covered by unit tests, and the Rust file jail and command runner by Rust tests.
-- **Only on macOS arm64:** all performance numbers and the desktop app itself.
+- **Verified for Qwen3-VL:** the dequantisers for Q2_K and Q3_K equal ggml's own on 2,000 random blocks each; the picture encoder equals an independent numpy implementation to 0.001% on all four outputs; on a test picture the engine and llama.cpp's `llama-mtmd-cli` give almost the same description; tokens equal llama.cpp's and the top next token agrees on six prompts, but the log-probabilities differ by 0.1 to 0.65 on average. That is the 2-bit model's sensitivity to rounding: the engine's own integer and float paths differ from each other by about as much.
+- **A 2-bit model is imprecise** about details such as where things are in a picture; llama.cpp behaves the same way.
+- **Only on macOS arm64:** all performance numbers, the desktop app itself, and picture generation.
+- **Not tested by the author:** picture generation on Windows and Linux (it is built in CI but never run), the image engine with models other than Qwen-Image-2.1 Turbo, and any cloud provider with a real key (request building and response parsing are unit-tested; the whole path was exercised against the preview's canned answer).
 - **Not tested by the author:** the app on Windows, Linux and Android (no Android build yet); MCP HTTP transport (stdio only); the AVX2 kernels beyond a CI unit test.
 - **Limits of the agent:** it is only as reliable as the model behind it. Small models often make malformed tool calls; those are rejected, and every change is shown to you before anything is written. The command sandbox isolates the project and environment, **not the machine**: a command you approve can still read files your user can read.
 - **Not claimed:** that a huge model runs fast. The planner prints the real ceiling for your disk.
@@ -160,7 +217,9 @@ c/                 native engine: GGUF parser, forward pass, I/O pool, cache, pr
 app/               desktop app: src/ (React UI, agent, MCP, jobs), src-tauri/ (Rust: engine host, file jail, command runner)
 packages/core/     planner, catalog, gates, agent core, receipts, server
 packages/cli/      the `clutor` command, terminal UI, engine driver
-docs/              guides, engine design, models, limits, results
+app/src-tauri/image/   the small C layer that calls the image engine (stable-diffusion.cpp)
+scripts/           build-sd.sh (the image engine), capture-screenshots.mjs (the screenshots above)
+docs/              guides, engine design, models, limits, results, screenshots
 examples/          sample clutor.config.json
 ```
 

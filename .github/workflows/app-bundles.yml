@@ -34,8 +34,20 @@ jobs:
           workspaces: app/src-tauri
       - run: npm ci
         working-directory: app
+      - name: Cache the image engine
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/clutor-sd
+          key: sd-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-sd.sh') }}
+      - name: Build the image engine
+        id: sd
+        continue-on-error: true
+        shell: bash
+        run: scripts/build-sd.sh
       - run: npx tauri build
         working-directory: app
+        env:
+          CLUTOR_SD_DIR: ${{ steps.sd.outputs.dir }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: clutor-app-${{ runner.os }}

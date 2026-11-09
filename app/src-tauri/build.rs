@@ -26,18 +26,25 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(has_image)");
     println!("cargo:rerun-if-env-changed=CLUTOR_SD_DIR");
     println!("cargo:rerun-if-changed=image");
-    let sd = std::env::var("CLUTOR_SD_DIR").ok().map(std::path::PathBuf::from).unwrap_or_else(|| Path::new("../../../clutor-tools/stable-diffusion.cpp").to_path_buf());
-    let lib = sd.join("build").join("libstable-diffusion.a");
-    if os == "macos" && arch == "aarch64" && lib.exists() {
+    let sd = std::env::var("CLUTOR_SD_DIR").ok().filter(|s| !s.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| Path::new("../../../clutor-tools/stable-diffusion.cpp").to_path_buf());
+    let b = sd.join("build");
+    let g = b.join("ggml").join("src");
+    // Makefile-style builds keep the libraries where they are made; Visual Studio's put them in a "Release" folder beside.
+    let mut dirs = vec![b.clone(), b.join("Release"), g.clone(), g.join("Release"), g.join("ggml-metal"), g.join("ggml-blas"), g.join("ggml-metal").join("Release"), g.join("ggml-blas").join("Release")];
+    dirs.retain(|d| d.exists());
+    let file = |name: &str| if os == "windows" { format!("{name}.lib") } else { format!("lib{name}.a") };
+    let have = |name: &str| dirs.iter().any(|d| d.join(file(name)).exists());
+    if have("stable-diffusion") && have("ggml") && have("ggml-base") && have("ggml-cpu") {
         let mut s = cc::Build::new();
         s.file("image/clutor_image.c").include("image").include(sd.join("include")).opt_level(2).warnings(false).flag_if_supported("-std=gnu11");
         s.compile("clutor_image");
-        let g = sd.join("build").join("ggml").join("src");
-        for dir in [sd.join("build"), g.clone(), g.join("ggml-metal"), g.join("ggml-blas")] { println!("cargo:rustc-link-search=native={}", dir.display()); }
-        for l in ["stable-diffusion", "ggml", "ggml-metal", "ggml-blas", "ggml-cpu", "ggml-base"] { println!("cargo:rustc-link-lib=static={l}"); }
-        for f in ["Accelerate", "Metal", "MetalKit", "Foundation", "CoreFoundation"] { println!("cargo:rustc-link-lib=framework={f}"); }
-        println!("cargo:rustc-link-lib=c++");
-        println!("cargo:rustc-link-lib=objc");
+        for d in &dirs { println!("cargo:rustc-link-search=native={}", d.display()); }
+        for l in ["stable-diffusion", "ggml", "ggml-metal", "ggml-blas", "ggml-cpu", "ggml-base"] { if have(l) { println!("cargo:rustc-link-lib=static={l}"); } }
+        match os.as_str() {
+            "macos" => { for f in ["Accelerate", "Metal", "MetalKit", "Foundation", "CoreFoundation"] { println!("cargo:rustc-link-lib=framework={f}"); } println!("cargo:rustc-link-lib=c++"); println!("cargo:rustc-link-lib=objc"); }
+            "linux" => { println!("cargo:rustc-link-lib=stdc++"); println!("cargo:rustc-link-lib=dl"); }
+            _ => {}
+        }
         println!("cargo:rustc-cfg=has_image");
     }
     tauri_build::build();

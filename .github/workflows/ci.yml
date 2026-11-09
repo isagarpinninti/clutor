@@ -84,9 +84,25 @@ jobs:
         working-directory: app
       - run: cargo test --lib
         working-directory: app/src-tauri
+      # The image engine (stable-diffusion.cpp) is built from a pinned revision and linked into the program. If it cannot be built here the program is still built, without it.
+      - name: Cache the image engine
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/clutor-sd
+          key: sd-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-sd.sh') }}
+      - name: Build the image engine
+        id: sd
+        continue-on-error: true
+        shell: bash
+        run: scripts/build-sd.sh
+      - name: Report the image engine
+        shell: bash
+        run: if [ "${{ steps.sd.outcome }}" = "success" ]; then echo "::notice::image engine built"; else echo "::warning::the image engine could not be built here; the program is built without it"; fi
       - name: Build the program (no installer)
         run: npx tauri build --debug --no-bundle
         working-directory: app
+        env:
+          CLUTOR_SD_DIR: ${{ steps.sd.outputs.dir }}
 
   sanitizers:
     name: Engine under ASan, UBSan and TSan (Linux)
