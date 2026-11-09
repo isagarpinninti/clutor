@@ -11,6 +11,7 @@ c/build/
 
 # model files (keep only the small test fixture)
 models/
+!packages/core/src/models/
 *.gguf
 !packages/core/test/fixtures/*.gguf
 packages/cli/c/
