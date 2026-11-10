@@ -604,7 +604,12 @@ static int isa_detect(void) {   /* cpuid directly (no compiler runtime needed), 
 #endif
   return v;
 }
-static int isa_max(void) { static int m = -1; if (m < 0) m = isa_detect(); return m; }
+static int isa_max(void) {   /* read by every pool thread: atomic, so the first reads racing to set it are well defined */
+  static atomic_int m = -1;
+  int v = atomic_load_explicit(&m, memory_order_relaxed);
+  if (v < 0) { v = isa_detect(); atomic_store_explicit(&m, v, memory_order_relaxed); }
+  return v;
+}
 static int isa_level(void) {
   int v = atomic_load_explicit(&g_isa, memory_order_relaxed);
   if (v < 0) {
