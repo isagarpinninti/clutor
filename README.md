@@ -46,9 +46,13 @@ It has three parts:
 <td><img src="docs/screenshots/models-folder.png" alt="The models folder, understood"><br><sub><b>Models folder</b>: what each file is, and which model each task will use.</sub></td>
 <td><img src="docs/screenshots/image-generation.png" alt="Image generation"><br><sub><b>Pictures</b>: describe it, the chat model steps aside, the image model makes it.</sub></td>
 </tr>
+<tr>
+<td><img src="docs/screenshots/terminal-ui.png" alt="The terminal interface"><br><sub><b>Terminal</b>: the same engine and agent in a terminal (`clutor`), with slash commands.</sub></td>
+<td><img src="docs/screenshots/terminal-plan.png" alt="clutor plan"><br><sub><b>Plan</b>: will a model fit, where the memory goes, how fast the disk allows (`clutor plan`).</sub></td>
+</tr>
 </table>
 
-<sub>The screenshots are the interface running in a browser preview with sample data (see `app/src/bridge/mock.ts` and `scripts/capture-screenshots.mjs`), so the chat reply in the first one says that no model is running. The picture in the last one is a real output of Qwen-Image-2.1 Turbo made by Clutor on an Apple M2 (`docs/screenshots/sample-picture.jpg`, 512 × 512, 155 s); the rest of that screen, including its timing, is the preview's.</sub>
+<sub>The two terminal views are real output of the `clutor` command line, drawn by a terminal emulator (`scripts/capture-terminal.py`) with an empty home folder. The other screenshots are the interface running in a browser preview with sample data (see `app/src/bridge/mock.ts` and `scripts/capture-screenshots.mjs`), so the chat reply in the first one says that no model is running. The picture in the last one is a real output of Qwen-Image-2.1 Turbo made by Clutor on an Apple M2 (`docs/screenshots/sample-picture.jpg`, 512 × 512, 155 s); the rest of that screen, including its timing, is the preview's.</sub>
 
 ## What it does
 
