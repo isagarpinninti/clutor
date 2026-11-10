@@ -1,3 +1,4 @@
+/* global document */
 // Regenerates the screenshots in docs/screenshots from the interface preview (the app's UI running in a browser with sample data: see app/src/bridge/mock.ts).
 //
 //   cd app && npm run dev            # in one terminal: serves the preview on http://localhost:5173
