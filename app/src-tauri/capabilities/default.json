@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the Clutor window may do: talk to its own commands and listen to their events. No file-system or shell access from the web side.",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:window:allow-start-dragging", "core:window:allow-toggle-maximize", "notification:default", "dialog:allow-open", "opener:allow-open-url"]
+}

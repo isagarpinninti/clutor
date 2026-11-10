@@ -1,0 +1,62 @@
+name: App installers
+# Builds the desktop app's installers for macOS, Windows and Linux and attaches them to the run. Start it by hand (Actions > App installers > Run workflow) or by pushing a tag
+# like app-v0.4.0. The installers are not code-signed: macOS and Windows will warn the first time they are opened.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["app-v*"]
+
+jobs:
+  bundle:
+    name: Installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      CC_x86_64_pc_windows_msvc: clang-cl
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: System libraries for the web view (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev libssl-dev libxdo-dev build-essential
+      - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
+        with:
+          workspaces: app/src-tauri
+      - run: npm ci
+        working-directory: app
+      - name: Cache the image engine
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/clutor-sd
+          key: sd-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-sd.sh') }}
+      - name: Build the image engine
+        id: sd
+        continue-on-error: true
+        shell: bash
+        run: scripts/build-sd.sh
+      - run: npx tauri build
+        working-directory: app
+        env:
+          CLUTOR_SD_DIR: ${{ steps.sd.outputs.dir }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: clutor-app-${{ runner.os }}
+          path: |
+            app/src-tauri/target/release/bundle/dmg/*.dmg
+            app/src-tauri/target/release/bundle/macos/*.app
+            app/src-tauri/target/release/bundle/msi/*.msi
+            app/src-tauri/target/release/bundle/nsis/*.exe
+            app/src-tauri/target/release/bundle/deb/*.deb
+            app/src-tauri/target/release/bundle/appimage/*.AppImage
+            app/src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error

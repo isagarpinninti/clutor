@@ -1,14 +1,16 @@
 #define _GNU_SOURCE
 #include "forward.h"
 #include "quant.h"
-#include <fcntl.h>
+#include "kernel.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <time.h>
+#include "plat.h"
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+#include <arm_neon.h>
+#endif
 
 static const cl_tensor *find(const cl_model *m, const char *name) {
   for (uint64_t i = 0; i < m->n_tensors; i++) if (!strcmp(m->tensors[i].name, name)) return &m->tensors[i];
@@ -40,6 +42,7 @@ static const arch_spec ARCHS[] = {
   /* name        qk-norm  renorm  pair-rope  expert_feed_forward_length  granite multipliers  dense  qkv bias */
   {"olmoe",      1,       0,      0,         0,                          0,                   0,     0,        0},
   {"qwen3moe",   2,       1,      0,         1,                          0,                   0,     0,        0},
+  {"qwen3vlmoe", 2,       1,      0,         1,                          0,                   0,     0,        0},   /* Qwen3-VL's language model: qwen3moe with multi-axis rope, which for text (every axis at the same position) is the plain rope; its vision part is not here */
   {"granitemoe", 0,       1,      1,         0,                          1,                   0,     0,        0},
   {"qwen2",      0,       0,      0,         0,                          0,                   1,     1,        0},
   {"llama",      0,       0,      1,         0,                          0,                   1,     0,        0},
@@ -87,24 +90,39 @@ static int bind_q35_layer(cl_fwd *f, int l, char *err, size_t errlen) {
 #define AKEY(buf, suffix) snprintf(buf, sizeof buf, "%s.%s", f->arch, suffix)
 #define REQ_U(suffix, dst) do { char k_[96]; uint64_t v_; AKEY(k_, suffix); if (!cl_meta_u64(&f->meta, k_, &v_)) { snprintf(err, errlen, "the model does not state %s", k_); goto fail; } dst = (int)v_; } while (0)
 
+uint64_t cl_auto_cache_bytes(uint64_t ram, uint64_t avail, uint64_t experts) {
+  uint64_t want = ram / 100 * 45;
+  if (avail > 0 && avail / 100 * 60 < want) want = avail / 100 * 60;
+  if (want < ((uint64_t)256 << 20)) want = (uint64_t)256 << 20;
+  if (want > experts) want = experts;   /* a cache bigger than all the experts would be wasted */
+  return want;
+}
+
+/* Pinning a model in memory only makes sense when it leaves the rest of the system room: at most 60% of the machine's memory and 90% of what is free now. Pinning more (a model that is
+ * nearly the size of the memory, or bigger) either fails after reading the whole file or, worse, succeeds and starves everything else, and the machine slows to a crawl. */
+int cl_should_lock(uint64_t file_bytes, uint64_t ram, uint64_t avail) {
+  if (ram > 0 && file_bytes > ram / 100 * 60) return 0;
+  if (avail > 0 && file_bytes > avail / 100 * 90) return 0;
+  return 1;
+}
+
 int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen) {
   memset(f, 0, sizeof *f);
   if (cl_model_open(&f->model, path, err, errlen)) return 1;
   const arch_spec *spec = NULL;
   for (size_t i = 0; i < sizeof ARCHS / sizeof *ARCHS; i++) if (!strcmp(f->model.arch, ARCHS[i].name)) spec = &ARCHS[i];
-  if (!spec) { snprintf(err, errlen, "the forward pass supports the \"olmoe\", \"qwen3moe\", \"granitemoe\", \"qwen2\" (dense), \"llama\" (dense) and \"qwen35\" (hybrid) architectures, not \"%s\"", f->model.arch); goto fail; }
+  if (!spec) { snprintf(err, errlen, "the forward pass supports the \"olmoe\", \"qwen3moe\", \"qwen3vlmoe\" (text only), \"granitemoe\", \"qwen2\" (dense), \"llama\" (dense) and \"qwen35\" (hybrid) architectures, not \"%s\"", f->model.arch); goto fail; }
   snprintf(f->arch, sizeof f->arch, "%s", spec->name);
   f->qk_mode = spec->qk_mode; f->qk_per_head = spec->qk_mode == 2; f->norm_topk = spec->norm_topk; f->rope_pairs = spec->rope_pairs; f->dense = spec->dense; f->qkv_bias = spec->qkv_bias; f->hybrid = spec->hybrid;
   const int NU = spec->dense ? 1 : 0;   /* a dense model has no experts, but its single feed-forward needs the same scratch as one expert */
   f->embed_scale = f->resid_scale = f->logit_scale = 1.0f; f->attn_scale = 0;
-  int fd = open(path, O_RDONLY);
-  struct stat st;
-  if (fd < 0 || fstat(fd, &st)) { snprintf(err, errlen, "cannot open %s", path); if (fd >= 0) close(fd); goto fail; }
-  f->map_size = (size_t)st.st_size;
-  f->map = mmap(NULL, f->map_size, PROT_READ, MAP_PRIVATE, fd, 0);
-  close(fd);
-  if (f->map == MAP_FAILED) { f->map = NULL; snprintf(err, errlen, "cannot map %s", path); goto fail; }
-  if (opts && opts->lock && !opts->cache_bytes) f->locked = mlock(f->map, f->map_size) == 0;   /* reads the whole file in, so it can take seconds; failing just leaves the model evictable */
+  int fd = cl_open_ro(path);
+  if (fd < 0 || cl_fd_size(fd) == 0) { snprintf(err, errlen, "cannot open %s", path); if (fd >= 0) cl_close(fd); goto fail; }
+  f->map_size = (size_t)cl_fd_size(fd);
+  f->map = cl_map_ro(fd, f->map_size);
+  cl_close(fd);
+  if (!f->map) { snprintf(err, errlen, "cannot map %s", path); goto fail; }
+  if (opts && opts->lock && !opts->cache_bytes && cl_should_lock((uint64_t)f->map_size, cl_phys_mem(), cl_avail_mem())) f->locked = cl_lock_memory(f->map, f->map_size);   /* reads the whole file in, so it can take seconds; failing just leaves the model evictable */
   if (cl_meta_parse(&f->meta, f->map, f->map_size, err, errlen)) goto fail;
   REQ_U("embedding_length", f->n_embd);
   REQ_U("attention.head_count", f->n_head);
@@ -123,6 +141,15 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   f->head_dim = f->n_embd / f->n_head;
   { char k[96]; uint64_t v_; AKEY(k, "attention.key_length"); if (cl_meta_u64(&f->meta, k, &v_) && v_ >= 2 && v_ <= 1024 && v_ % 2 == 0) f->head_dim = (int)v_; }   /* qwen3moe: 128, not n_embd / n_head */
   if (f->n_head_kv < 1 || f->n_head_kv > f->n_head || f->n_head % f->n_head_kv) { snprintf(err, errlen, "implausible head counts (%d query heads, %d key/value heads)", f->n_head, f->n_head_kv); goto fail; }
+  f->mrope_h = f->mrope_w = 20;
+  if (!strcmp(f->arch, "qwen3vlmoe")) {
+    uint64_t nd = 0; char k_[96]; AKEY(k_, "n_deepstack_layers");
+    if (cl_meta_u64(&f->meta, k_, &nd) && nd <= 3) f->n_deepstack = (int)nd;
+    uint64_t ns = 0; AKEY(k_, "rope.dimension_sections");
+    int32_t *sec = cl_meta_i32_array(&f->meta, k_, &ns);
+    if (sec && ns >= 3 && sec[1] > 0 && sec[2] > 0) { f->mrope_h = sec[1]; f->mrope_w = sec[2]; }
+    free(sec);
+  }
   f->rope_dim = f->head_dim;
   { char k[96]; uint64_t v_; AKEY(k, "rope.dimension_count");
     if (cl_meta_u64(&f->meta, k, &v_) && (int)v_ != f->head_dim) {
@@ -149,6 +176,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   if (f->attn_scale <= 0) f->attn_scale = 1.0f / sqrtf((float)f->head_dim);
   if (f->n_embd % 256 || f->n_ff_exp % 256 || f->n_q % 256) { snprintf(err, errlen, "embedding width %d / expert width %d / query width %d must be multiples of 256 for the K-quant kernels", f->n_embd, f->n_ff_exp, f->n_q); goto fail; }
   if (!f->dense && (f->n_used > 64 || f->n_expert > 4096)) { snprintf(err, errlen, "unsupported expert counts"); goto fail; }
+  f->n_ctx_train = f->n_ctx_max;   /* what the model was trained for; the cache below is sized to what was asked, never more */
   if (n_ctx > f->n_ctx_max) n_ctx = f->n_ctx_max;
   if (n_ctx < 1) n_ctx = 512;
   f->n_ctx_max = n_ctx;
@@ -212,7 +240,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   if (!f->hybrid) f->n_kv_layers = f->n_layer;
   size_t kvn = (size_t)f->n_kv_layers * f->n_ctx_max * f->n_kvw;
   size_t E = (size_t)f->n_embd;
-  f->kc = calloc(kvn, sizeof(float)); f->vc = calloc(kvn, sizeof(float));
+  f->kc = calloc(kvn, sizeof(uint16_t)); f->vc = calloc(kvn, sizeof(uint16_t));
   f->x = calloc(E, 4); f->xn = calloc(E, 4); f->q = calloc((size_t)f->n_q, 4); f->k = calloc((size_t)f->n_kvw, 4); f->v = calloc((size_t)f->n_kvw, 4); f->att = calloc((size_t)f->n_q, 4);
   f->scores = calloc((size_t)f->n_ctx_max, 4); f->moe = calloc(E, 4); f->hg = calloc((size_t)f->n_ff_exp * (size_t)(f->n_used + NU), 4); f->hu = calloc((size_t)f->n_ff_exp * (size_t)(f->n_used + NU), 4); f->hd = calloc(E * (size_t)(f->n_used + NU), 4);
   f->rl = calloc((size_t)f->n_expert + 1, 4); f->rlogit = calloc((size_t)f->n_expert + 1, 4);
@@ -235,9 +263,25 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   }
   if (!f->kc || !f->vc || !f->x || !f->xn || !f->q || !f->k || !f->v || !f->att || !f->scores || !f->moe || !f->hg || !f->hu || !f->hd || !f->rl || !f->rlogit) { snprintf(err, errlen, "out of memory"); goto fail; }
   if (f->dense && opts && (opts->cache_bytes || opts->smart.enabled)) { snprintf(err, errlen, "this model is dense (it has no experts), so there is nothing to stream or substitute: --cache-mb and --smart apply to mixture-of-experts models only"); goto fail; }
-  { long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
-    if ((!opts || !opts->cache_bytes) && pages > 0 && psz > 0 && f->map_size > (size_t)pages * (size_t)psz * 8 / 10) {
-      snprintf(err, errlen, "the model file (%.1f GiB) is larger than 80%% of this machine's memory (%.1f GiB): mapping it whole would thrash; %s", f->map_size / 1073741824.0, (double)pages * (double)psz / 1073741824.0, f->dense ? "a dense model has no experts to stream, so it needs enough memory for the whole file" : "stream its experts with --cache-mb N"); goto fail;
+  cl_fwd_opts auto_opts;
+  { uint64_t ram = cl_phys_mem();
+    { const char *fake = getenv("CLUTOR_FAKE_RAM_BYTES"); if (fake && atoll(fake) > 0) ram = (uint64_t)atoll(fake); }   /* for the tests: pretend the machine is small */
+    if ((!opts || !opts->cache_bytes) && ram > 0 && f->map_size > (size_t)(ram / 10 * 8)) {
+      if (f->dense) { snprintf(err, errlen, "the model file (%.1f GiB) is larger than 80%% of this machine's memory (%.1f GiB): mapping it whole would thrash; a dense model has no experts to stream, so it needs enough memory for the whole file", f->map_size / 1073741824.0, (double)ram / 1073741824.0); goto fail; }
+      /* A mixture-of-experts model that does not fit streams its experts from disk, and picks the settings that measured best (Qwen3-30B-A3B Q4_K_M on a 16 GiB, 8-core Mac: a cache of
+       * half the memory gave twice the speed of a quarter, and 70% was slower again, because the cache then competes with the system for memory). */
+      uint64_t experts = 0;
+      for (int l = 0; l < f->n_layer; l++) experts += (uint64_t)f->n_expert * (f->L[l].gate_slab + f->L[l].up_slab + f->L[l].down_slab);
+      auto_opts = opts ? *opts : (cl_fwd_opts){0};
+      uint64_t avail = cl_avail_mem();
+      { const char *fa = getenv("CLUTOR_FAKE_AVAIL_BYTES"); if (fa && atoll(fa) > 0) avail = (uint64_t)atoll(fa); }   /* for the tests */
+      const uint64_t want = cl_auto_cache_bytes(ram, avail, experts);
+      auto_opts.cache_bytes = want;
+      if (!auto_opts.io_threads) auto_opts.io_threads = 4;
+      if (!auto_opts.prefetch) auto_opts.prefetch = 2;
+      auto_opts.os_bypass = 1;
+      opts = &auto_opts;
+      f->auto_stream = 1;
     } }
   if (opts && opts->smart.enabled && !opts->cache_bytes) { snprintf(err, errlen, "--smart needs --cache-mb: it substitutes experts that are already in the cache"); goto fail; }
   if (opts && opts->cache_bytes) {
@@ -268,7 +312,30 @@ fail:
   return 1;
 }
 
+/* CLUTOR_PROFILE=1: where the time of the batched prompt path goes, printed to stderr after each prompt (for finding the next thing to speed up). Costs two clock reads per section. */
+static int look_default(void) { const char *e = getenv("CLUTOR_LOOKAHEAD"); return e && *e ? atoi(e) : 1; }
+static double prof_t[10];
+static int prof_on = -1;
+static const char *const prof_name[10] = {"norm+quantize", "q/k/v products", "bias, rope, store K/V", "attention", "output product", "routing", "waiting for experts", "expert products", "expert other", "final norm + logits"};
+static double prof_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9; }
+#define P0() double _pt = prof_on > 0 ? prof_now() : 0
+#define PA(i) do { if (prof_on > 0) { double _n = prof_now(); prof_t[i] += _n - _pt; _pt = _n; } } while (0)
+/* ... and the same for one token at a time (generation), printed when the session closes */
+static double prof_d[10];
+static long prof_steps;
+#define PD0() double _pd = prof_on > 0 ? prof_now() : 0
+#define PD(i) do { if (prof_on > 0) { double _n = prof_now(); prof_d[i] += _n - _pd; _pd = _n; } } while (0)
+
+static void prof_report(void) {
+  if (prof_on <= 0 || prof_steps == 0) return;
+  double tot = 0; for (int k = 0; k < 10; k++) tot += prof_d[k];
+  fprintf(stderr, "[decode profile: %ld tokens, %.2f s, %.0f ms per token]", prof_steps, tot, 1000 * tot / (double)prof_steps);
+  for (int k = 0; k < 10; k++) { fprintf(stderr, " %s %.0f ms (%.0f%%);", prof_name[k], 1000 * prof_d[k] / (double)prof_steps, tot > 0 ? 100 * prof_d[k] / tot : 0); prof_d[k] = 0; }
+  fprintf(stderr, "\n"); prof_steps = 0;
+}
+
 void cl_fwd_close(cl_fwd *f) {
+  prof_report();
   if (f->L) for (int l = 0; l < f->n_layer; l++) { free(f->L[l].attn_norm_f); free(f->L[l].ffn_norm_f); free(f->L[l].bq_f); free(f->L[l].bk_f); free(f->L[l].bv_f); free(f->L[l].qn_f); free(f->L[l].kn_f); free(f->L[l].router_f); free(f->L[l].ssm_a_f); free(f->L[l].ssm_dt_f); free(f->L[l].ssm_norm_f); free(f->L[l].conv_f); }
   free(f->L); free(f->out_norm_f); free(f->rope_factors); free(f->conv_state); free(f->ssm_st); free(f->qg); free(f->qkv); free(f->cvo); free(f->zbuf); free(f->ab);
   if (f->hybrid) {
@@ -277,19 +344,24 @@ void cl_fwd_close(cl_fwd *f) {
     free(f->pf_xqe); free(f->pf_xqq); free(f->pf_xqss); free(f->pf_xqff);
     free(f->pf_x); free(f->pf_xn); free(f->pf_qkv); free(f->pf_z); free(f->pf_ab); free(f->pf_qg); free(f->pf_k); free(f->pf_v); free(f->pf_att); free(f->pf_hd); free(f->pf_hg); free(f->pf_hu);
   }
-  free(f->logits_buf); free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
+  if (f->ps_ready) {
+    for (int i = 0; i < f->ps_cap; i++) { cl_xq_free(&f->ps_xqe[i]); cl_xq_free(&f->ps_xqq[i]); cl_xq_free(&f->ps_xqff[i]); }
+    free(f->ps_xqe); free(f->ps_xqq); free(f->ps_xqff);
+    free(f->ps_x); free(f->ps_xn); free(f->ps_xg); free(f->ps_q); free(f->ps_k); free(f->ps_v); free(f->ps_att); free(f->ps_hd); free(f->ps_moe); free(f->ps_hg); free(f->ps_hu); free(f->ps_rg); free(f->ps_wt); free(f->ps_hde); free(f->ps_sel);
+  }
+  free(f->attn_part); free(f->logits_buf); free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
   cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_q); cl_xq_free(&f->xq_ff);
   if (f->xq_ffk) for (int k = 0; k < f->n_used; k++) cl_xq_free(&f->xq_ffk[k]);
   free(f->xq_ffk);
   cl_xs_close(f->xs); free(f->prev_sel); free(f->pred_sel);
   cl_meta_free(&f->meta);
-  if (f->map) munmap(f->map, f->map_size);
+  if (f->map) cl_unmap(f->map, f->map_size);
   cl_model_close(&f->model);
   memset(f, 0, sizeof *f);
 }
 
 void cl_fwd_reset(cl_fwd *f) {
-  f->pos = 0;
+  f->pos = 0; f->rope_delta = 0;
   if (f->hybrid) {   /* the recurrent state is the conversation: forgetting it means zeroing it */
     const size_t CC = (size_t)(2 * f->ssm_state * f->ssm_groups + f->ssm_state * f->ssm_heads);
     memset(f->conv_state, 0, (size_t)f->n_rec * CC * (size_t)(f->ssm_conv - 1) * 4);
@@ -322,6 +394,18 @@ static void rope_neox(float *v, int hd, int pos, float base, const float *ff) {
   }
 }
 
+/* Qwen3-VL's interleaved multi-axis rope: rotation pair i follows the row position when i % 3 == 1 (for the first 3 * h pairs), the column position when i % 3 == 2 (first 3 * w), else the
+ * time position. Text has all three equal, which makes this the plain rope. */
+static void rope_mrope(float *v, int hd, int pt, int ph, int pw, float base, int sh, int sw) {
+  const int half = hd / 2;
+  for (int i = 0; i < half; i++) {
+    const int pos = (i % 3 == 1 && i < 3 * sh) ? ph : (i % 3 == 2 && i < 3 * sw) ? pw : pt;
+    const float theta = (float)pos * powf(base, -2.0f * (float)i / (float)hd), c = cosf(theta), s = sinf(theta);
+    const float a = v[i], b = v[i + half];
+    v[i] = a * c - b * s; v[i + half] = a * s + b * c;
+  }
+}
+
 static cl_mv mv(const cl_w *w, const float *xf, const cl_xq *xq, float *out) { cl_mv j = {w->type, w->p, w->rows, w->cols, xf, xq, out, 1, 0, 0}; return j; }
 
 static int resident_cb(void *ctx, int expert) {
@@ -339,6 +423,220 @@ static void l2norm(float *x, int n, float eps) {
   for (int i = 0; i < n; i++) ss += (double)x[i] * x[i];
   float s = 1.0f / sqrtf((float)ss + eps);
   for (int i = 0; i < n; i++) x[i] *= s;
+}
+
+/* ---- Attention for one head of one token, as a task for the thread pool ---------------------------------------------------------------------------------------------- */
+typedef struct { cl_fwd *f; int l; const float *Q; float *ATT; int pos0; } attn_job;
+static _Thread_local float *tl_scores;
+static _Thread_local int tl_scores_cap;
+static float *scores_for(int need) {
+  if (tl_scores_cap < need) {
+    free(tl_scores);
+    tl_scores = (float *)malloc((size_t)need * sizeof(float));
+    if (!tl_scores) { fprintf(stderr, "out of memory (attention scratch)\n"); abort(); }
+    tl_scores_cap = need;
+  }
+  return tl_scores;
+}
+/* ---- The key/value cache is half precision ----
+ * Reading a key or a value converts it to single precision on the way into the multiply-add (one instruction per four values on Arm and with F16C on x86), so attention
+ * moves half the bytes. Storing rounds to nearest even; the reference model in test/tiny_olmoe.py rounds the same way. */
+static void kv_store(uint16_t *dst, const float *src, int n) {
+  int i = 0;
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+  for (; i + 4 <= n; i += 4) { const float16x4_t h = vcvt_f16_f32(vld1q_f32(src + i)); vst1_u16(dst + i, vreinterpret_u16_f16(h)); }
+#endif
+  for (; i < n; i++) dst[i] = cl_f32_to_f16(src[i]);
+}
+/* sum of a[i] * b[i] where b is half precision, with eight independent sums so the compiler or the vector code can keep the unit busy */
+static float dotf_h(const float *a, const uint16_t *b, int n) {
+  int i = 0;
+  float t = 0;
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+  float32x4_t s0 = vdupq_n_f32(0), s1 = s0;
+  for (; i + 8 <= n; i += 8) {
+    const float16x8_t h = vreinterpretq_f16_u16(vld1q_u16(b + i));
+    s0 = vfmaq_f32(s0, vld1q_f32(a + i), vcvt_f32_f16(vget_low_f16(h)));
+    s1 = vfmaq_f32(s1, vld1q_f32(a + i + 4), vcvt_high_f32_f16(h));
+  }
+  t = vaddvq_f32(vaddq_f32(s0, s1));
+#else
+  float s[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  for (; i + 8 <= n; i += 8) for (int u = 0; u < 8; u++) s[u] += a[i + u] * cl_f16_to_f32(b[i + u]);
+  t = ((s[0] + s[1]) + (s[2] + s[3])) + ((s[4] + s[5]) + (s[6] + s[7]));
+#endif
+  for (; i < n; i++) t += a[i] * cl_f16_to_f32(b[i]);
+  return t;
+}
+/* o[i] += p * v[i] where v is half precision */
+static void axpy_h(float *o, const uint16_t *v, float p, int n) {
+  int i = 0;
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+  for (; i + 8 <= n; i += 8) {
+    const float16x8_t h = vreinterpretq_f16_u16(vld1q_u16(v + i));
+    vst1q_f32(o + i, vfmaq_n_f32(vld1q_f32(o + i), vcvt_f32_f16(vget_low_f16(h)), p));
+    vst1q_f32(o + i + 4, vfmaq_n_f32(vld1q_f32(o + i + 4), vcvt_high_f32_f16(h), p));
+  }
+#endif
+  for (; i < n; i++) o[i] += p * cl_f16_to_f32(v[i]);
+}
+
+/* A float dot product with eight independent running sums, so the compiler can use the vector unit (a single sum in order cannot be vectorised without changing the answer). Both
+ * the one-token path and the batched prompt path use it for the router, so they still agree to the last bit. */
+static float dotf(const float *a, const float *b, int n) {
+  float s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, s5 = 0, s6 = 0, s7 = 0;
+  int i = 0;
+  for (; i + 8 <= n; i += 8) { s0 += a[i] * b[i]; s1 += a[i + 1] * b[i + 1]; s2 += a[i + 2] * b[i + 2]; s3 += a[i + 3] * b[i + 3]; s4 += a[i + 4] * b[i + 4]; s5 += a[i + 5] * b[i + 5]; s6 += a[i + 6] * b[i + 6]; s7 += a[i + 7] * b[i + 7]; }
+  float t = ((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7));
+  for (; i < n; i++) t += a[i] * b[i];
+  return t;
+}
+
+/* Task i is head i % n_head of token i / n_head (token 0 is the one at position pos0). Reads the key/value cache up to that token's own position, so the tasks do not depend on each other. */
+static void attn_task(void *vp, int i) {
+  const attn_job *a = (const attn_job *)vp;
+  const cl_fwd *f = a->f;
+  const int H = f->n_head, hd = f->head_dim, KW = f->n_kvw, GROUP = H / f->n_head_kv, NQ = f->n_q;
+  const int b = i / H, h = i % H, pos = a->pos0 + b;
+  const float *qh = a->Q + (size_t)b * NQ + (size_t)h * hd;
+  float *oh = a->ATT + (size_t)b * NQ + (size_t)h * hd;
+  float *sc = scores_for(pos + 1);
+  const int kvo = (h / GROUP) * hd;
+  float mx = -INFINITY;
+  for (int t = 0; t <= pos; t++) {
+    const uint16_t *kt = f->kc + ((size_t)a->l * f->n_ctx_max + t) * KW + kvo;
+    sc[t] = dotf_h(qh, kt, hd) * f->attn_scale;
+    if (sc[t] > mx) mx = sc[t];
+  }
+  float sum = 0;
+  for (int t = 0; t <= pos; t++) { sc[t] = expf(sc[t] - mx); sum += sc[t]; }
+  memset(oh, 0, (size_t)hd * 4);
+  for (int t = 0; t <= pos; t++) {
+    const uint16_t *vt = f->vc + ((size_t)a->l * f->n_ctx_max + t) * KW + kvo;
+    axpy_h(oh, vt, sc[t] / sum, hd);
+  }
+}
+/* ---- One token's attention over a long context ----
+ * A model with grouped-query attention (several query heads share one key/value head) reads the same keys and values once per query head if each head is its own task: with
+ * eight heads to a group, eight times the memory traffic, which at a few thousand tokens is most of the time. Here a task is one key/value head over one chunk of positions:
+ * each key and each value is read once and used by every query head of the group. The chunks of a head are then combined with the usual rescaling by their maxima, so the result is
+ * the same softmax. A chunk is ATT_CHUNK positions, which also gives enough tasks to keep every thread busy. */
+#define ATT_CHUNK 256
+#define ATT_MAXGROUP 16
+/* The chunk length: ATT_CHUNK, or a shorter one set with CLUTOR_ATT_CHUNK (the tests use it to make short contexts take the long-context path). */
+static int att_chunk(void) { static int v; if (!v) { const char *e = getenv("CLUTOR_ATT_CHUNK"); v = e && atoi(e) >= 1 && atoi(e) <= ATT_CHUNK ? atoi(e) : ATT_CHUNK; } return v; }
+/* From how many positions the grouped version is used: 64 (measured: it is as fast as one task per head at 32 and faster from there up). CLUTOR_ATT_MIN overrides. */
+static int att_min(void) { static int v = -1; if (v < 0) { const char *e = getenv("CLUTOR_ATT_MIN"); v = e && atoi(e) >= 1 ? atoi(e) : (2 * att_chunk() < 64 ? 2 * att_chunk() : 64); } return v; }
+typedef struct { const cl_fwd *f; int l, pos, G, GROUP, nchunk, chunk; const float *Q; float *ATT; float *part; } gattn_job;
+static inline size_t gpart_stride(int GROUP, int hd) { return (size_t)GROUP * (2 + (size_t)hd); }   /* per task: max and sum for each head, then each head's partial output */
+
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+/* Four dot products against one query at once, with the four keys in half precision: the query is loaded once for four keys, and eight independent sums hide the latency of the
+ * multiply-adds. n is a multiple of 8. */
+static inline void dot4(const float *q, const uint16_t *k0, const uint16_t *k1, const uint16_t *k2, const uint16_t *k3, int n, float *out) {
+  float32x4_t a0 = vdupq_n_f32(0), a1 = a0, a2 = a0, a3 = a0, b0 = a0, b1 = a0, b2 = a0, b3 = a0;
+  for (int i = 0; i < n; i += 8) {
+    const float32x4_t qa = vld1q_f32(q + i), qb = vld1q_f32(q + i + 4);
+    const float16x8_t h0 = vreinterpretq_f16_u16(vld1q_u16(k0 + i)), h1 = vreinterpretq_f16_u16(vld1q_u16(k1 + i)), h2 = vreinterpretq_f16_u16(vld1q_u16(k2 + i)), h3 = vreinterpretq_f16_u16(vld1q_u16(k3 + i));
+    a0 = vfmaq_f32(a0, qa, vcvt_f32_f16(vget_low_f16(h0))); b0 = vfmaq_f32(b0, qb, vcvt_high_f32_f16(h0));
+    a1 = vfmaq_f32(a1, qa, vcvt_f32_f16(vget_low_f16(h1))); b1 = vfmaq_f32(b1, qb, vcvt_high_f32_f16(h1));
+    a2 = vfmaq_f32(a2, qa, vcvt_f32_f16(vget_low_f16(h2))); b2 = vfmaq_f32(b2, qb, vcvt_high_f32_f16(h2));
+    a3 = vfmaq_f32(a3, qa, vcvt_f32_f16(vget_low_f16(h3))); b3 = vfmaq_f32(b3, qb, vcvt_high_f32_f16(h3));
+  }
+  out[0] = vaddvq_f32(vaddq_f32(a0, b0)); out[1] = vaddvq_f32(vaddq_f32(a1, b1)); out[2] = vaddvq_f32(vaddq_f32(a2, b2)); out[3] = vaddvq_f32(vaddq_f32(a3, b3));
+}
+/* o += p0 * v0 + p1 * v1 + p2 * v2 + p3 * v3 with the values in half precision: the output is loaded and stored once for four values. n is a multiple of 8. */
+static inline void axpy4(float *o, const uint16_t *v0, const uint16_t *v1, const uint16_t *v2, const uint16_t *v3, float p0, float p1, float p2, float p3, int n) {
+  for (int d = 0; d < n; d += 8) {
+    const float16x8_t h0 = vreinterpretq_f16_u16(vld1q_u16(v0 + d)), h1 = vreinterpretq_f16_u16(vld1q_u16(v1 + d)), h2 = vreinterpretq_f16_u16(vld1q_u16(v2 + d)), h3 = vreinterpretq_f16_u16(vld1q_u16(v3 + d));
+    float32x4_t x = vld1q_f32(o + d), y = vld1q_f32(o + d + 4);
+    x = vfmaq_n_f32(x, vcvt_f32_f16(vget_low_f16(h0)), p0); y = vfmaq_n_f32(y, vcvt_high_f32_f16(h0), p0);
+    x = vfmaq_n_f32(x, vcvt_f32_f16(vget_low_f16(h1)), p1); y = vfmaq_n_f32(y, vcvt_high_f32_f16(h1), p1);
+    x = vfmaq_n_f32(x, vcvt_f32_f16(vget_low_f16(h2)), p2); y = vfmaq_n_f32(y, vcvt_high_f32_f16(h2), p2);
+    x = vfmaq_n_f32(x, vcvt_f32_f16(vget_low_f16(h3)), p3); y = vfmaq_n_f32(y, vcvt_high_f32_f16(h3), p3);
+    vst1q_f32(o + d, x); vst1q_f32(o + d + 4, y);
+  }
+}
+#define CL_ATT_BLOCK4 1
+#endif
+
+static void gattn_chunk(void *vp, int i) {
+  const gattn_job *a = (const gattn_job *)vp;
+  const cl_fwd *f = a->f;
+  const int hd = f->head_dim, KW = f->n_kvw, GROUP = a->GROUP, g = i / a->nchunk, c = i % a->nchunk;
+  const int t0 = c * a->chunk, t1 = a->pos + 1 < t0 + a->chunk ? a->pos + 1 : t0 + a->chunk, n = t1 - t0;
+  float *out = a->part + (size_t)i * gpart_stride(GROUP, hd), *m = out, *lsum = out + GROUP, *o = out + 2 * GROUP;
+  const uint16_t *kbase = f->kc + ((size_t)a->l * f->n_ctx_max) * KW + (size_t)g * hd, *vbase = f->vc + ((size_t)a->l * f->n_ctx_max) * KW + (size_t)g * hd;
+  float sc[ATT_MAXGROUP][ATT_CHUNK];
+  const float *q[ATT_MAXGROUP];
+  for (int j = 0; j < GROUP; j++) { q[j] = a->Q + (size_t)(g * GROUP + j) * hd; m[j] = -INFINITY; lsum[j] = 0; }
+  int t = 0;
+#ifdef CL_ATT_BLOCK4
+  if ((hd & 7) == 0) for (; t + 4 <= n; t += 4) {
+    const uint16_t *k0 = kbase + (size_t)(t0 + t) * KW, *k1 = k0 + KW, *k2 = k1 + KW, *k3 = k2 + KW;
+    for (int j = 0; j < GROUP; j++) {
+      float d4[4]; dot4(q[j], k0, k1, k2, k3, hd, d4);
+      for (int u = 0; u < 4; u++) { const float sv = d4[u] * f->attn_scale; sc[j][t + u] = sv; if (sv > m[j]) m[j] = sv; }
+    }
+  }
+#endif
+  for (; t < n; t++) {
+    const uint16_t *kt = kbase + (size_t)(t0 + t) * KW;
+    for (int j = 0; j < GROUP; j++) { const float sv = dotf_h(q[j], kt, hd) * f->attn_scale; sc[j][t] = sv; if (sv > m[j]) m[j] = sv; }
+  }
+  memset(o, 0, (size_t)GROUP * hd * sizeof(float));
+  for (int j = 0; j < GROUP; j++) { float sum = 0; for (int t = 0; t < n; t++) { const float e = expf(sc[j][t] - m[j]); sc[j][t] = e; sum += e; } lsum[j] = sum; }
+  int u = 0;
+#ifdef CL_ATT_BLOCK4
+  if ((hd & 7) == 0) for (; u + 4 <= n; u += 4) {
+    const uint16_t *v0 = vbase + (size_t)(t0 + u) * KW, *v1 = v0 + KW, *v2 = v1 + KW, *v3 = v2 + KW;
+    for (int j = 0; j < GROUP; j++) axpy4(o + (size_t)j * hd, v0, v1, v2, v3, sc[j][u], sc[j][u + 1], sc[j][u + 2], sc[j][u + 3], hd);
+  }
+#endif
+  for (; u < n; u++) {
+    const uint16_t *vt = vbase + (size_t)(t0 + u) * KW;
+    for (int j = 0; j < GROUP; j++) axpy_h(o + (size_t)j * hd, vt, sc[j][u], hd);
+  }
+}
+
+static void gattn_combine(void *vp, int h) {   /* one query head: merge its chunks */
+  const gattn_job *a = (const gattn_job *)vp;
+  const int hd = a->f->head_dim, GROUP = a->GROUP, g = h / GROUP, j = h % GROUP;
+  const size_t st = gpart_stride(GROUP, hd);
+  float M = -INFINITY;
+  for (int c = 0; c < a->nchunk; c++) { const float mc = a->part[((size_t)g * a->nchunk + c) * st + j]; if (mc > M) M = mc; }
+  float L = 0;
+  float *oh = a->ATT + (size_t)h * hd;
+  memset(oh, 0, (size_t)hd * sizeof(float));
+  for (int c = 0; c < a->nchunk; c++) {
+    const float *p = a->part + ((size_t)g * a->nchunk + c) * st;
+    const float w = expf(p[j] - M);
+    L += w * p[GROUP + j];
+    const float *oc = p + 2 * GROUP + (size_t)j * hd;
+    for (int d = 0; d < hd; d++) oh[d] += w * oc[d];
+  }
+  const float inv = 1.0f / L;
+  for (int d = 0; d < hd; d++) oh[d] *= inv;
+}
+
+/* nb tokens' attention, in parallel when there is enough work to be worth waking the threads (a short context with few heads is faster on one thread). */
+static void attend(cl_fwd *f, int l, const float *Q, float *ATT, int pos0, int nb) {
+  const int GROUP = f->n_head / (f->n_head_kv > 0 ? f->n_head_kv : 1);
+  if (nb == 1 && GROUP >= 2 && GROUP <= ATT_MAXGROUP && pos0 + 1 >= att_min() && !getenv("CLUTOR_PLAIN_ATTENTION")) {
+    const int G = f->n_head_kv, chunk = att_chunk(), nchunk = (pos0 + 1 + chunk - 1) / chunk;
+    const size_t need = (size_t)G * nchunk * gpart_stride(GROUP, f->head_dim);
+    if (f->attn_part_cap < need) { float *np = realloc(f->attn_part, need * sizeof(float)); if (np) { f->attn_part = np; f->attn_part_cap = need; } }
+    if (f->attn_part_cap >= need) {
+      gattn_job a = {f, l, pos0, G, GROUP, nchunk, chunk, Q, ATT, f->attn_part};
+      cl_parallel_for(G * nchunk, gattn_chunk, &a);
+      cl_parallel_for(f->n_head, gattn_combine, &a);
+      return;
+    }
+  }
+  attn_job a = {f, l, Q, ATT, pos0};
+  const int n = nb * f->n_head;
+  if ((long)(pos0 + nb) * n >= 6000) cl_parallel_for(n, attn_task, &a);
+  else for (int i = 0; i < n; i++) attn_task(&a, i);
 }
 
 /* A product of one weight matrix with nb inputs at once: xf rows are `in` floats apart, results `rows` apart. */
@@ -395,17 +693,15 @@ static void attn_token(cl_fwd *f, const cl_fwd_layer *y, int pos, float *qg, flo
   const int H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, KW = f->n_kvw, GROUP = H / KVH;
   for (int h = 0; h < H; h++) { float *qh = qg + (size_t)h * 2 * hd; rmsnorm(qh, qh, y->qn_f, hd, f->rms_eps); rope_neox(qh, f->rope_dim, pos, f->rope_base, NULL); }
   for (int h = 0; h < KVH; h++) { float *kh = k + (size_t)h * hd; rmsnorm(kh, kh, y->kn_f, hd, f->rms_eps); rope_neox(kh, f->rope_dim, pos, f->rope_base, NULL); }
-  float *kc = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW;
-  memcpy(kc, k, (size_t)KW * 4); memcpy(vc, v, (size_t)KW * 4);
+  uint16_t *kc = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + pos) * KW;
+  kv_store(kc, k, KW); kv_store(vc, v, KW);
   for (int h = 0; h < H; h++) {
     const float *qh = qg + (size_t)h * 2 * hd, *gate = qh + hd;
     const int kvo = (h / GROUP) * hd;
     float mx = -INFINITY;
     for (int t = 0; t <= pos; t++) {
-      const float *kt = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
-      float sc = 0;
-      for (int i = 0; i < hd; i++) sc += qh[i] * kt[i];
-      f->scores[t] = sc * f->attn_scale;
+      const uint16_t *kt = f->kc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
+      f->scores[t] = dotf_h(qh, kt, hd) * f->attn_scale;
       if (f->scores[t] > mx) mx = f->scores[t];
     }
     float sum = 0;
@@ -413,9 +709,8 @@ static void attn_token(cl_fwd *f, const cl_fwd_layer *y, int pos, float *qg, flo
     float *oh = att + h * hd;
     memset(oh, 0, (size_t)hd * 4);
     for (int t = 0; t <= pos; t++) {
-      const float *vt = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
-      const float p = f->scores[t] / sum;
-      for (int i = 0; i < hd; i++) oh[i] += p * vt[i];
+      const uint16_t *vt = f->vc + ((size_t)y->kv_idx * f->n_ctx_max + t) * KW + kvo;
+      axpy_h(oh, vt, f->scores[t] / sum, hd);
     }
     for (int i = 0; i < hd; i++) oh[i] *= sigmoidf(gate[i]);
   }
@@ -465,7 +760,10 @@ static int run_q35(cl_fwd *f, const int *tok, int nb, float *logits) {
 int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *err, size_t errlen) {
   if (token < 0 || token >= f->n_vocab) { snprintf(err, errlen, "token %d is outside the vocabulary", token); return 1; }
   if (f->pos >= f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
-  const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos, KW = f->n_kvw, GROUP = f->n_head / f->n_head_kv;
+  const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos, KW = f->n_kvw;
+  if (prof_on < 0) { const char *e = getenv("CLUTOR_PROFILE"); prof_on = e && *e && *e != '0'; }
+  PD0();
+  if (prof_on > 0) prof_steps++;
   cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)token * cl_row_bytes(f->tok_embd.type, (uint64_t)E), f->x, E);
   if (f->hybrid) { run_q35(f, &token, 1, logits); return 0; }
   if (f->embed_scale != 1.0f) for (int i = 0; i < E; i++) f->x[i] *= f->embed_scale;
@@ -477,7 +775,9 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     if (f->xs && f->prefetch == 1 && l + 1 < f->n_layer) for (int k = 0; k < f->prefetch_n; k++) { int e = f->prev_sel[(l + 1) * f->n_used + k]; cl_xs_prefetch(f->xs, l + 1, e); f->pred_sel[(l + 1) * f->n_used + k] = e; }
     rmsnorm(f->xn, f->x, y->attn_norm_f, E, f->rms_eps);
     cl_xq_quantize(&f->xq_e, f->xn);
+    PD(0);
     { cl_mv j[3] = {mv(&y->wq, f->xn, &f->xq_e, f->q), mv(&y->wk, f->xn, &f->xq_e, f->k), mv(&y->wv, f->xn, &f->xq_e, f->v)}; cl_matvec_batch(j, 3); }
+    PD(1);
     if (f->qkv_bias) {   /* qwen2: the projections carry biases */
       for (int i = 0; i < f->n_q; i++) f->q[i] += y->bq_f[i];
       for (int i = 0; i < f->n_kvw; i++) { f->k[i] += y->bk_f[i]; f->v[i] += y->bv_f[i]; }
@@ -490,35 +790,17 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
       rmsnorm(f->q, f->q, y->qn_f, f->n_q, f->rms_eps);
       rmsnorm(f->k, f->k, y->kn_f, f->n_kvw, f->rms_eps);
     }
-    for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->q + h * hd, hd, pos, f->rope_base, f->rope_factors);
-    for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->k + h * hd, hd, pos, f->rope_base, f->rope_factors);
-    float *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
-    memcpy(kc, f->k, (size_t)KW * 4); memcpy(vc, f->v, (size_t)KW * 4);
-    const float scale = f->attn_scale;
-    for (int h = 0; h < H; h++) {
-      const float *qh = f->q + h * hd;
-      const int kvo = (h / GROUP) * hd;   /* grouped-query attention: GROUP query heads share one key/value head */
-      float mx = -INFINITY;
-      for (int t = 0; t <= pos; t++) {
-        const float *kt = f->kc + ((size_t)l * f->n_ctx_max + t) * KW + kvo;
-        float s = 0;
-        for (int i = 0; i < hd; i++) s += qh[i] * kt[i];
-        f->scores[t] = s * scale;
-        if (f->scores[t] > mx) mx = f->scores[t];
-      }
-      float sum = 0;
-      for (int t = 0; t <= pos; t++) { f->scores[t] = expf(f->scores[t] - mx); sum += f->scores[t]; }
-      float *oh = f->att + h * hd;
-      memset(oh, 0, (size_t)hd * 4);
-      for (int t = 0; t <= pos; t++) {
-        const float *vt = f->vc + ((size_t)l * f->n_ctx_max + t) * KW + kvo;
-        float p = f->scores[t] / sum;
-        for (int i = 0; i < hd; i++) oh[i] += p * vt[i];
-      }
-    }
+    for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->q + h * hd, hd, pos + f->rope_delta, f->rope_base, f->rope_factors);
+    for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->k + h * hd, hd, pos + f->rope_delta, f->rope_base, f->rope_factors);
+    uint16_t *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
+    kv_store(kc, f->k, KW); kv_store(vc, f->v, KW);
+    PD(2);
+    attend(f, l, f->q, f->att, pos, 1);
+    PD(3);
     cl_xq_quantize(&f->xq_q, f->att);
     { cl_mv j = mv(&y->wo, f->att, &f->xq_q, f->hd); cl_matvec_batch(&j, 1); }
     for (int i = 0; i < E; i++) f->x[i] += f->resid_scale * f->hd[i];
+    PD(4);
 
     if (f->dense) {   /* one plain SwiGLU feed-forward instead of a router and experts */
       const int FF = f->n_ff_exp;
@@ -537,7 +819,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     if (f->xs && f->prefetch == 2 && l + 1 < f->n_layer) {
       const cl_fwd_layer *nx = &f->L[l + 1];
       rmsnorm(f->xn, f->x, nx->ffn_norm_f, E, f->rms_eps);
-      for (int e = 0; e < f->n_expert; e++) { const float *r = nx->router_f + (size_t)e * E; float a = 0; for (int i = 0; i < E; i++) a += r[i] * f->xn[i]; f->rl[e] = a; }
+      for (int e = 0; e < f->n_expert; e++) f->rl[e] = dotf(nx->router_f + (size_t)e * E, f->xn, E);
       char taken[4096] = {0};
       for (int k = 0; k < f->prefetch_n; k++) {
         int best = -1;
@@ -548,12 +830,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
 
     /* mixture of experts */
     rmsnorm(f->xn, f->x, y->ffn_norm_f, E, f->rms_eps);
-    for (int e = 0; e < f->n_expert; e++) {
-      const float *r = y->router_f + (size_t)e * E;
-      float s = 0;
-      for (int i = 0; i < E; i++) s += r[i] * f->xn[i];
-      f->rl[e] = s;
-    }
+    for (int e = 0; e < f->n_expert; e++) f->rl[e] = dotf(y->router_f + (size_t)e * E, f->xn, E);
     memcpy(f->rlogit, f->rl, (size_t)f->n_expert * sizeof(float));
     if (route && route->logits) memcpy(route->logits + (size_t)l * f->n_expert, f->rl, (size_t)f->n_expert * sizeof(float));
     float mx = f->rl[0];
@@ -589,6 +866,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     if (f->norm_topk) { float z = 0; for (int k = 0; k < f->n_used; k++) z += wt[k]; if (z > 0) for (int k = 0; k < f->n_used; k++) wt[k] /= z; }   /* qwen3moe: the chosen weights sum to 1 */
     f->expert_slots += (uint64_t)f->n_used;
     if (route) for (int k = 0; k < f->n_used; k++) { route->experts[l * f->n_used + k] = sel[k]; route->weights[l * f->n_used + k] = wt[k]; }
+    PD(5);
     memset(f->moe, 0, (size_t)E * 4);
     cl_xq_quantize(&f->xq_e, f->xn);   /* every selected expert reads the same normalised input */
     int hnd[64];
@@ -605,6 +883,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
         if (!P[k]) { snprintf(err, errlen, "reading expert %d of layer %d from disk failed", sel[k], l); for (int j = 0; j < f->n_used; j++) cl_xs_release(f->xs, hnd[j]); return 1; }
       } else P[k] = y->gate.p + (size_t)sel[k] * y->gate_slab;   /* mapped file: the three matrices sit in three fused tensors */
     }
+    PD(6);
     /* all experts' gate and up products in one batch, then all down products in another: two thread hand-offs per layer, not sixteen */
     cl_mv j[64];
     const size_t FF = (size_t)f->n_ff_exp;
@@ -613,7 +892,9 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
       j[2 * k] = (cl_mv){y->gate.type, g, f->n_ff_exp, E, f->xn, &f->xq_e, f->hg + k * FF, 1, 0, 0};
       j[2 * k + 1] = (cl_mv){y->up.type, u, f->n_ff_exp, E, f->xn, &f->xq_e, f->hu + k * FF, 1, 0, 0};
     }
+    PD(8);
     cl_matvec_batch(j, 2 * f->n_used);
+    PD(7);
     for (int k = 0; k < f->n_used; k++) {
       float *hg = f->hg + k * FF, *hu = f->hu + k * FF;
       for (size_t i = 0; i < FF; i++) hg[i] = hg[i] / (1.0f + expf(-hg[i])) * hu[i];   /* silu(gate) * up */
@@ -621,7 +902,9 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
       const uint8_t *d = f->xs ? P[k] + y->gate_slab + y->up_slab : y->down.p + (size_t)sel[k] * y->down_slab;
       j[k] = (cl_mv){y->down.type, d, E, f->n_ff_exp, hg, &f->xq_ffk[k], f->hd + (size_t)k * E, 1, 0, 0};
     }
+    PD(8);
     cl_matvec_batch(j, f->n_used);
+    PD(7);
     for (int k = 0; k < f->n_used; k++) {
       const float *hd = f->hd + (size_t)k * E;
       for (int i = 0; i < E; i++) f->moe[i] += wt[k] * hd[i];
@@ -629,12 +912,216 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     }
     if (f->prev_sel) memcpy(f->prev_sel + l * f->n_used, sel, (size_t)f->n_used * sizeof(int));
     for (int i = 0; i < E; i++) f->x[i] += f->resid_scale * f->moe[i];
+    PD(8);
   }
   rmsnorm(f->xn, f->x, f->out_norm_f, E, f->rms_eps);
   cl_xq_quantize(&f->xq_e, f->xn);
   { cl_mv j = mv(&f->output, f->xn, &f->xq_e, logits); cl_matvec_batch(&j, 1); }
   if (f->logit_scale != 1.0f) for (int i = 0; i < f->n_vocab; i++) logits[i] /= f->logit_scale;
+  PD(9);
   f->pos++;
+  return 0;
+}
+
+/* ---- Prompt processing for the plain transformer architectures (llama, qwen2, olmoe, qwen3moe, granitemoe) ---------------------------------------------------------- */
+
+_Static_assert(CL_PS_B <= CL_MV_MAX, "a prompt batch must fit in one batched product");
+static int ps_alloc(cl_fwd *f) {
+  if (f->ps_ready) return 0;
+  const size_t B = f->xs ? CL_PS_B : 64, E = (size_t)f->n_embd, NQ = (size_t)f->n_q, KW = (size_t)f->n_kvw, FF = (size_t)f->n_ff_exp;
+  f->ps_x = calloc(B * E, 4); f->ps_xn = calloc(B * E, 4); f->ps_xg = calloc(B * E, 4); f->ps_hd = calloc(B * E, 4); f->ps_moe = calloc(B * E, 4); f->ps_hde = calloc(B * E, 4);
+  f->ps_q = calloc(B * NQ, 4); f->ps_att = calloc(B * NQ, 4); f->ps_k = calloc(B * KW, 4); f->ps_v = calloc(B * KW, 4);
+  f->ps_hg = calloc(B * FF, 4); f->ps_hu = calloc(B * FF, 4); f->ps_rg = calloc(B * (size_t)f->n_expert, 4);
+  f->ps_sel = calloc(B * (size_t)f->n_used, sizeof(int)); f->ps_wt = calloc(B * (size_t)f->n_used, 4);
+  f->ps_xqe = calloc(B, sizeof(cl_xq)); f->ps_xqq = calloc(B, sizeof(cl_xq)); f->ps_xqff = calloc(B, sizeof(cl_xq));
+  int ok = f->ps_x && f->ps_xn && f->ps_xg && f->ps_hd && f->ps_moe && f->ps_hde && f->ps_q && f->ps_att && f->ps_k && f->ps_v && f->ps_hg && f->ps_hu && f->ps_rg && f->ps_sel && f->ps_wt && f->ps_xqe && f->ps_xqq && f->ps_xqff;
+  for (size_t i = 0; ok && i < B; i++) ok = cl_xq_init(&f->ps_xqe[i], f->n_embd) && cl_xq_init(&f->ps_xqq[i], f->n_q) && cl_xq_init(&f->ps_xqff[i], f->n_ff_exp);
+  if (!ok) return 1;
+  f->ps_cap = (int)B;
+  f->ps_ready = 1;
+  return 0;
+}
+
+/* The router's dot products for every token of a batch, one task per token: each is 128 or more rows of the layer's hidden width, which in a serial loop was a fifth of the time. */
+typedef struct { cl_fwd *f; const cl_fwd_layer *y; const float *X; float *XN; } route_job;
+static void route_task(void *vc, int b) {
+  route_job *c = vc; cl_fwd *f = c->f; const int E = f->n_embd;
+  float *xn = c->XN + (size_t)b * E;
+  rmsnorm(xn, c->X + (size_t)b * E, c->y->ffn_norm_f, E, f->rms_eps);
+  cl_xq_quantize(&f->ps_xqe[b], xn);
+  float *rg = f->ps_rg + (size_t)b * f->n_expert;
+  for (int e = 0; e < f->n_expert; e++) rg[e] = dotf(c->y->router_f + (size_t)e * E, xn, E);
+}
+
+/* nb tokens (1 <= nb <= CL_PS_B) through the model together, layer by layer. Every dense weight matrix is multiplied with all nb tokens in one pass over its rows; in a
+ * mixture-of-experts layer each token picks its experts as it would alone, then each chosen expert is read once and run over all the tokens that chose it. The attention
+ * for each token still looks only at earlier positions, in order. Gives the same results as nb calls to cl_fwd_step (the integer dot products are exact; only the order in
+ * which a token's expert outputs are added differs from a step's, which can change the last bits). `logits` may be NULL when only the state is wanted. */
+static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, size_t errlen) {
+  const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, KW = f->n_kvw, NQ = f->n_q, FF = f->n_ff_exp, pos0 = f->pos;
+  if (prof_on < 0) { const char *e = getenv("CLUTOR_PROFILE"); prof_on = e && *e && *e != '0'; }
+  P0();
+  float *X = f->ps_x, *XN = f->ps_xn, *Q = f->ps_q, *K = f->ps_k, *V = f->ps_v, *ATT = f->ps_att, *HD = f->ps_hd;
+  for (int b = 0; b < nb; b++) {
+    float *x = X + (size_t)b * E;
+    if (f->mm) { memcpy(x, f->mm->emb + (size_t)b * E, (size_t)E * sizeof(float)); continue; }   /* a picture token: its vector replaces the embedding */
+    cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)tok[b] * cl_row_bytes(f->tok_embd.type, (uint64_t)E), x, E);
+    if (f->embed_scale != 1.0f) for (int i = 0; i < E; i++) x[i] *= f->embed_scale;
+  }
+  for (int l = 0; l < f->n_layer; l++) {
+    cl_fwd_layer *y = &f->L[l];
+    for (int b = 0; b < nb; b++) { rmsnorm(XN + (size_t)b * E, X + (size_t)b * E, y->attn_norm_f, E, f->rms_eps); cl_xq_quantize(&f->ps_xqe[b], XN + (size_t)b * E); }
+    PA(0);
+    { cl_mv j[3] = {mvb(&y->wq, XN, E, f->ps_xqe, Q, nb), mvb(&y->wk, XN, E, f->ps_xqe, K, nb), mvb(&y->wv, XN, E, f->ps_xqe, V, nb)}; cl_matvec_batch(j, 3); }
+    PA(1);
+    for (int b = 0; b < nb; b++) {
+      float *q = Q + (size_t)b * NQ, *k = K + (size_t)b * KW, *v = V + (size_t)b * KW;
+      const int pos = pos0 + b;
+      if (f->qkv_bias) { for (int i = 0; i < NQ; i++) q[i] += y->bq_f[i]; for (int i = 0; i < KW; i++) { k[i] += y->bk_f[i]; v[i] += y->bv_f[i]; } }
+      if (f->qk_mode == 0) { /* no QK-norm */ }
+      else if (f->qk_per_head) { for (int h = 0; h < H; h++) rmsnorm(q + h * hd, q + h * hd, y->qn_f, hd, f->rms_eps); for (int h = 0; h < KVH; h++) rmsnorm(k + h * hd, k + h * hd, y->kn_f, hd, f->rms_eps); }
+      else { rmsnorm(q, q, y->qn_f, NQ, f->rms_eps); rmsnorm(k, k, y->kn_f, KW, f->rms_eps); }
+      if (f->mm) {
+        const int *rp = f->mm->rp + 3 * b;
+        for (int h = 0; h < H; h++) rope_mrope(q + h * hd, hd, rp[0], rp[1], rp[2], f->rope_base, f->mrope_h, f->mrope_w);
+        for (int h = 0; h < KVH; h++) rope_mrope(k + h * hd, hd, rp[0], rp[1], rp[2], f->rope_base, f->mrope_h, f->mrope_w);
+      } else {
+        const int rpos = pos + f->rope_delta;
+        for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(q + h * hd, hd, rpos, f->rope_base, f->rope_factors);
+        for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(k + h * hd, hd, rpos, f->rope_base, f->rope_factors);
+      }
+      uint16_t *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
+      kv_store(kc, k, KW); kv_store(vc, v, KW);
+    }
+    PA(2);
+    attend(f, l, Q, ATT, pos0, nb);
+    PA(3);   /* every token's key and value are stored now; each token attends only to positions up to its own */
+    for (int b = 0; b < nb; b++) cl_xq_quantize(&f->ps_xqq[b], ATT + (size_t)b * NQ);
+    { cl_mv j = mvb(&y->wo, ATT, NQ, f->ps_xqq, HD, nb); cl_matvec_batch(&j, 1); }
+    for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->resid_scale * HD[i];
+    PA(4);
+
+    if (f->dense) {   /* one plain SwiGLU feed-forward */
+      float *HG = f->ps_hg, *HU = f->ps_hu;
+      for (int b = 0; b < nb; b++) { rmsnorm(XN + (size_t)b * E, X + (size_t)b * E, y->ffn_norm_f, E, f->rms_eps); cl_xq_quantize(&f->ps_xqe[b], XN + (size_t)b * E); }
+      { cl_mv j[2] = {mvb(&y->gate, XN, E, f->ps_xqe, HG, nb), mvb(&y->up, XN, E, f->ps_xqe, HU, nb)}; cl_matvec_batch(j, 2); }
+      for (int b = 0; b < nb; b++) { float *hg = HG + (size_t)b * FF, *hu = HU + (size_t)b * FF; for (int i = 0; i < FF; i++) hg[i] = hg[i] / (1.0f + expf(-hg[i])) * hu[i]; cl_xq_quantize(&f->ps_xqff[b], hg); }
+      { cl_mv j = mvb(&y->down, HG, FF, f->ps_xqff, HD, nb); cl_matvec_batch(&j, 1); }
+      for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->resid_scale * HD[i];
+      continue;
+    }
+
+    /* mixture of experts: route every token */
+    const int NU = f->n_used;
+    { route_job rj = {f, y, X, XN}; cl_parallel_for(nb, route_task, &rj); }
+    for (int b = 0; b < nb; b++) {
+      memcpy(f->rl, f->ps_rg + (size_t)b * f->n_expert, (size_t)f->n_expert * sizeof(float));
+      memcpy(f->rlogit, f->rl, (size_t)f->n_expert * sizeof(float));
+      float mx = f->rl[0];
+      for (int e = 1; e < f->n_expert; e++) if (f->rl[e] > mx) mx = f->rl[e];
+      double sum = 0;
+      for (int e = 0; e < f->n_expert; e++) { f->rl[e] = expf(f->rl[e] - mx); sum += f->rl[e]; }
+      for (int e = 0; e < f->n_expert; e++) f->rl[e] = (float)(f->rl[e] / sum);
+      int *sel = f->ps_sel + (size_t)b * NU; float *wt = f->ps_wt + (size_t)b * NU;
+      if (f->smart.enabled) {
+        struct { cl_xs *xs; int layer; } rc = {f->xs, l};
+        cl_route_result rr;
+        if (cl_route(f->rlogit, f->n_expert, NU, &f->smart, resident_cb, &rc, &rr)) { snprintf(err, errlen, "bad SMART-ROUTE settings"); return 1; }
+        for (int k = 0; k < NU; k++) { sel[k] = rr.selected[k]; wt[k] = f->rl[sel[k]]; }
+        f->subs += (uint64_t)rr.substituted; f->dropped_mass += rr.dropped_mass;
+        if (rr.max_delta > f->max_delta) f->max_delta = rr.max_delta;
+      } else {
+        char used[4096] = {0};
+        for (int k = 0; k < NU; k++) { int best = -1; for (int e = 0; e < f->n_expert; e++) if (!used[e] && (best < 0 || f->rl[e] > f->rl[best])) best = e; used[best] = 1; sel[k] = best; wt[k] = f->rl[best]; }
+      }
+      if (f->norm_topk) { float z = 0; for (int k = 0; k < NU; k++) z += wt[k]; if (z > 0) for (int k = 0; k < NU; k++) wt[k] /= z; }
+      f->expert_slots += (uint64_t)NU;
+    }
+    if (f->prev_sel) memcpy(f->prev_sel + (size_t)l * NU, f->ps_sel + (size_t)(nb - 1) * NU, (size_t)NU * sizeof(int));
+    memset(f->ps_moe, 0, (size_t)nb * E * 4);
+
+    PA(5);
+    /* then each chosen expert once, over the tokens that chose it, a few at a time so the store never holds more than a token's worth of requests */
+    int todo[4096], n_todo = 0;
+    { char seen[4096] = {0}; for (int b = 0; b < nb; b++) for (int k = 0; k < NU; k++) { int e = f->ps_sel[(size_t)b * NU + k]; if (!seen[e]) { seen[e] = 1; todo[n_todo++] = e; } } }
+    /* Reads run one group ahead of the compute when the cache has room for two groups (and a few spare slots) at once, so the disk works while the cores multiply. */
+    int hnd[4096] = {0}, issued = 0;
+    int depth = 0;   /* groups requested ahead of the one being computed; the cache must hold them all pinned with room to spare. CLUTOR_LOOKAHEAD=k sets it (0 waits for each group before asking for the next) */
+    if (f->xs) { depth = look_default(); const int room = (int)(cl_xs_cache_slots(f->xs) / (uint32_t)NU) - 2; if (depth > room) depth = room < 0 ? 0 : room; }
+    for (int g0 = 0; g0 < n_todo; g0 += NU) {
+      const int g1 = g0 + NU < n_todo ? g0 + NU : n_todo;
+      if (f->xs) {
+        const int want = g1 + depth * NU < n_todo ? g1 + depth * NU : n_todo;
+        while (issued < want) {   /* resident experts first, so they are pinned before a miss can evict them */
+          const int h1 = issued + NU < n_todo ? issued + NU : n_todo;
+          for (int pass = 0; pass < 2; pass++) for (int i = issued; i < h1; i++) { int here = cl_xs_resident(f->xs, l, todo[i]); if ((pass == 0) == (here != 0)) hnd[i] = cl_xs_request(f->xs, l, todo[i]); }
+          issued = h1;
+        }
+      }
+      for (int i = g0; i < g1; i++) {
+        PA(8);
+        const int e = todo[i];
+        const uint8_t *Pi = NULL;
+        if (f->xs) {
+          Pi = cl_xs_wait(f->xs, hnd[i]);
+          if (!Pi) { snprintf(err, errlen, "reading expert %d of layer %d from disk failed", e, l); for (int j = i; j < issued; j++) cl_xs_release(f->xs, hnd[j]); return 1; }
+        }
+        PA(6);
+        /* the tokens that chose this expert, with their weights */
+        int who[CL_PS_B]; float wgt[CL_PS_B]; int ni = 0;
+        for (int b = 0; b < nb; b++) for (int k = 0; k < NU; k++) if (f->ps_sel[(size_t)b * NU + k] == e) { who[ni] = b; wgt[ni] = f->ps_wt[(size_t)b * NU + k]; ni++; break; }
+        const uint8_t *gp = f->xs ? Pi : y->gate.p + (size_t)e * y->gate_slab, *up = f->xs ? Pi + y->gate_slab : y->up.p + (size_t)e * y->up_slab;
+        const uint8_t *dp = f->xs ? Pi + y->gate_slab + y->up_slab : y->down.p + (size_t)e * y->down_slab;
+        cl_xq sub[CL_PS_B];
+        for (int t = 0; t < ni; t++) { sub[t] = f->ps_xqe[who[t]]; memcpy(f->ps_xg + (size_t)t * E, XN + (size_t)who[t] * E, (size_t)E * 4); }
+        float *HG = f->ps_hg, *HU = f->ps_hu;
+        PA(8);
+        { cl_mv j[2] = {{y->gate.type, gp, FF, E, f->ps_xg, sub, HG, ni, (size_t)E, (size_t)FF}, {y->up.type, up, FF, E, f->ps_xg, sub, HU, ni, (size_t)E, (size_t)FF}}; cl_matvec_batch(j, 2); }
+        PA(7);
+        for (int t = 0; t < ni; t++) { float *hg = HG + (size_t)t * FF, *hu = HU + (size_t)t * FF; for (int q = 0; q < FF; q++) hg[q] = hg[q] / (1.0f + expf(-hg[q])) * hu[q]; cl_xq_quantize(&f->ps_xqff[t], hg); }
+        PA(8);
+        { cl_mv j = {y->down.type, dp, E, FF, HG, f->ps_xqff, f->ps_hde, ni, (size_t)FF, (size_t)E}; cl_matvec_batch(&j, 1); }
+        PA(7);
+        for (int t = 0; t < ni; t++) { float *m = f->ps_moe + (size_t)who[t] * E; const float *d = f->ps_hde + (size_t)t * E; for (int q = 0; q < E; q++) m[q] += wgt[t] * d[q]; }
+        if (f->xs) cl_xs_release(f->xs, hnd[i]);
+      }
+    }
+    PA(8);
+    for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->resid_scale * f->ps_moe[i];
+    if (f->mm && l < f->mm->n_ds && f->mm->ds[l]) for (size_t i = 0; i < (size_t)nb * E; i++) X[i] += f->mm->ds[l][i];   /* DeepStack: the picture's intermediate features join the first layers */
+    PA(8);
+  }
+  f->pos += nb;
+  if (logits) {
+    rmsnorm(f->xn, X + (size_t)(nb - 1) * E, f->out_norm_f, E, f->rms_eps);
+    cl_xq_quantize(&f->xq_e, f->xn);
+    cl_mv j = mv(&f->output, f->xn, &f->xq_e, logits); cl_matvec_batch(&j, 1);
+    if (f->logit_scale != 1.0f) for (int i = 0; i < f->n_vocab; i++) logits[i] /= f->logit_scale;
+  }
+  PA(9);
+  return 0;
+}
+
+int cl_fwd_image(cl_fwd *f, const cl_mm_image *img, char *err, size_t errlen) {
+  if (!f->n_deepstack || f->hybrid || f->dense) { snprintf(err, errlen, "this model does not take pictures"); return 1; }
+  if (img->n < 1 || img->gh * img->gw != img->n) { snprintf(err, errlen, "the picture has no tokens"); return 1; }
+  if (f->pos + img->n + 1 > f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
+  if (ps_alloc(f)) { snprintf(err, errlen, "out of memory"); return 1; }
+  const int E = f->n_embd, t0 = f->pos + f->rope_delta;
+  int *rp = malloc((size_t)f->ps_cap * 3 * sizeof(int));
+  if (!rp) { snprintf(err, errlen, "out of memory"); return 1; }
+  for (int i = 0; i < img->n; i += f->ps_cap) {
+    const int nb = img->n - i < f->ps_cap ? img->n - i : f->ps_cap;
+    for (int b = 0; b < nb; b++) { const int k = i + b; rp[3 * b] = t0; rp[3 * b + 1] = t0 + k / img->gw; rp[3 * b + 2] = t0 + k % img->gw; }
+    cl_mm_batch mb = {img->emb + (size_t)i * E, rp, {NULL, NULL, NULL}, img->n_ds < f->n_deepstack ? img->n_ds : f->n_deepstack};
+    for (int d = 0; d < 3; d++) mb.ds[d] = img->ds[d] ? img->ds[d] + (size_t)i * E : NULL;
+    f->mm = &mb;
+    const int rc = run_std(f, NULL, nb, NULL, err, errlen);
+    f->mm = NULL;
+    if (rc) { free(rp); return 1; }
+  }
+  free(rp);
+  f->rope_delta += (img->gh > img->gw ? img->gh : img->gw) - img->n;   /* the cache advanced by n, the rotary position by the larger side of the grid */
   return 0;
 }
 
@@ -643,9 +1130,22 @@ int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err
   if (f->pos + n > f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
   for (int i = 0; i < n; i++) if (tokens[i] < 0 || tokens[i] >= f->n_vocab) { snprintf(err, errlen, "token %d is outside the vocabulary", tokens[i]); return 1; }
   if (!f->hybrid) {
-    if (!f->logits_buf) f->logits_buf = malloc((size_t)f->n_vocab * 4);
-    if (!f->logits_buf) { snprintf(err, errlen, "out of memory"); return 1; }
-    for (int i = 0; i < n; i++) if (cl_fwd_step(f, tokens[i], i == n - 1 && logits ? logits : f->logits_buf, NULL, err, errlen)) return 1;
+    if (n == 1 || getenv("CLUTOR_STEP_PREFILL") || ps_alloc(f)) {   /* one token is just a step; CLUTOR_STEP_PREFILL=1 forces the old token-by-token path, the reference the batched one is tested against */
+      if (!f->logits_buf) f->logits_buf = malloc((size_t)f->n_vocab * 4);
+      if (!f->logits_buf) { snprintf(err, errlen, "out of memory"); return 1; }
+      for (int i = 0; i < n; i++) if (cl_fwd_step(f, tokens[i], i == n - 1 && logits ? logits : f->logits_buf, NULL, err, errlen)) return 1;
+      return 0;
+    }
+    /* CLUTOR_PS_B=k (1..CL_PS_B) shrinks the batch, so the tests can cross many batch boundaries with short prompts */
+    int cap = f->ps_cap;
+    { const char *e = getenv("CLUTOR_PS_B"); if (e && atoi(e) >= 1 && atoi(e) < f->ps_cap) cap = atoi(e); }
+    for (int i = 0; i < n; i += cap) { int nb = n - i < cap ? n - i : cap; if (run_std(f, tokens + i, nb, i + nb == n ? logits : NULL, err, errlen)) return 1; }
+    if (prof_on > 0) {
+      double tot = 0; for (int k = 0; k < 10; k++) tot += prof_t[k];
+      fprintf(stderr, "[profile: %d tokens, %.2f s in the batched path]", n, tot);
+      for (int k = 0; k < 10; k++) { fprintf(stderr, " %s %.2fs (%.0f%%);", prof_name[k], prof_t[k], tot > 0 ? 100 * prof_t[k] / tot : 0); prof_t[k] = 0; }
+      fprintf(stderr, "\n");
+    }
     return 0;
   }
   for (int i = 0; i < n; i += CL_PF_B) { int nb = n - i < CL_PF_B ? n - i : CL_PF_B; run_q35(f, tokens + i, nb, i + nb == n ? logits : NULL); }

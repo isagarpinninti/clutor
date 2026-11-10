@@ -1,13 +1,12 @@
 #define _GNU_SOURCE
 #include "xs.h"
 #include <errno.h>
-#include <fcntl.h>
-#include <pthread.h>
+#include "cl_thread.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
+#include "plat.h"
 
 enum { S_EMPTY = 0, S_LOADING = 1, S_READY = 2 };
 typedef struct job { int slot, layer, expert, prefetch; struct job *next; } job;
@@ -51,14 +50,12 @@ static job *pop_job(cl_xs *x) {
 static int read_full(cl_xs *x, uint8_t *dst, uint64_t len, uint64_t off) {
   uint64_t done = 0;
   while (done < len) {
-    ssize_t n = pread(x->fd, dst + done, (size_t)(len - done), (off_t)(off + done));
+    long long n = cl_pread(x->fd, dst + done, (size_t)(len - done), off + done);
     if (n < 0 && errno == EINTR) continue;
     if (n <= 0) return -1;
     done += (uint64_t)n;
   }
-#if defined(__linux__)
-  if (x->bypass_os) posix_fadvise(x->fd, (off_t)off, (off_t)len, POSIX_FADV_DONTNEED);
-#endif
+  if (x->bypass_os) cl_drop_cache(x->fd, off, len);
   return 0;
 }
 
@@ -98,11 +95,9 @@ cl_xs *cl_xs_open(const char *path, const cl_xs_layer *layers, int n_layer, int 
   if (!x->lay_copy) { snprintf(err, errlen, "out of memory"); free(x); return NULL; }
   memcpy(x->lay_copy, layers, (size_t)n_layer * sizeof *layers);
   for (int l = 0; l < n_layer; l++) { uint64_t s = layers[l].slab[0] + layers[l].slab[1] + layers[l].slab[2]; if (s > x->slot_bytes) x->slot_bytes = s; }
-  x->fd = open(path, O_RDONLY);
+  x->fd = cl_open_ro(path);
   if (x->fd < 0) { snprintf(err, errlen, "cannot open %s: %s", path, strerror(errno)); free(x->lay_copy); free(x); return NULL; }
-#ifdef F_NOCACHE
-  if (os_cache_bypass) fcntl(x->fd, F_NOCACHE, 1);
-#endif
+  if (os_cache_bypass) cl_nocache(x->fd);
   uint32_t cslots = (uint32_t)(cache_bytes / x->slot_bytes);
   if (cslots < (uint32_t)n_used) cslots = (uint32_t)n_used;   /* a layer's experts must fit at once */
   uint32_t sslots = stage_slots < 0 ? 0 : (uint32_t)stage_slots;
@@ -110,7 +105,7 @@ cl_xs *cl_xs_open(const char *path, const cl_xs_layer *layers, int n_layer, int 
   x->total = x->cache ? cl_cache_total_slots(x->cache) : 0;   /* what the cache really manages (it may round) */
   x->nbypass = n_used + 2;
   size_t nbuf = (size_t)x->total + (size_t)x->nbypass;
-  x->arena = aligned_alloc(4096, (nbuf * x->slot_bytes + 4095) / 4096 * 4096);
+  x->arena = cl_aligned_alloc(4096, (nbuf * x->slot_bytes + 4095) / 4096 * 4096);
   x->state = calloc(nbuf, sizeof(int));
   if (!x->cache || !x->arena || !x->state) { snprintf(err, errlen, "out of memory"); cl_xs_close(x); return NULL; }
   pthread_mutex_init(&x->mu, NULL); pthread_cond_init(&x->cv_work, NULL); pthread_cond_init(&x->cv_done, NULL);
@@ -129,8 +124,8 @@ void cl_xs_close(cl_xs *x) {
     for (int i = 0; i < x->nth; i++) pthread_join(x->th[i], NULL);
   }
   if (x->cache) cl_cache_free(x->cache);
-  if (x->fd > 0) close(x->fd);
-  free(x->arena); free(x->state); free(x->lay_copy); free(x);
+  if (x->fd > 0) cl_close(x->fd);
+  cl_aligned_free(x->arena); free(x->state); free(x->lay_copy); free(x);
 }
 
 uint64_t cl_xs_slot_bytes(const cl_xs *x) { return x->slot_bytes; }

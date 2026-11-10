@@ -178,7 +178,7 @@ describe("the interactive session on Clutor's own engine", () => {
     expect(text).not.toContain("llama-server");
     expect(text).toMatch(/\d+ tokens · [\d.]+ tok\/s/);
     expect(text).toContain("engine: Clutor engine");
-    expect(text).toMatch(/llama · \d+ layers · \d+ threads · context 64 · prompt format plain/);
+    expect(text).toMatch(/llama · \d+ layers · \d+ threads · context 512 · prompt format plain/);
     expect(text).toMatch(/last turn sent \d+ new tokens/);
     rmSync(home, { recursive: true, force: true });
   }, 60_000);

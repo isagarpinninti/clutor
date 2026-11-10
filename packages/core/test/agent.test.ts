@@ -19,6 +19,113 @@ const project = () => MemoryProject.from({
 let key: Awaited<ReturnType<typeof generateReceiptSigner>>;
 beforeAll(async () => { key = await generateReceiptSigner(); });
 
+describe("reading a tool call a model wrote loosely", () => {
+  it("accepts a file written into a tool call with raw line breaks inside the string", () => {
+    const reply = '{"tool": "write_file", "args": {"path": "index.html", "content": "<!doctype html>\n<html>\n  <body>hi</body>\n</html>\n"}}'.replace(/\\n/g, "\n");
+    expect(reply.includes("\n")).toBe(true);
+    expect(extractJsonObject(reply)).toMatchObject({ tool: "write_file", args: { path: "index.html" } });
+  });
+  it("still reads a call wrapped in prose, a code fence or tags", () => {
+    expect(extractJsonObject('Sure:\n```json\n{"tool":"finish","args":{"summary":"ok"}}\n```')).toMatchObject({ tool: "finish" });
+    expect(extractJsonObject('<tool_call>\n{"name":"read_file","arguments":{"path":"a"}}\n</tool_call>')).toMatchObject({ name: "read_file" });
+  });
+  it("tells a reply that was cut off from one that is plain text", async () => {
+    const { looksCutOff } = await import("../src/agent/llm");
+    expect(looksCutOff('{"tool": "write_file", "args": {"path": "a.html", "content": "<html>')).toBe(true);
+    expect(looksCutOff("Here is how a hash table works.")).toBe(false);
+    expect(looksCutOff('{"tool":"finish","args":{"summary":"ok"}}')).toBe(false);
+  });
+  it("writes the file when the model's call has raw line breaks in it", async () => {
+    const raw = '{"tool": "write_file", "args": {"path": "index.html", "content": "<p>a</p>\n<p>b</p>"}}'.replace("\\n", "\n");
+    const r = await runAgent({ task: "make a page", llm: llm([() => ({ content: raw, toolCalls: [] }), () => say("finish", { summary: "Wrote it." })]), ws: new ShadowWorkspace(MemoryProject.from({})) });
+    expect(r.diffs.map((d) => d.path)).toEqual(["index.html"]);
+    expect(r.invalidReplies).toBe(0);
+  });
+});
+
+describe("agent loop: claims of files that do not exist", () => {
+  it("sends a finish back when the task names files that were never created, and accepts it once they exist", async () => {
+    const m = llm([
+      () => say("write_file", { path: "index.html", content: "<p>hi</p>" }),
+      () => say("finish", { summary: "I created index.html, style.css and script.js." }),
+      () => say("write_file", { path: "style.css", content: "p{}" }),
+      () => say("write_file", { path: "script.js", content: "1" }),
+      () => say("finish", { summary: "Created index.html, style.css and script.js." }),
+    ]);
+    const r = await runAgent({ task: "Make a game with index.html, style.css and script.js", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})) });
+    expect(r.diffs.map((d) => d.path).sort()).toEqual(["index.html", "script.js", "style.css"]);
+    expect(JSON.stringify(m.seen[2])).toContain("these files do not exist: style.css, script.js");
+  });
+  it("lets it end if it is sent back twice and still has not made them, rather than looping", async () => {
+    const m = llm([() => say("write_file", { path: "a.txt", content: "x" }), () => say("finish", { summary: "Done: made b.css." })]);
+    const r = await runAgent({ task: "make b.css", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})) });
+    expect(r.status).toBe("finished");
+    expect(r.steps).toBe(4);
+    expect(r.summary).toContain("these files were named but were not created: b.css");
+  });
+  it("does not check a plan-only run, whose plan names files it has not written", async () => {
+    const m = llm([() => say("read_file", { path: "a.ts" }), () => say("finish", { summary: "Plan: add b.ts and c.ts." })]);
+    const r = await runAgent({ task: "plan it", planOnly: true, llm: m, ws: new ShadowWorkspace(MemoryProject.from({ "a.ts": "1" })) });
+    expect(r.summary).toBe("Plan: add b.ts and c.ts.");
+    expect(r.steps).toBe(2);
+  });
+});
+
+describe("agent loop: stopping", () => {
+  it("drops a reply that Stop cut short: nothing is shown or run from it", async () => {
+    const ac = new AbortController();
+    const events: AgentEvent[] = [];
+    const m = llm([() => { ac.abort(); return { content: 'Let me think about this... {"tool": "write_file", "args": {"path": "a.txt", "content": "x"}}', toolCalls: [] }; }]);
+    const r = await runAgent({ task: "t", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), signal: ac.signal, onEvent: (e) => events.push(e) });
+    expect(r.status).toBe("aborted");
+    expect(r.diffs).toEqual([]);
+    expect(events.map((e) => e.type)).not.toContain("thought");
+  });
+  it("passes the reply so far to the listener while the model writes it", async () => {
+    const parts: string[] = [];
+    const m: LlmClient = { model: "s", toolMode: "json", async chat(_m, o) { o?.onPartial?.('{"tool": "fin'); o?.onPartial?.('{"tool": "finish", "args": {"summary": "ok"}}'); return { content: '{"tool": "finish", "args": {"summary": "ok"}}', toolCalls: [] }; } };
+    const events: AgentEvent[] = [];
+    await runAgent({ task: "t", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), maxIdleFinishes: 0, onEvent: (e) => { events.push(e); if (e.type === "partial") parts.push(e.text); } });
+    expect(parts).toEqual(['{"tool": "fin', '{"tool": "finish", "args": {"summary": "ok"}}']);
+  });
+});
+
+describe("agent loop: finishing without doing anything", () => {
+  it("sends a finish that comes before any work back to work, then keeps the files the model writes", async () => {
+    const m = llm([
+      () => say("finish", { summary: "Created the game." }),
+      () => say("write_file", { path: "index.html", content: "<!doctype html>\n" }),
+      () => say("finish", { summary: "Wrote index.html." }),
+    ]);
+    const r = await runAgent({ task: "make a page", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})) });
+    expect(r).toMatchObject({ status: "finished", summary: "Wrote index.html." });
+    expect(r.diffs.map((d) => d.path)).toEqual(["index.html"]);
+    expect(JSON.stringify(m.seen[1])).toContain("have not read, written or run anything");
+  });
+  it("accepts a finish that is repeated after being sent back twice, so a task that needs no changes can still end", async () => {
+    const m = llm([() => say("finish", { summary: "Nothing needed." })]);
+    const r = await runAgent({ task: "is it fine?", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})) });
+    expect(r).toMatchObject({ status: "finished", summary: "Nothing needed.", steps: 3 });
+    expect(r.diffs).toEqual([]);
+  });
+  it("takes a plan, but a plan alone is not work: finishing right after it is still sent back", async () => {
+    const m = llm([
+      () => say("update_plan", { steps: "[>] Write index.html\n[ ] Style it" }),
+      () => say("finish", { summary: "Done." }),
+      () => say("write_file", { path: "index.html", content: "x" }),
+      () => say("finish", { summary: "Wrote it." }),
+    ]);
+    const events: AgentEvent[] = [];
+    const r = await runAgent({ task: "make a page", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), onEvent: (e) => events.push(e) });
+    expect(r.summary).toBe("Wrote it.");
+    expect(events.filter((e) => e.type === "tool_call").map((e) => (e as { name: string }).name)).toEqual(["update_plan", "finish", "write_file", "finish"]);
+  });
+  it("can be turned off", async () => {
+    const r = await runAgent({ task: "t", llm: llm([() => say("finish", { summary: "ok" })]), ws: new ShadowWorkspace(MemoryProject.from({})), maxIdleFinishes: 0 });
+    expect(r).toMatchObject({ status: "finished", steps: 1 });
+  });
+});
+
 describe("agent loop", () => {
   it("reads, edits, creates, and finishes, leaving the project untouched and a diff to review", async () => {
     const p = project();
@@ -298,5 +405,90 @@ describe("JSON extraction", () => {
     expect(extractJsonObject("no json")).toBeUndefined();
     expect(extractJsonObject('{"a": ')).toBeUndefined();
     expect(extractJsonObject('{bad} then {"ok":true}')).toEqual({ ok: true });
+  });
+});
+
+describe("auto-compact", () => {
+  it("replaces dropped steps with a record of what was done and repeats the plan, instead of forgetting them", async () => {
+    const big = "x".repeat(900);
+    const steps: Step[] = [() => say("update_plan", { steps: "[>] Write the pages\n[ ] Finish" })];
+    for (let i = 0; i < 8; i++) steps.push(() => say("write_file", { path: `p${i}.txt`, content: `${big}${i}` }));
+    steps.push(() => say("finish", { summary: "done" }));
+    const events: AgentEvent[] = [];
+    const m = llm(steps);
+    const r = await runAgent({ task: "write pages p0.txt to p7.txt", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), contextChars: 5000, onEvent: (e) => events.push(e) });
+    expect(events.some((e) => e.type === "compact")).toBe(true);
+    const last = m.seen[m.seen.length - 1] as ChatMessage[];
+    const note = last.find((x) => (x.content ?? "").startsWith("Older steps were compacted"));
+    expect(note?.content).toContain("write_file p0.txt");
+    expect(note?.content).toContain("Write the pages");
+    expect(r.status).toBe("finished");
+  });
+});
+
+describe("continuing a cut-off reply", () => {
+  it("finishes a long file in a second go instead of discarding the first part", async () => {
+    const full = JSON.stringify({ tool: "write_file", args: { path: "big.html", content: "<p>one</p>\n<p>two</p>\n<p>three</p>" } });
+    const cut = full.slice(0, 50);
+    const calls: Array<string | undefined> = [];
+    const client: LlmClient = {
+      model: "scripted", toolMode: "json", canContinue: true,
+      async chat(_m, o) {
+        calls.push(o?.prefill);
+        if (calls.length === 1) return { content: cut, toolCalls: [] };
+        if (o?.prefill === cut) return { content: full, toolCalls: [] };
+        return say("finish", { summary: "Wrote big.html." });
+      },
+    };
+    const events: AgentEvent[] = [];
+    const ws = new ShadowWorkspace(MemoryProject.from({}));
+    const r = await runAgent({ task: "make big.html", llm: client, ws, onEvent: (e) => events.push(e) });
+    expect(calls[0]).toBeUndefined();
+    expect(calls[1]).toBe(cut);
+    expect(events.some((e) => e.type === "continue")).toBe(true);
+    expect(events.some((e) => e.type === "invalid")).toBe(false);
+    expect((await ws.diffs()).map((d) => d.path)).toEqual(["big.html"]);
+    expect(r.status).toBe("finished");
+  });
+});
+
+
+describe("hooks and helpers", () => {
+  const run = (exit: number, out = "ok"): ((plan: unknown, command: string) => Promise<CommandResult>) => async () => ({ exitCode: exit, output: out, timedOut: false, durationMs: 1 });
+  it("reads a hooks file and ignores anything else", async () => {
+    const { parseHooks } = await import("../src/agent/loop");
+    expect(parseHooks('{"hooks":{"PostToolUse":[{"matcher":"write_file","command":"npm test"}],"Stop":[{"command":"npm test"}]}}')?.post?.[0]?.command).toBe("npm test");
+    expect(parseHooks("not json")).toBeUndefined();
+    expect(parseHooks('{"hooks":{}}')).toBeUndefined();
+  });
+  it("shows a post-call hook's output to the model, and blocks a call when a pre-call hook fails", async () => {
+    const m = llm([() => say("write_file", { path: "a.txt", content: "x" }), () => say("finish", { summary: "ok" })]);
+    await runAgent({ task: "t", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), runCommand: run(0, "lint clean") as never, hooks: { post: [{ matcher: "write_file", command: "npm test" }] } });
+    expect(JSON.stringify(m.seen[1])).toContain("lint clean");
+    const m2 = llm([() => say("write_file", { path: "a.txt", content: "x" }), () => say("finish", { summary: "ok" })]);
+    const ws = new ShadowWorkspace(MemoryProject.from({}));
+    await runAgent({ task: "t", llm: m2, ws, runCommand: run(1, "denied") as never, hooks: { pre: [{ matcher: "write_file", command: "npm test" }] } });
+    expect(ws.size).toBe(0);
+    expect(JSON.stringify(m2.seen[1])).toContain("Blocked by a hook");
+  });
+  it("sends the agent back to work when a stop hook fails", async () => {
+    let calls = 0;
+    const m = llm([() => say("write_file", { path: "a.txt", content: "x" }), () => say("finish", { summary: "done" }), () => say("write_file", { path: "a.txt", content: "y" }), () => say("finish", { summary: "fixed" })]);
+    const r = await runAgent({ task: "t", llm: m, ws: new ShadowWorkspace(MemoryProject.from({})), runCommand: (async () => ({ exitCode: ++calls === 1 ? 1 : 0, output: "bad", timedOut: false, durationMs: 1 })) as never, hooks: { stop: [{ command: "npm test" }] } });
+    expect(r.status).toBe("finished");
+    expect(r.summary).toBe("fixed");
+  });
+  it("lets the agent hand a question to a read-only helper", async () => {
+    const m = llm([
+      () => say("delegate", { task: "where is the entry point?" }),
+      () => say("write_file", { path: "x.txt", content: "no" }),   // the helper tries to write
+      () => say("finish", { summary: "It is main.ts." }),            // the helper's report
+      () => say("finish", { summary: "Found it." }),
+    ]);
+    const ws = new ShadowWorkspace(MemoryProject.from({ "main.ts": "x" }));
+    const r = await runAgent({ task: "find the entry point", llm: m, ws });
+    expect(ws.size).toBe(0);
+    expect(r.summary).toBe("Found it.");
+    expect(JSON.stringify(m.seen.at(-1))).toContain("Report from the helper");
   });
 });

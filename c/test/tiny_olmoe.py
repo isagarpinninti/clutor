@@ -9,11 +9,18 @@ NeoX rotary embeddings, attention, the softmax router and the SwiGLU experts are
 weights against 8-bit-quantized activations (as llama.cpp does) while this reference works in doubles, so logprobs agree to a tolerance, not exactly.
 """
 import json, math, random, struct, subprocess, sys
+import struct
+
+
+def h16(vec):
+    """Round each value to half precision (nearest even), as the engine does when it stores the key/value cache."""
+    return [struct.unpack('<e', struct.pack('<e', a))[0] for a in vec]
+
 
 # Two tiny architectures. olmoe: full-width QK-norm, equal head counts, raw softmax weights. qwen3moe: grouped-query attention, head_dim larger than
 # embedding / heads, per-head QK-norm with one shared weight, and chosen weights renormalised to sum to 1.
 E, FF, NEXP, USED, LAYERS = 256, 256, 8, 2, 2
-ARCH, HEADS, KVH, HD, PRE, EPS, THETA, CTX = "olmoe", 4, 4, 64, "olmo", 1e-5, 10000.0, 64
+ARCH, HEADS, KVH, HD, PRE, EPS, THETA, CTX = "olmoe", 4, 4, 64, "olmo", 1e-5, 10000.0, 512
 NQ = NKV = E
 QKPH = NORMTOP = False
 QKMODE, ROPEPAIRS, ATTN_SCALE, EMB_SCALE, RES_SCALE, LOGIT_SCALE = 1, False, None, 1.0, 1.0, 1.0   # QKMODE: 0 none, 1 whole vector, 2 per head
@@ -36,7 +43,7 @@ def configure(arch):
         HYBRID, LAYERS = True, 4
     elif arch == "qwen2":   # dense Qwen2.5 style: GQA 4/2, head 64, biases on Q/K/V, tied output, a feed-forward twice the width of an expert
         HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE, DENSE, QKVBIAS, FF = 4, 2, 64, "qwen2", 1e-6, 1000000.0, False, False, 0, True, True, 512
-    elif arch == "qwen3moe":
+    elif arch in ("qwen3moe", "qwen3vlmoe"):   # qwen3vlmoe: the same language model under Qwen3-VL's name (its multi-axis rope is the plain rope for text)
         HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE = 4, 2, 128, "qwen2", 1e-6, 1000000.0, True, True, 2
     elif arch == "granitemoe":   # no QK-norm, adjacent-pair rotary embeddings, granite's four multipliers, renormalised expert weights, the "refact" pre-tokenizer
         HEADS, KVH, HD, PRE, EPS, THETA, QKPH, NORMTOP, QKMODE = 4, 2, 64, "refact", 1e-6, 10000.0, False, True, 0
@@ -189,10 +196,10 @@ def write(path, seed=1):
     meta = [
         kv("general.architecture", 8, A), kv("general.name", 8, "tiny-%s-test" % A),
         kv(A + ".block_count", 4, LAYERS), kv(A + ".context_length", 4, CTX), kv(A + ".embedding_length", 4, E),
-        kv(A + (".expert_feed_forward_length" if ARCH == "qwen3moe" else ".feed_forward_length"), 4, FF), kv(A + ".attention.head_count", 4, HEADS), kv(A + ".attention.head_count_kv", 4, KVH),
+        kv(A + (".expert_feed_forward_length" if ARCH in ("qwen3moe", "qwen3vlmoe") else ".feed_forward_length"), 4, FF), kv(A + ".attention.head_count", 4, HEADS), kv(A + ".attention.head_count_kv", 4, KVH),
         kv(A + ".rope.freq_base", 6, THETA), kv(A + ".attention.layer_norm_rms_epsilon", 6, EPS),
     ] + ([] if DENSE else [kv(A + ".expert_used_count", 4, USED), kv(A + ".expert_count", 4, NEXP)]) + [
-    ] + ([kv(A + ".attention.key_length", 4, HD), kv(A + ".attention.value_length", 4, HD)] if ARCH == "qwen3moe" else []) + (
+    ] + ([kv(A + ".attention.key_length", 4, HD), kv(A + ".attention.value_length", 4, HD)] if ARCH in ("qwen3moe", "qwen3vlmoe") else []) + ([kv(A + ".n_deepstack_layers", 4, 3)] if ARCH == "qwen3vlmoe" else []) + (
         [kv(A + ".rope.dimension_count", 4, HD), kv(A + ".attention.scale", 6, ATTN_SCALE), kv(A + ".embedding_scale", 6, EMB_SCALE), kv(A + ".residual_scale", 6, RES_SCALE), kv(A + ".logit_scale", 6, LOGIT_SCALE)] if ARCH == "granitemoe" else [kv(A + ".rope.dimension_count", 4, HD)] if ARCH == "llama" else
         [kv(A + ".attention.key_length", 4, HD), kv(A + ".attention.value_length", 4, HD), kv(A + ".rope.dimension_count", 4, ROPE_DIM), kv(A + ".ssm.conv_kernel", 4, SSM_CK), kv(A + ".ssm.state_size", 4, SSM_S),
          kv(A + ".ssm.group_count", 4, SSM_HK), kv(A + ".ssm.time_step_rank", 4, SSM_HV), kv(A + ".ssm.inner_size", 4, SSM_S * SSM_HV), kv(A + ".full_attention_interval", 4, 4)] if ARCH == "qwen35" else []) + [
@@ -398,7 +405,7 @@ class Ref:
                 ks = [rms(k[h * HD:(h + 1) * HD], L["kn"]) for h in range(KVH)]
                 rot = lambda hv: rope(hv[:ROPE_DIM], pos) + hv[ROPE_DIM:]
                 qs = [rot(a) for a in qs]; ks = [rot(a) for a in ks]
-                self.K[l].append(sum(ks, [])); self.V[l].append(v)
+                self.K[l].append(h16(sum(ks, []))); self.V[l].append(h16(v))
                 att = []
                 for h in range(HEADS):
                     sl = slice((h // grp) * HD, (h // grp + 1) * HD)
@@ -424,7 +431,7 @@ class Ref:
             elif QKMODE == 1:
                 q = rms(q, L["qn"]); k = rms(k, L["kn"])
             q = sum((rope(q[h * HD:(h + 1) * HD], pos, self.ff) for h in range(HEADS)), []); k = sum((rope(k[h * HD:(h + 1) * HD], pos, self.ff) for h in range(KVH)), [])
-            self.K[l].append(k); self.V[l].append(v)
+            self.K[l].append(h16(k)); self.V[l].append(h16(v))
             att = []
             for h in range(HEADS):
                 qs = q[h * HD:(h + 1) * HD]; ks = slice((h // grp) * HD, (h // grp + 1) * HD)
@@ -455,7 +462,7 @@ class Ref:
 def run_engine(engine, args, float_math):
     import os
     env = dict(os.environ, CLUTOR_FLOAT_MATH="1" if float_math else "0")
-    return subprocess.run([engine] + args, capture_output=True, text=True, check=True, env=env).stdout
+    return subprocess.run([engine] + args, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True, env=env).stdout
 
 def check(engine, path):
     """Two modes, each against a reference built for it.
@@ -471,8 +478,11 @@ def check(engine, path):
         if ADDBOS: ids = [len(toks) - 2] + ids   # the engine prepends BOS (the generator makes <|endoftext|> the BOS token)
         # The recurrent state carries any 8-bit rounding flip forward, so the integer path of a hybrid model is checked with wider limits (measured worst case over seeds
         # and builds: mean 0.035, max 0.13); the float path, which has no such flips, keeps the strict limits and is the check of the logic.
-        int_max, int_mean = (0.3, 0.08) if HYBRID else (0.05, 0.01)
-        for float_math, max_tol, mean_tol, label in ((True, 1e-3, 1e-3, "float math  "), (False, int_max, int_mean, "integer dots")):
+        # The key/value cache is half precision in the engine, and the reference rounds the same way, but it works in doubles: now and then a value lands next to a rounding boundary and
+        # the two round to different halves, a step of 5e-4 in one cache entry. Over 24 random models and prompts the float path then shows up to 0.005 (it was 0.0002 with a single
+        # precision cache), and the integer path, which re-quantises activations to 8 bits, up to 0.17. A wrong operation shows up as 0.1 to several in the float path, so these still catch it.
+        int_max, int_mean = (0.4, 0.1)
+        for float_math, max_tol, mean_tol, label in ((True, 0.015, 4e-3, "float math  "), (False, int_max, int_mean, "integer dots")):
             ref.qa = not float_math; ref.reset()
             for t in ids: lp = ref.step(t)
             gap = sorted(lp, reverse=True)

@@ -1,6 +1,7 @@
 export * from "./gguf/parse";
 export * from "./gguf/layout";
 export * from "./gguf/write";
+export * from "./models/library";
 export * from "./planner/catalog";
 export * from "./planner/plan";
 export * from "./cache/policies";

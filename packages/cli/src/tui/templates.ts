@@ -34,13 +34,16 @@ export interface RenderOptions {
 }
 
 /** Everything before the first reply's text, for the messages given. No BOS: the engine adds it. */
+/** Where a picture goes in the text: the engine replaces the pad with the picture's vectors. */
+export const IMAGE_MARK = "<|vision_start|><|image_pad|><|vision_end|>";
+
 export function renderChat(info: TemplateInfo, messages: ChatMessage[], o: RenderOptions = {}): string {
   const gen = o.generationPrompt ?? true;
   let out = "";
   for (const m of messages) {
     switch (info.family) {
       // A reply generated with thinking off began with an empty think block; rendering it that way keeps the engine's cache valid when the conversation continues.
-      case "chatml": out += `<|im_start|>${m.role}\n${m.role === "assistant" && info.thinkTags && o.thinking !== true ? "<think>\n\n</think>\n\n" : ""}${m.content}<|im_end|>\n`; break;
+      case "chatml": out += `<|im_start|>${m.role}\n${(m.images ?? []).map(() => IMAGE_MARK).join("")}${m.role === "assistant" && info.thinkTags && o.thinking !== true ? "<think>\n\n</think>\n\n" : ""}${m.content}<|im_end|>\n`; break;
       case "llama3": out += `<|start_header_id|>${m.role}<|end_header_id|>\n\n${m.content}<|eot_id|>`; break;
       case "granite": out += `<|start_of_role|>${m.role}<|end_of_role|>${m.content}<|end_of_text|>\n`; break;
       case "olmo": out += m.role === "assistant" ? `<|assistant|>\n${m.content}<|endoftext|>\n` : `<|${m.role}|>\n${m.content}\n`; break;

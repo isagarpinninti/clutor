@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* ggml tensor type ids this engine can compute with (see gguf.c for the full table). */
-enum { CL_T_F32 = 0, CL_T_F16 = 1, CL_T_Q4_0 = 2, CL_T_Q5_0 = 6, CL_T_Q8_0 = 8, CL_T_Q4_K = 12, CL_T_Q5_K = 13, CL_T_Q6_K = 14, CL_T_BF16 = 30 };
+enum { CL_T_F32 = 0, CL_T_F16 = 1, CL_T_Q4_0 = 2, CL_T_Q5_0 = 6, CL_T_Q8_0 = 8, CL_T_Q2_K = 10, CL_T_Q3_K = 11, CL_T_Q4_K = 12, CL_T_Q5_K = 13, CL_T_Q6_K = 14, CL_T_BF16 = 30 };
 
 /* 1 when cl_dequant_row / cl_matvec understand this type. */
 int cl_type_supported(uint32_t type);
@@ -26,16 +26,22 @@ void cl_xq_free(cl_xq *q);
 void cl_xq_quantize(cl_xq *q, const float *x);
 
 /* One matrix-vector product: out[r] = dot(row r of W, x). K-quant weights use `xq` and integer arithmetic; other types use the float `xf`. */
+/* The most tokens one batched product can hold (cl_mv.nb). */
+#define CL_MV_MAX 512
 typedef struct { uint32_t type; const void *w; int rows, cols; const float *xf; const cl_xq *xq; float *out;
   /* Several inputs against the same weights (prompt processing): nb > 1 makes `xq` an array of nb vectors, `xf` nb vectors spaced xf_stride floats apart, and
    * `out` nb results spaced out_stride floats apart. Each weight row is read once and multiplied with all nb inputs, so the weights are streamed once per batch. */
   int nb; size_t xf_stride, out_stride; } cl_mv;
 /* Runs several products at once, their rows split into chunks over the thread pool. */
+/* Runs fn(ctx, i) for i in [0, n) on the same threads as the matrix products, and returns when all are done. The calls may run in any order and at the same time. */
+void cl_parallel_for(int n, void (*fn)(void *ctx, int i), void *ctx);
 void cl_matvec_batch(const cl_mv *jobs, int n);
 /* 1 when the weights of this type are multiplied with integer arithmetic (and so need `xq`). */
 int cl_type_integer_dot(uint32_t type);
 /* Name of the integer dot path compiled in: "neon+dotprod" or "scalar". */
 const char *cl_quant_path(void);
+/* x86-64: switch the kernels to "scalar", "avx2" or "avx512vnni" (or "auto"). Returns 1 when applied, 0 when this processor cannot run it (always 0 on other architectures). For tests and measuring; CLUTOR_ISA does the same at start. */
+int cl_quant_set_isa(const char *name);
 
 /* out[r] = dot(row r of W, x) for rows x cols weights of `type`, using a pool of threads. Dequantizes each block to float on the fly. */
 void cl_matvec(uint32_t type, const void *w, int rows, int cols, const float *x, float *out);

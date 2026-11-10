@@ -1,12 +1,10 @@
 #define _GNU_SOURCE
 #include "gguf.h"
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include "plat.h"
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error "GGUF is little-endian; this reader assumes a little-endian host"
@@ -168,6 +166,7 @@ static int parse(cl_model *m, const uint8_t *buf, size_t n, char *err, size_t er
   free(rels);
 
   m->n_layers = (uint32_t)find_int(kv, nk, m->arch, "block_count");
+  if (m->n_layers == 0 && !strcmp(m->arch, "clip")) m->n_layers = (uint32_t)find_int(kv, nk, m->arch, "vision.block_count");   /* a vision projector keeps its block count under "vision." */
   m->n_experts = (uint32_t)find_int(kv, nk, m->arch, "expert_count");
   m->n_used = (uint32_t)find_int(kv, nk, m->arch, "expert_used_count");
   if (m->n_layers == 0 || m->n_layers > 4096) { snprintf(err, errlen, "the file does not say how many layers it has"); return -1; }
@@ -219,24 +218,24 @@ void cl_model_close(cl_model *m) {
 
 int cl_model_open(cl_model *m, const char *path, char *err, size_t errlen) {
   memset(m, 0, sizeof *m);
-  int fd = open(path, O_RDONLY);
+  int fd = cl_open_ro(path);
   if (fd < 0) { snprintf(err, errlen, "cannot open %s: %s", path, strerror(errno)); return 1; }
-  struct stat st;
-  if (fstat(fd, &st) || st.st_size < 24) { close(fd); snprintf(err, errlen, "%s is too small to be a GGUF file", path); return 1; }
-  m->file_size = (uint64_t)st.st_size;
+  const uint64_t fsize = cl_fd_size(fd);
+  if (fsize < 24) { cl_close(fd); snprintf(err, errlen, "%s is too small to be a GGUF file", path); return 1; }
+  m->file_size = fsize;
   size_t want = m->file_size < (1u << 20) ? (size_t)m->file_size : (1u << 20);
   for (;;) {
     uint8_t *buf = malloc(want);
-    if (!buf) { close(fd); snprintf(err, errlen, "out of memory"); return 1; }
-    ssize_t got = pread(fd, buf, want, 0);
-    if (got < 0 || (size_t)got != want) { free(buf); close(fd); snprintf(err, errlen, "cannot read %s", path); return 1; }
+    if (!buf) { cl_close(fd); snprintf(err, errlen, "out of memory"); return 1; }
+    long long got = cl_pread(fd, buf, want, 0);
+    if (got < 0 || (size_t)got != want) { free(buf); cl_close(fd); snprintf(err, errlen, "cannot read %s", path); return 1; }
     cl_model_close(m);
-    m->file_size = (uint64_t)st.st_size;
+    m->file_size = fsize;
     int r = parse(m, buf, want, err, errlen);
     free(buf);
-    if (r == 0) { close(fd); return 0; }
-    if (r < 0) { close(fd); cl_model_close(m); return 1; }
-    if (want >= m->file_size || want >= ((size_t)1 << 29)) { close(fd); cl_model_close(m); snprintf(err, errlen, "the header is truncated or larger than 512 MiB"); return 1; }
+    if (r == 0) { cl_close(fd); return 0; }
+    if (r < 0) { cl_close(fd); cl_model_close(m); return 1; }
+    if (want >= m->file_size || want >= ((size_t)1 << 29)) { cl_close(fd); cl_model_close(m); snprintf(err, errlen, "the header is truncated or larger than 512 MiB"); return 1; }
     want = want * 4 > m->file_size ? (size_t)m->file_size : want * 4;
   }
 }

@@ -23,7 +23,26 @@ _Static_assert(sizeof(cl_block_q8_0) == 36, "a Q8_0 activation block is 36 bytes
 /* The path this build uses: "neon+dotprod", "neon", "avx2" or "scalar". */
 const char *cl_kernel_name(void);
 
-float cl_f16_to_f32(uint16_t h);
+/* Half to single precision. The software version handles every value (subnormals, infinities, NaN) and is the reference; where the processor converts in one instruction
+ * (Arm with half-precision support, x86 with F16C) that instruction is used, because this runs twice per 256 weights in every matrix product and in software it cost as much
+ * as the dot product itself. The tests compare the two on all 65,536 values. */
+float cl_f16_to_f32_soft(uint16_t h);
+/* Single to half precision, rounding to nearest even (the same rule as the hardware instruction): the software version is the reference. Used to store the key/value cache. */
+uint16_t cl_f32_to_f16_soft(float f);
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR) && (defined(__ARM_FP16_FORMAT_IEEE) || defined(__clang__))
+#include <string.h>
+static inline float cl_f16_to_f32(uint16_t h) { __fp16 x; memcpy(&x, &h, sizeof x); return (float)x; }
+static inline uint16_t cl_f32_to_f16(float f) { __fp16 x = (__fp16)f; uint16_t h; memcpy(&h, &x, sizeof h); return h; }
+#define CL_F16_HARDWARE 1
+#elif defined(__F16C__) && !defined(CL_FORCE_SCALAR)
+#include <immintrin.h>
+static inline float cl_f16_to_f32(uint16_t h) { return _cvtsh_ss(h); }
+static inline uint16_t cl_f32_to_f16(float f) { return _cvtss_sh(f, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC); }
+#define CL_F16_HARDWARE 1
+#else
+static inline float cl_f16_to_f32(uint16_t h) { return cl_f16_to_f32_soft(h); }
+static inline uint16_t cl_f32_to_f16(float f) { return cl_f32_to_f16_soft(f); }
+#endif
 
 /* Quantizes n floats (a multiple of 32) to n/32 blocks. */
 void cl_quantize_q8_0(const float *x, cl_block_q8_0 *y, int n);

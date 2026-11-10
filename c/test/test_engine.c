@@ -2,7 +2,11 @@
 #include "cache.h"
 #include "gguf.h"
 #include "kernel.h"
+#include "forward.h"
 #include "quant.h"
+#include "jsongate.h"
+#include "iq.h"
+#include "vision.h"
 #include "meta.h"
 #include "xs.h"
 #include <math.h>
@@ -193,6 +197,45 @@ static void random_blocks(int nb, cl_block_q4_0 *w, cl_block_q8_0 *a, int extrem
 
 static void test_kernel(void) {
   printf("kernel path: %s\n", cl_kernel_name());
+  { /* the fast conversion agrees with the reference on every one of the 65,536 half-precision bit patterns (NaNs only need to be NaNs) */
+    int bad = 0;
+    for (uint32_t h = 0; h < 65536; h++) {
+      float a = cl_f16_to_f32((uint16_t)h), b = cl_f16_to_f32_soft((uint16_t)h);
+      if (isnan(b) ? !isnan(a) : memcmp(&a, &b, sizeof a) != 0) bad++;
+    }
+    CHECK(bad == 0, "half to single conversion: the fast path equals the reference for all 65,536 values");
+  }
+  { /* the cache a model that does not fit gets: 45 percent of memory, at most 60 percent of what is free, 256 MiB at least, never more than all the experts */
+    const uint64_t G = (uint64_t)1 << 30, M = (uint64_t)1 << 20;
+    CHECK(cl_should_lock(4 * G, 16 * G, 12 * G) == 1, "lock: a model well inside memory is pinned");
+    CHECK(cl_should_lock(12 * G, 16 * G, 14 * G) == 0, "lock: a model over 60 percent of memory is not pinned");
+    CHECK(cl_should_lock(6 * G, 16 * G, 5 * G) == 0, "lock: a model bigger than the free memory is not pinned");
+    CHECK(cl_should_lock(4 * G, 0, 0) == 1, "lock: unknown memory does not stop pinning a model");
+    CHECK(cl_auto_cache_bytes(16 * G, 0, 40 * G) == 16 * G / 100 * 45, "auto cache: 45 percent of memory when free memory is unknown");
+    CHECK(cl_auto_cache_bytes(16 * G, 14 * G, 40 * G) == 16 * G / 100 * 45, "auto cache: 45 percent of memory when plenty is free");
+    CHECK(cl_auto_cache_bytes(16 * G, 4 * G, 40 * G) == 4 * G / 100 * 60, "auto cache: at most 60 percent of what is free when other programs hold the rest");
+    CHECK(cl_auto_cache_bytes(16 * G, 100 * M, 40 * G) == 256 * M, "auto cache: never below 256 MiB");
+    CHECK(cl_auto_cache_bytes(64 * G, 60 * G, 3 * G) == 3 * G, "auto cache: never more than all the experts");
+  }
+  { /* single to half (the key/value cache is stored this way): the fast path equals the software reference, every half value survives the round trip, and the rule is round to nearest even */
+    int bad = 0, trips = 0, ties = 0;
+    for (uint32_t h = 0; h < 65536; h++) { const float a = cl_f16_to_f32_soft((uint16_t)h); if (!isnan(a) && cl_f32_to_f16_soft(a) != (uint16_t)h) trips++; }
+    uint32_t seed = 12345u;
+    for (int i = 0; i < 4000000; i++) {
+      seed = seed * 1664525u + 1013904223u;
+      uint32_t bits = seed;
+      if (i % 3 == 0) bits = (seed & 0x80000000u) | ((((seed >> 23) % 60u) + 90u) << 23) | (seed & 0x7fffffu);   /* around the half range, where the rounding happens */
+      float f; memcpy(&f, &bits, sizeof f);
+      const uint16_t a = cl_f32_to_f16(f), b = cl_f32_to_f16_soft(f);
+      if (isnan(f) ? ((a & 0x7c00u) != 0x7c00u || !(a & 0x3ffu)) : a != b) bad++;
+    }
+    /* ties: halfway between two halves goes to the even one (1 + 2^-11 is halfway between 1 and 1 + 2^-10) */
+    if (cl_f32_to_f16_soft(1.0f + ldexpf(1.0f, -11)) != 0x3c00u) ties++;
+    if (cl_f32_to_f16_soft(1.0f + 3.0f * ldexpf(1.0f, -11)) != 0x3c02u) ties++;
+    if (cl_f32_to_f16_soft(65520.0f) != 0x7c00u || cl_f32_to_f16_soft(65519.0f) != 0x7bffu) ties++;   /* overflow to infinity starts halfway above the largest half */
+    if (cl_f32_to_f16_soft(ldexpf(1.0f, -25)) != 0x0000u || cl_f32_to_f16_soft(ldexpf(1.5f, -25)) != 0x0001u) ties++;   /* the smallest subnormal, and halfway below it */
+    CHECK(bad == 0 && trips == 0 && ties == 0, "single to half conversion: fast path equals the reference on 4 million values, every half round-trips, ties go to even");
+  }
   CHECK(cl_f16_to_f32(0x3c00) == 1.0f && cl_f16_to_f32(0xc000) == -2.0f && cl_f16_to_f32(0x3555) > 0.333f && cl_f16_to_f32(0x3555) < 0.3334f, "half floats: 1, -2, one third");
   CHECK(cl_f16_to_f32(0x0001) == ldexpf(1.0f, -24) && cl_f16_to_f32(0x0200) == ldexpf(1.0f, -15) && isinf(cl_f16_to_f32(0x7c00)) && isnan(cl_f16_to_f32(0x7e00)), "half floats: subnormal, infinity, NaN");
   CHECK(sizeof(cl_block_q4_0) == 18 && sizeof(cl_block_q8_0) == 36, "block sizes");
@@ -336,7 +379,7 @@ static void test_integer_dot(void) {
     uint32_t type = pass ? CL_T_Q6_K : CL_T_Q4_K;
     const uint8_t *w = pass ? w6 : w4;
     static float out[ROWS];
-    cl_mv job = {type, w, ROWS, COLS, x, &q, out};
+    cl_mv job = {type, w, ROWS, COLS, x, &q, out, 1, 0, 0};
     cl_matvec_batch(&job, 1);
     int bad = 0;
     float row[COLS];
@@ -349,6 +392,245 @@ static void test_integer_dot(void) {
     CHECK(bad == 0, "%s integer dot matches dequantize-and-multiply on %d of %d rows (%s)", pass ? "Q6_K" : "Q4_K", ROWS - bad, ROWS, cl_quant_path());
   }
   cl_xq_free(&q);
+}
+
+/* The JSON checker used for constrained decoding: complete objects are accepted and finish, broken text is refused at the first bad character, and the answer does not depend on how the text is cut into pieces. */
+static void test_json_gate(void) {
+  static const char *const good[] = {"{}", " {\"a\": 1}", "{\"tool\": \"write_file\", \"args\": {\"path\": \"a.txt\", \"content\": \"line1\\nline2 \\\"q\\\" \\u00e9 \xc3\xa9\"}}",
+    "{\"a\": [1, -2.5, 3e10, 0, 1E-2, true, false, null, [], {}, \"x\"], \"b\": {\"c\": {}}}\n", "{\"n\":-0.5e+3}"};
+  static const char *const bad[] = {"[1]", "1", "\"s\"", "{a:1}", "{\"a\" 1}", "{\"a\": 01}", "{\"a\": 1,}", "{\"a\": tru}", "{\"a\": \"\n\"}", "{\"a\": \"\\x\"}", "{\"a\": 1.}", "{\"a\": -}", "{\"a\": [1}", "{}}", "{} x", "{\"a\": \"\\u12g4\"}", "{\"a\": 1e}"};
+  for (size_t i = 0; i < sizeof good / sizeof *good; i++) {
+    cl_json j; cl_json_init(&j, 1);
+    CHECK(cl_json_feed(&j, good[i], strlen(good[i])) && cl_json_done(&j), "JSON gate accepts and completes: %s", good[i]);
+    cl_json k; cl_json_init(&k, 1);   /* one byte at a time must agree */
+    int ok = 1; for (size_t b = 0; good[i][b]; b++) ok &= cl_json_feed(&k, good[i] + b, 1);
+    CHECK(ok && cl_json_done(&k), "JSON gate gives the same answer one byte at a time: %s", good[i]);
+    cl_json h; cl_json_init(&h, 1);   /* every proper prefix is still a valid beginning and is not yet complete, unless the text ends in whitespace after the object */
+    size_t n = strlen(good[i]); int pre = 1;
+    for (size_t cut = 1; cut < n; cut++) { cl_json_init(&h, 1); pre &= cl_json_feed(&h, good[i], cut); }
+    CHECK(pre, "JSON gate accepts every prefix of: %s", good[i]);
+  }
+  for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+    cl_json j; cl_json_init(&j, 1);
+    int ok = cl_json_feed(&j, bad[i], strlen(bad[i]));
+    CHECK(!ok || !cl_json_done(&j), "JSON gate refuses or leaves open: %s", bad[i]);
+  }
+  cl_json a; cl_json_init(&a, 0);
+  CHECK(cl_json_feed(&a, "[1, 2]", 6) && cl_json_done(&a), "without object_only, an array is a value too");
+  cl_json d; cl_json_init(&d, 1);
+  CHECK(cl_json_feed(&d, "{\"k\": 1", 7) && !cl_json_done(&d), "an open object is not done");
+  CHECK(cl_json_feed(&d, "}", 1) && cl_json_done(&d) && !cl_json_feed(&d, "{", 1), "after the object, only whitespace may follow");
+}
+
+/* The IQ types: every block of a golden file (random blocks and what gguf-py, ggml's reference in Python, dequantizes them to; test/make_iq_golden.py writes it) must dequantize to the
+ * same numbers, and the integer dot products must equal "dequantize and multiply". */
+static void test_iq(void) {
+  FILE *fp = fopen("test/iq_golden.bin", "rb");
+  if (!fp) fp = fopen("c/test/iq_golden.bin", "rb");
+  if (!fp) { printf("  (no test/iq_golden.bin: IQ types not checked)\n"); return; }
+  uint32_t hdr[2];
+  while (fread(hdr, 4, 2, fp) == 2) {
+    const uint32_t type = hdr[0], n = hdr[1], bl = cl_type_block(type), bb = cl_type_bytes(type);
+    CHECK(bl > 0 && bb > 0, "IQ type %u is known", type);
+    if (!bl) break;
+    uint8_t *blocks = malloc((size_t)n * bb); float *ref = malloc((size_t)n * bl * 4), *got = malloc((size_t)n * bl * 4);
+    if (fread(blocks, 1, (size_t)n * bb, fp) != (size_t)n * bb || fread(ref, 4, (size_t)n * bl, fp) != (size_t)n * bl) { CHECK(0, "golden file is complete"); break; }
+    cl_dequant_row(type, blocks, got, (int)(n * bl));
+    double worst = 0;
+    for (uint32_t i = 0; i < n * bl; i++) { double e = fabs((double)got[i] - ref[i]) / (fabs((double)ref[i]) + 1e-3); if (e > worst) worst = e; }
+    CHECK(worst < 1e-5, "IQ type %u dequantizes like gguf-py (worst relative difference %.2e)", type, worst);
+    if (cl_type_integer_dot(type)) {   /* a row of n blocks against a random activation vector */
+      const int cols = (int)(n * bl);
+      float *x = malloc((size_t)cols * 4), *xd = malloc((size_t)cols * 4); uint32_t s = 99;
+      for (int i = 0; i < cols; i++) { s = s * 1664525u + 1013904223u; x[i] = ((float)(s >> 8) / (1 << 24) - 0.5f) * 3.0f; }
+      cl_xq q; cl_xq_init(&q, cols); cl_xq_quantize(&q, x);
+      for (int b = 0; b < cols / 256; b++) for (int j = 0; j < 256; j++) xd[b * 256 + j] = q.b[b].d * q.b[b].qs[j];
+      float out = 0; cl_mv job = {type, blocks, 1, cols, x, &q, &out, 1, 0, 0};
+      cl_matvec_batch(&job, 1);
+      double r = 0, mag = 0; for (int i = 0; i < cols; i++) { r += (double)ref[i] * xd[i]; mag += fabs((double)ref[i] * xd[i]); }
+      CHECK(fabs(r - out) <= 1e-4 * mag + 1e-5, "IQ type %u integer dot matches dequantize-and-multiply (%.5f vs %.5f)", type, out, r);
+      cl_xq_free(&q); free(x); free(xd);
+    }
+    free(blocks); free(ref); free(got);
+  }
+  fclose(fp);
+}
+
+/* Every instruction set must give the same bits. Random blocks of all five K-quant types are multiplied with a batch of activations (and with a single one) under each kernel
+ * set this processor can run; the integer sums are exact in any order, so the floats must be identical, not just close. A batch must also equal the same inputs one at a time. */
+static void test_isa_paths(void) {
+  enum { ROWS = 37, COLS = 768, NB = 11 };
+  static const struct { uint32_t type; int bytes, d_off, dm_off; const char *name; } T[] = {
+    {CL_T_Q2_K, 84, 80, 82, "Q2_K"}, {CL_T_Q3_K, 110, 108, -1, "Q3_K"}, {CL_T_Q4_K, 144, 0, 2, "Q4_K"}, {CL_T_Q5_K, 176, 0, 2, "Q5_K"}, {CL_T_Q6_K, 210, 208, -1, "Q6_K"},
+    {CL_T_IQ2_XXS, 66, 0, -1, "IQ2_XXS"}, {CL_T_IQ2_XS, 74, 0, -1, "IQ2_XS"}, {CL_T_IQ2_S, 82, 0, -1, "IQ2_S"}, {CL_T_IQ3_XXS, 98, 0, -1, "IQ3_XXS"}, {CL_T_IQ3_S, 110, 0, -1, "IQ3_S"}, {CL_T_IQ1_S, 50, 0, -1, "IQ1_S"}, {CL_T_IQ4_XS, 136, 0, -1, "IQ4_XS"} };
+  static float x[NB][COLS], out[3][NB][ROWS], one[ROWS];
+  static uint8_t w[ROWS * 3 * 210];
+  uint32_t s = 4242;
+  for (int b = 0; b < NB; b++) for (int i = 0; i < COLS; i++) { s = s * 1664525u + 1013904223u; x[b][i] = ((float)(s >> 8) / (1 << 24) - 0.5f) * (i % 61 == 0 ? 6.0f : 1.0f); }
+  cl_xq q[NB];
+  for (int b = 0; b < NB; b++) { CHECK(cl_xq_init(&q[b], COLS), "activation buffer"); cl_xq_quantize(&q[b], x[b]); }
+  const char *isas[] = {"scalar", "avx2", "avx512vnni"};
+  int ran = 0;
+  for (size_t ti = 0; ti < sizeof T / sizeof T[0]; ti++) {
+    for (int r = 0; r < ROWS * 3; r++) {
+      uint8_t *blk = w + (size_t)r * T[ti].bytes;
+      for (int i = 0; i < T[ti].bytes; i++) { s = s * 1664525u + 1013904223u; blk[i] = (uint8_t)(s >> 16); }
+      uint16_t d = (uint16_t)(0x2400 + (r % 16) * 8), dm = (uint16_t)(0x2000 + (r % 7) * 8);
+      memcpy(blk + T[ti].d_off, &d, 2);
+      if (T[ti].dm_off >= 0) memcpy(blk + T[ti].dm_off, &dm, 2);
+    }
+    int have = 0;
+    for (int k = 0; k < 3; k++) {
+      if (!cl_quant_set_isa(isas[k]) && k > 0) continue;
+      cl_mv job = {T[ti].type, w, ROWS, COLS, x[0], q, out[have ? 1 : 0][0], NB, COLS, ROWS};
+      cl_matvec_batch(&job, 1);
+      if (k == 0) {   /* the batch against the same inputs one at a time (a different kernel path on most builds) */
+        int bad = 0;
+        for (int b = 0; b < NB; b++) {
+          cl_mv j1 = {T[ti].type, w, ROWS, COLS, x[b], &q[b], one, 1, 0, 0};
+          cl_matvec_batch(&j1, 1);
+          for (int r = 0; r < ROWS; r++) if (fabsf(one[r] - out[0][b][r]) > 1e-4f * (fabsf(one[r]) + 1.0f)) bad++;
+        }
+        CHECK(bad == 0, "%s: a batch of %d equals the same inputs one at a time (%d values differ)", T[ti].name, NB, bad);
+      } else {
+        CHECK(memcmp(out[0], out[1], sizeof out[0]) == 0, "%s: %s gives the same bits as the portable kernel", T[ti].name, isas[k]);
+        ran++;
+      }
+      have = 1;
+    }
+    cl_quant_set_isa("auto");
+  }
+  for (int b = 0; b < NB; b++) cl_xq_free(&q[b]);
+  printf("  instruction sets compared: %d (this processor: %s)\n", ran, cl_quant_path());
+}
+
+/* Q2_K and Q3_K: the dequantizers are checked against a literal transcription of ggml's loops (a different way of indexing the same layout), and the integer dot products against
+ * "dequantize and multiply", on random blocks. */
+static void ref_q2_K(const uint8_t *b, float *y) {
+  uint16_t dh, mh; memcpy(&dh, b + 80, 2); memcpy(&mh, b + 82, 2);
+  const float d = cl_f16_to_f32(dh), mn = cl_f16_to_f32(mh);
+  const uint8_t *sc = b, *q = b + 16;
+  int is = 0;
+  for (int n = 0; n < 256; n += 128) {
+    int shift = 0;
+    for (int j = 0; j < 4; j++) {
+      uint8_t c = sc[is++];
+      float dl = d * (float)(c & 0xF), ml = mn * (float)(c >> 4);
+      for (int l = 0; l < 16; l++) *y++ = dl * (float)((q[l] >> shift) & 3) - ml;
+      c = sc[is++]; dl = d * (float)(c & 0xF); ml = mn * (float)(c >> 4);
+      for (int l = 0; l < 16; l++) *y++ = dl * (float)((q[l + 16] >> shift) & 3) - ml;
+      shift += 2;
+    }
+    q += 32;
+  }
+}
+static void ref_q3_K(const uint8_t *b, float *y) {
+  uint16_t dh; memcpy(&dh, b + 108, 2);
+  const float dall = cl_f16_to_f32(dh);
+  const uint8_t *hm = b, *q = b + 32;
+  uint32_t aux[4]; memcpy(aux, b + 96, 12);
+  const uint32_t k1 = 0x03030303u, k2 = 0x0f0f0f0fu, tmp = aux[2];
+  aux[2] = ((aux[0] >> 4) & k2) | (((tmp >> 4) & k1) << 4); aux[3] = ((aux[1] >> 4) & k2) | (((tmp >> 6) & k1) << 4);
+  aux[0] = (aux[0] & k2) | (((tmp >> 0) & k1) << 4); aux[1] = (aux[1] & k2) | (((tmp >> 2) & k1) << 4);
+  const int8_t *scales = (const int8_t *)(const void *)aux;
+  uint8_t m = 1;
+  int is = 0;
+  for (int n = 0; n < 256; n += 128) {
+    int shift = 0;
+    for (int j = 0; j < 4; j++) {
+      float dl = dall * (float)(scales[is++] - 32);
+      for (int l = 0; l < 16; l++) *y++ = dl * (float)((int)((q[l] >> shift) & 3) - ((hm[l] & m) ? 0 : 4));
+      dl = dall * (float)(scales[is++] - 32);
+      for (int l = 0; l < 16; l++) *y++ = dl * (float)((int)((q[l + 16] >> shift) & 3) - ((hm[l + 16] & m) ? 0 : 4));
+      shift += 2; m = (uint8_t)(m << 1);
+    }
+    q += 32;
+  }
+}
+static void test_q2_q3(void) {
+  enum { ROWS = 24, NBLK = 3, COLS = NBLK * 256 };
+  uint32_t s = 4242;
+  static float x[COLS];
+  for (int i = 0; i < COLS; i++) { s = s * 1664525u + 1013904223u; x[i] = ((float)(s >> 8) / (1 << 24) - 0.5f) * (i % 53 == 0 ? 6.0f : 1.0f); }
+  cl_xq q;
+  CHECK(cl_xq_init(&q, COLS), "Q2_K/Q3_K: activation buffer");
+  cl_xq_quantize(&q, x);
+  float xd[COLS];
+  for (int b = 0; b < NBLK; b++) for (int j = 0; j < 256; j++) xd[b * 256 + j] = q.b[b].d * q.b[b].qs[j];
+  for (int pass = 0; pass < 2; pass++) {
+    const uint32_t type = pass ? CL_T_Q3_K : CL_T_Q2_K;
+    const int bs = pass ? 110 : 84;
+    CHECK(cl_type_supported(type) && cl_type_block(type) == 256 && cl_type_bytes(type) == (uint32_t)bs && cl_type_integer_dot(type), "%s: the engine knows the type", pass ? "Q3_K" : "Q2_K");
+    static uint8_t w[ROWS * NBLK * 110];
+    for (int i = 0; i < ROWS * NBLK * bs; i++) { s = s * 1664525u + 1013904223u; w[i] = (uint8_t)(s >> 16); }
+    for (int b = 0; b < ROWS * NBLK; b++) {   /* sane half-precision scales */
+      uint16_t d = (uint16_t)(0x2400 + (b % 16) * 8), dm = (uint16_t)(0x2000 + (b % 7) * 8);
+      if (pass) memcpy(w + (size_t)b * bs + 108, &d, 2); else { memcpy(w + (size_t)b * bs + 80, &d, 2); memcpy(w + (size_t)b * bs + 82, &dm, 2); }
+    }
+    int badq = 0;
+    float a[256], r[256];
+    for (int b = 0; b < ROWS * NBLK; b++) {
+      cl_dequant_row(type, w + (size_t)b * bs, a, 256);
+      if (pass) ref_q3_K(w + (size_t)b * bs, r); else ref_q2_K(w + (size_t)b * bs, r);
+      for (int i = 0; i < 256; i++) if (fabsf(a[i] - r[i]) > 1e-6f * (fabsf(r[i]) + 1.0f)) { badq++; break; }
+    }
+    CHECK(badq == 0, "%s dequantization equals ggml's reference loops on %d of %d blocks", pass ? "Q3_K" : "Q2_K", ROWS * NBLK - badq, ROWS * NBLK);
+    static float out[ROWS];
+    cl_mv job = {type, w, ROWS, COLS, x, &q, out, 1, 0, 0};
+    cl_matvec_batch(&job, 1);
+    int bad = 0;
+    float row[COLS];
+    for (int rw = 0; rw < ROWS; rw++) {
+      cl_dequant_row(type, w + (size_t)rw * cl_row_bytes(type, COLS), row, COLS);
+      double ref = 0, mag = 0;
+      for (int c = 0; c < COLS; c++) { ref += (double)row[c] * xd[c]; mag += fabs((double)row[c] * xd[c]); }
+      if (fabs(ref - out[rw]) > 1e-4 * mag + 1e-6) bad++;
+    }
+    CHECK(bad == 0, "%s integer dot matches dequantize-and-multiply on %d of %d rows", pass ? "Q3_K" : "Q2_K", ROWS - bad, ROWS);
+    {   /* a batch of tokens (prompt processing) takes the batched kernel: every token's result must equal its own single-token product */
+      enum { NB = 11 };
+      static float xb[NB * COLS], ob[NB * ROWS];
+      static cl_xq qb[NB];
+      for (int b = 0; b < NB; b++) { for (int i = 0; i < COLS; i++) { s = s * 1664525u + 1013904223u; xb[b * COLS + i] = ((float)(s >> 8) / (1 << 24) - 0.5f) * (i % 41 == 0 ? 5.0f : 1.0f); } cl_xq_init(&qb[b], COLS); cl_xq_quantize(&qb[b], xb + b * COLS); }
+      cl_mv bj = {type, w, ROWS, COLS, xb, qb, ob, NB, (size_t)COLS, (size_t)ROWS};
+      cl_matvec_batch(&bj, 1);
+      int badb = 0;
+      for (int b = 0; b < NB; b++) {
+        static float one[ROWS];
+        cl_mv sj = {type, w, ROWS, COLS, xb + b * COLS, &qb[b], one, 1, 0, 0};
+        cl_matvec_batch(&sj, 1);
+        for (int rw = 0; rw < ROWS; rw++) if (fabsf(one[rw] - ob[b * ROWS + rw]) > 1e-4f * (fabsf(one[rw]) + 1.0f)) badb++;
+      }
+      CHECK(badb == 0, "%s batched product equals the single-token product on every token and row (%d mismatches)", pass ? "Q3_K" : "Q2_K", badb);
+      for (int b = 0; b < NB; b++) cl_xq_free(&qb[b]);
+    }
+  }
+  cl_xq_free(&q);
+}
+
+/* Pictures: how big one is made before the encoder sees it, and the resize that does it. */
+static void test_pictures(void) {
+  int w, h;
+  cl_vision_fit(448, 448, 256, &w, &h);
+  CHECK(w == 448 && h == 448, "a 448 x 448 picture is left as it is (%d x %d)", w, h);
+  cl_vision_fit(4000, 3000, 256, &w, &h);
+  CHECK(w % 32 == 0 && h % 32 == 0 && w * h <= 256 * 1024 && w * h > 150 * 1024 && w > h, "a large picture shrinks to at most 256 tokens, keeping its shape (%d x %d)", w, h);
+  cl_vision_fit(10, 10, 256, &w, &h);
+  CHECK(w == 64 && h == 64, "a tiny picture grows to the minimum (%d x %d)", w, h);
+  cl_vision_fit(1000, 100, 256, &w, &h);
+  CHECK(w % 32 == 0 && h % 32 == 0 && h >= 64 && w > 8 * h / 2, "a wide strip keeps its shape (%d x %d)", w, h);
+  uint8_t flat[8 * 8 * 3];
+  memset(flat, 77, sizeof flat);
+  uint8_t *r = cl_image_resize(flat, 8, 8, 64, 64);
+  int same = r != NULL;
+  for (int i = 0; r && i < 64 * 64 * 3; i++) if (r[i] != 77) same = 0;
+  CHECK(same, "growing a flat picture keeps it flat");
+  free(r);
+  static uint8_t big[256 * 256 * 3];
+  for (int y = 0; y < 256; y++) for (int x = 0; x < 256; x++) for (int c = 0; c < 3; c++) big[((size_t)y * 256 + x) * 3 + c] = (uint8_t)((x / 128 + y / 128) % 2 ? 200 : 100);   /* four 128 x 128 squares */
+  r = cl_image_resize(big, 256, 256, 64, 64);
+  CHECK(r && r[(10 * 64 + 10) * 3] == 100 && r[(10 * 64 + 50) * 3] == 200 && r[(50 * 64 + 10) * 3] == 200 && r[(50 * 64 + 50) * 3] == 100, "shrinking keeps the squares' colours where they were");
+  free(r);
 }
 
 static void test_xs(const char *fixture) {
@@ -390,7 +672,7 @@ static void test_xs(const char *fixture) {
 }
 
 int main(int argc, char **argv) {
-  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_integer_dot(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
+  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_integer_dot(); test_q2_q3(); test_isa_paths(); test_json_gate(); test_iq(); test_pictures(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   test_gguf(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;

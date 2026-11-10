@@ -21,7 +21,7 @@ def check(ok, what, detail=""):
 
 class Chat:
     def __init__(self, ctx=256):
-        self.p = subprocess.Popen([ENGINE, "chat", MODEL, "--ctx", str(ctx)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+        self.p = subprocess.Popen([ENGINE, "chat", MODEL, "--ctx", str(ctx)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1)
         self.ready = self.read()
     def send(self, **o): self.p.stdin.write(json.dumps(o) + "\n"); self.p.stdin.flush()
     def read(self):
@@ -53,7 +53,7 @@ check(d["ids"] == expect and len(expect) > 0, "chat at temperature 0 matches gen
 check(d["finish"] in ("length", "stop") and d["tokens"] >= 1 and d["pos"] == a["pos"] + d["tokens"], "reports finish, tokens and position", d)
 
 # prompts that cross the batch boundary of prompt processing (32 tokens at a time) give the same tokens as feeding them one by one
-def ntok(t): return len(subprocess.run([ENGINE, "tokenize", MODEL, t], capture_output=True, text=True).stdout.split())
+def ntok(t): return len(subprocess.run([ENGINE, "tokenize", MODEL, t], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split())
 for want in (31, 32, 33, 50):
     t = ""
     while ntok(t + "ab ") <= want: t += "ab "
@@ -108,11 +108,35 @@ check(e["ev"] == "appended", "the session survives a refused append", e)
 
 # text with quotes, newlines, unicode and an escaped key name survives the round trip
 c.send(op="reset"); c.until({"reset"})
-tricky = 'say "hi"\nline2 \\ tab\t é中\U0001f600 {"op":"quit"}'
+tricky = 'say "hi"\nline2 \\ tab\t \u00e9\u4e2d\U0001f600 {"op":"quit"}'
 c.send(op="append", text=tricky); e = c.until({"appended", "error"})[-1]
 check(e["ev"] == "appended", "quotes, newlines, unicode and a fake key inside the text are all fine", e)
-ref2 = subprocess.run([ENGINE, "tokenize", MODEL, tricky], capture_output=True, text=True).stdout.split()
-check(e["ev"] == "appended" and e["tokens"] == len(ref2) + (1 if c.ready["addBos"] else 0), "and it was tokenized exactly like the tokenize command", (e, len(ref2)))
+# ... and is tokenized exactly like the tokenize command. That command takes its text from the command line, which Windows passes through the ANSI code page, so the
+# comparison uses the ASCII part (the non-ASCII part is covered by the stdin round trip above and by verify_tokenizer.py on POSIX).
+ascii_tricky = 'say "hi"\nline2 \\ tab\t {"op":"quit"}'
+c.send(op="reset"); c.until({"reset"})
+c.send(op="append", text=ascii_tricky); e = c.until({"appended", "error"})[-1]
+ref2 = subprocess.run([ENGINE, "tokenize", MODEL, ascii_tricky], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
+check(e["ev"] == "appended" and e["tokens"] == len(ref2) + (1 if c.ready["addBos"] else 0), "and the ASCII part was tokenized exactly like the tokenize command", (e, len(ref2)))
+
+# JSON mode: whatever the (tiny, random) model would say, the reply is a valid beginning of one JSON object, and when it stops on its own it is a whole object
+for seed in (1, 2, 3):
+    c.send(op="reset"); c.until({"reset"})
+    c.send(op="append", text="Reply in JSON:"); c.until({"appended", "error"})
+    c.send(op="generate", max=120, temp=1.0, topK=200, seed=seed, json=True); g = c.until({"done", "error"})
+    out = "".join(e["s"] for e in g if e["ev"] == "t"); d = g[-1]
+    if d["ev"] != "done": check(False, "JSON mode generates", d); continue
+    if d["finish"] == "stop" and d["tokens"] > 0:
+        try: ok = isinstance(json.loads(out), dict)
+        except ValueError: ok = False
+        check(ok, f"JSON mode (seed {seed}): a reply that stopped by itself is one whole JSON object", out)
+    else:
+        check(d["tokens"] == 0 or out.lstrip().startswith("{"), f"JSON mode (seed {seed}): the reply so far starts an object ({d['finish']}, {d['tokens']} tokens)", out)
+# a continued reply: the part already written is checked first, so only a valid continuation is allowed
+c.send(op="reset"); c.until({"reset"})
+c.send(op="append", text='Reply in JSON: {"a": 1}'); c.until({"appended", "error"})
+c.send(op="generate", max=8, temp=0, json=True, jsonPrefix='{"a": 1}'); g = c.until({"done", "error"})
+check(g[-1]["ev"] == "done" and g[-1]["finish"] == "stop" and g[-1]["tokens"] == 0, "JSON mode: a reply that is already a complete object ends at once", g[-1])
 
 # closing stdin ends the process
 c.p.stdin.close()
