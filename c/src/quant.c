@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "quant.h"
 #include "kernel.h"
+#include "iq.h"
 #include <math.h>
 #include "cl_thread.h"
 #include <stdlib.h>
@@ -21,10 +22,10 @@ _Static_assert(sizeof(b_q2_K) == 84 && sizeof(b_q3_K) == 110 && sizeof(b_q4_K) =
 
 int cl_type_supported(uint32_t t) { return cl_type_block(t) != 0; }
 uint32_t cl_type_block(uint32_t t) {
-  switch (t) { case CL_T_F32: case CL_T_F16: case CL_T_BF16: return 1; case CL_T_Q4_0: case CL_T_Q5_0: case CL_T_Q8_0: return 32; case CL_T_Q2_K: case CL_T_Q3_K: case CL_T_Q4_K: case CL_T_Q5_K: case CL_T_Q6_K: return 256; default: return 0; }
+  switch (t) { case CL_T_F32: case CL_T_F16: case CL_T_BF16: return 1; case CL_T_Q4_0: case CL_T_Q5_0: case CL_T_Q8_0: return 32; case CL_T_Q2_K: case CL_T_Q3_K: case CL_T_Q4_K: case CL_T_Q5_K: case CL_T_Q6_K: return 256; default: return cl_iq_block(t); }
 }
 uint32_t cl_type_bytes(uint32_t t) {
-  switch (t) { case CL_T_F32: return 4; case CL_T_F16: case CL_T_BF16: return 2; case CL_T_Q4_0: return 18; case CL_T_Q5_0: return 22; case CL_T_Q8_0: return 34; case CL_T_Q2_K: return 84; case CL_T_Q3_K: return 110; case CL_T_Q4_K: return 144; case CL_T_Q5_K: return 176; case CL_T_Q6_K: return 210; default: return 0; }
+  switch (t) { case CL_T_F32: return 4; case CL_T_F16: case CL_T_BF16: return 2; case CL_T_Q4_0: return 18; case CL_T_Q5_0: return 22; case CL_T_Q8_0: return 34; case CL_T_Q2_K: return 84; case CL_T_Q3_K: return 110; case CL_T_Q4_K: return 144; case CL_T_Q5_K: return 176; case CL_T_Q6_K: return 210; default: return cl_iq_bytes(t); }
 }
 uint64_t cl_row_bytes(uint32_t t, uint64_t n) { return n / cl_type_block(t) * cl_type_bytes(t); }
 
@@ -159,7 +160,9 @@ void cl_dequant_row(uint32_t type, const void *src, float *dst, int n) {
     case CL_T_Q4_K: for (int b = 0; b < n / QK_K; b++) deq_q4_K((const b_q4_K *)(const void *)(p + (size_t)b * 144), dst + b * QK_K); return;
     case CL_T_Q5_K: for (int b = 0; b < n / QK_K; b++) deq_q5_K((const b_q5_K *)(const void *)(p + (size_t)b * 176), dst + b * QK_K); return;
     case CL_T_Q6_K: for (int b = 0; b < n / QK_K; b++) deq_q6_K((const b_q6_K *)(const void *)(p + (size_t)b * 210), dst + b * QK_K); return;
-    default: memset(dst, 0, (size_t)n * 4);
+    default:
+      if (cl_iq_is(type)) { const uint32_t bl = cl_iq_block(type), bb = cl_iq_bytes(type); for (int b = 0; b < n / (int)bl; b++) cl_iq_dequant(type, p + (size_t)b * bb, dst + (size_t)b * bl); return; }
+      memset(dst, 0, (size_t)n * 4);
   }
 }
 
@@ -183,7 +186,7 @@ const char *cl_quant_path(void) {
   return "scalar";
 #endif
 }
-int cl_type_integer_dot(uint32_t t) { return t == CL_T_Q2_K || t == CL_T_Q3_K || t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K; }
+int cl_type_integer_dot(uint32_t t) { return (cl_iq_is(t) && t != CL_T_IQ4_NL) || t == CL_T_Q2_K || t == CL_T_Q3_K || t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K; }
 
 int cl_xq_init(cl_xq *q, int n) { q->n = n; q->b = n % 256 == 0 ? malloc((size_t)(n / 256) * sizeof(cl_q8k)) : NULL; return q->b != NULL; }
 void cl_xq_free(cl_xq *q) { free(q->b); q->b = NULL; q->n = 0; }
@@ -648,7 +651,20 @@ static void upk_q6(const b_q6_K *x, int8_t *q) {
     ql += 64; qh += 32;
   }
 }
-static int32_t dot256_s(const int8_t *q, const int8_t *a, const int16_t *sc) { int32_t s = 0; for (int g = 0; g < 16; g++) s += sc[g] * dot16_s(q + 16 * g, a + 16 * g); return s; }
+#endif /* !CL_Q_NEON (the K-quant unpackers above are for the other instruction sets; NEON has its own) */
+__attribute__((unused)) static int32_t dot256_s(const int8_t *q, const int8_t *a, const int16_t *sc) {
+  int32_t s = 0;
+  for (int g = 0; g < 16; g++) { int32_t t = 0; for (int i = 0; i < 16; i++) t += q[16 * g + i] * a[16 * g + i]; s += sc[g] * t; }
+  return s;
+}
+#ifdef CL_Q_NEON
+static int32_t dot256_neon(const int8_t *q, const int8_t *a, const int16_t *sc) {
+  int32x4_t acc = vdupq_n_s32(0);
+  for (int g = 0; g < 16; g++) acc = vmlaq_n_s32(acc, vdotq_s32(vdupq_n_s32(0), vld1q_s8(q + 16 * g), vld1q_s8(a + 16 * g)), sc[g]);
+  return vaddvq_s32(acc);
+}
+#endif
+#ifndef CL_Q_NEON
 
 #ifdef CL_X86
 #define TGT_AVX2 __attribute__((target("avx2")))
@@ -736,42 +752,33 @@ static __attribute__((target("avx2,avx512vnni,avx512vl"))) int32_t dot256_vnni(c
 }
 #endif
 #endif /* CL_X86 */
+#endif /* !CL_Q_NEON */
 
-static void gunpack(int isa, uint32_t t, const void *blk, int8_t *q) {
+/* One block of 256 weights as int8 values q, a scale per 16 values (sc), a minimum per 16 (mn), and the block scales d and dm (dm is 0 for types without minimums).
+ * Returns 1 when the type has minimums. The IQ types come out of iq.c with ready-made scales. */
+static int gblock(int isa, uint32_t t, const void *blk, int8_t *q, int16_t *sc, int16_t *mn, float *d, float *dm) {
+  if (cl_iq_is(t)) { cl_iq_unpack(t, blk, q, sc, d); for (int g = 0; g < 16; g++) mn[g] = 0; *dm = 0; return 0; }
+#ifndef CL_Q_NEON
 #ifdef CL_X86
   if (isa > 0) {
     switch (t) {
-      case CL_T_Q2_K: upk_q2_avx2((const b_q2_K *)blk, q); return;
-      case CL_T_Q3_K: upk_q3_avx2((const b_q3_K *)blk, q); return;
-      case CL_T_Q4_K: upk_q4_avx2((const b_q4_K *)blk, q); return;
-      case CL_T_Q5_K: upk_q5_avx2((const b_q5_K *)blk, q); return;
-      default: upk_q6_avx2((const b_q6_K *)blk, q); return;
+      case CL_T_Q2_K: upk_q2_avx2((const b_q2_K *)blk, q); break;
+      case CL_T_Q3_K: upk_q3_avx2((const b_q3_K *)blk, q); break;
+      case CL_T_Q4_K: upk_q4_avx2((const b_q4_K *)blk, q); break;
+      case CL_T_Q5_K: upk_q5_avx2((const b_q5_K *)blk, q); break;
+      default: upk_q6_avx2((const b_q6_K *)blk, q); break;
     }
-  }
-#else
-  (void)isa;
+  } else
 #endif
   switch (t) {
-    case CL_T_Q2_K: upk_q2((const b_q2_K *)blk, q); return;
-    case CL_T_Q3_K: upk_q3((const b_q3_K *)blk, q); return;
-    case CL_T_Q4_K: upk_q4((const b_q4_K *)blk, q); return;
-    case CL_T_Q5_K: upk_q5((const b_q5_K *)blk, q); return;
-    default: upk_q6((const b_q6_K *)blk, q); return;
+    case CL_T_Q2_K: upk_q2((const b_q2_K *)blk, q); break;
+    case CL_T_Q3_K: upk_q3((const b_q3_K *)blk, q); break;
+    case CL_T_Q4_K: upk_q4((const b_q4_K *)blk, q); break;
+    case CL_T_Q5_K: upk_q5((const b_q5_K *)blk, q); break;
+    default: upk_q6((const b_q6_K *)blk, q); break;
   }
-}
-static inline int32_t dot256(int isa, const int8_t *q, const int8_t *a, const int16_t *sc) {
-#ifdef CL_X86
-#ifdef CL_X86_VNNI
-  if (isa >= 2) return dot256_vnni(q, a, sc);
 #endif
-  if (isa == 1) return dot256_avx2(q, a, sc);
-#else
   (void)isa;
-#endif
-  return dot256_s(q, a, sc);
-}
-/* The block's scale per 16-value group (sc), its minimum per group (mn), and the two block scales (dm is 0 for types without minimums). Returns 1 when the type has minimums. */
-static int gprep(uint32_t t, const void *blk, int16_t *sc, int16_t *mn, float *d, float *dm) {
   if (t == CL_T_Q2_K) {
     const b_q2_K *x = (const b_q2_K *)blk;
     for (int g = 0; g < 16; g++) { sc[g] = x->scales[g] & 0xF; mn[g] = x->scales[g] >> 4; }
@@ -796,6 +803,21 @@ static int gprep(uint32_t t, const void *blk, int16_t *sc, int16_t *mn, float *d
   *dm = cl_f16_to_f32(t == CL_T_Q4_K ? ((const b_q4_K *)blk)->dmin : ((const b_q5_K *)blk)->dmin);
   return 1;
 }
+static inline int32_t dot256(int isa, const int8_t *q, const int8_t *a, const int16_t *sc) {
+#ifdef CL_Q_NEON
+  (void)isa; return dot256_neon(q, a, sc);
+#else
+#ifdef CL_X86
+#ifdef CL_X86_VNNI
+  if (isa >= 2) return dot256_vnni(q, a, sc);
+#endif
+  if (isa == 1) return dot256_avx2(q, a, sc);
+#else
+  (void)isa;
+#endif
+  return dot256_s(q, a, sc);
+#endif
+}
 /* nb inputs against one weight row of nblk blocks: sum[b] = the dot product with input b. */
 static void dotb_gen(uint32_t t, int nblk, const uint8_t *row, const cl_xq *xq, int nb, float *sum) {
   const int isa = isa_level();
@@ -803,9 +825,7 @@ static void dotb_gen(uint32_t t, int nblk, const uint8_t *row, const cl_xq *xq, 
   for (int b = 0; b < nb; b++) sum[b] = 0;
   for (int i = 0; i < nblk; i++) {
     int8_t q[256]; int16_t sc[16], mn[16]; float d, dm;
-    const void *blk = row + (size_t)i * bb;
-    gunpack(isa, t, blk, q);
-    const int has_min = gprep(t, blk, sc, mn, &d, &dm);
+    const int has_min = gblock(isa, t, row + (size_t)i * bb, q, sc, mn, &d, &dm);
     for (int b = 0; b < nb; b++) {
       const cl_q8k *y = &xq[b].b[i];
       const int32_t isum = dot256(isa, q, y->qs, sc);
@@ -814,7 +834,6 @@ static void dotb_gen(uint32_t t, int nblk, const uint8_t *row, const cl_xq *xq, 
     }
   }
 }
-#endif /* !CL_Q_NEON */
 
 static void do_rows(const cl_mv *j, int r0, int r1) {
   uint32_t t = j->type;
@@ -825,11 +844,11 @@ static void do_rows(const cl_mv *j, int r0, int r1) {
   float *out = j->out;
   const size_t os = j->out_stride;
 #ifdef CL_Q_NEON
-  const int tiled = nb > 1;
+  const int tiled = nb > 1 || (cl_iq_is(t) && t != CL_T_IQ4_NL);
 #else
-  const int tiled = nb > 1 || isa_level() > 0;   /* without NEON, a lone token takes this path too when the processor has AVX2 */
+  const int tiled = nb > 1 || isa_level() > 0 || (cl_iq_is(t) && t != CL_T_IQ4_NL);   /* without NEON, a lone token takes this path too when the processor has AVX2 */
 #endif
-  if (tiled && xq && (t == CL_T_Q2_K || t == CL_T_Q3_K || t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K)) {
+  if (tiled && xq && ((cl_iq_is(t) && t != CL_T_IQ4_NL) || t == CL_T_Q2_K || t == CL_T_Q3_K || t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K)) {
     /* The batch is walked in tiles of CL_TILE tokens: a weight row is re-read for each tile (from the processor's cache, it is only a few KB), but the tile's activations stay in
      * the fastest cache, which is where a large batch used to lose most of its speed. */
     float sums[CL_TILE];
@@ -837,14 +856,15 @@ static void do_rows(const cl_mv *j, int r0, int r1) {
       const int nt = nb - b0 < CL_TILE ? nb - b0 : CL_TILE;
       for (int r = r0; r < r1; r++) {
         const void *row = w + (size_t)r * rb;
-#ifndef CL_Q_NEON
-        dotb_gen(t, j->cols / 256, (const uint8_t *)row, xq + b0, nt, sums);
-#else
-        if (t == CL_T_Q2_K) dotb_q2_K(j->cols / 256, (const b_q2_K *)row, xq + b0, nt, sums);
+#ifdef CL_Q_NEON
+        if (cl_iq_is(t)) dotb_gen(t, j->cols / 256, (const uint8_t *)row, xq + b0, nt, sums);
+        else if (t == CL_T_Q2_K) dotb_q2_K(j->cols / 256, (const b_q2_K *)row, xq + b0, nt, sums);
         else if (t == CL_T_Q3_K) dotb_q3_K(j->cols / 256, (const b_q3_K *)row, xq + b0, nt, sums);
         else if (t == CL_T_Q4_K) dotb_q4_K(j->cols / 256, (const b_q4_K *)row, xq + b0, nt, sums);
         else if (t == CL_T_Q5_K) dotb_q5_K(j->cols / 256, (const b_q5_K *)row, xq + b0, nt, sums);
         else dotb_q6_K(j->cols / 256, (const b_q6_K *)row, xq + b0, nt, sums);
+#else
+        dotb_gen(t, j->cols / 256, (const uint8_t *)row, xq + b0, nt, sums);
 #endif
         for (int b = 0; b < nt; b++) out[(size_t)(b0 + b) * os + r] = sums[b];
       }

@@ -5,7 +5,7 @@ use std::path::Path;
 fn main() {
     let src = Path::new("../../c/src");
     let mut b = cc::Build::new();
-    for f in ["gguf", "cache", "route", "kernel", "quant", "meta", "xs", "forward", "tokenizer", "stream", "chat", "bench", "vision", "jsongate"] {
+    for f in ["gguf", "cache", "route", "kernel", "quant", "meta", "xs", "forward", "tokenizer", "stream", "chat", "bench", "vision", "jsongate", "iq"] {
         b.file(src.join(format!("{f}.c")));
     }
     b.include(src).opt_level(2).warnings(false).flag_if_supported("-std=gnu11");

@@ -5,6 +5,7 @@
 #include "forward.h"
 #include "quant.h"
 #include "jsongate.h"
+#include "iq.h"
 #include "vision.h"
 #include "meta.h"
 #include "xs.h"
@@ -421,12 +422,47 @@ static void test_json_gate(void) {
   CHECK(cl_json_feed(&d, "}", 1) && cl_json_done(&d) && !cl_json_feed(&d, "{", 1), "after the object, only whitespace may follow");
 }
 
+/* The IQ types: every block of a golden file (random blocks and what gguf-py, ggml's reference in Python, dequantizes them to; test/make_iq_golden.py writes it) must dequantize to the
+ * same numbers, and the integer dot products must equal "dequantize and multiply". */
+static void test_iq(void) {
+  FILE *fp = fopen("test/iq_golden.bin", "rb");
+  if (!fp) fp = fopen("c/test/iq_golden.bin", "rb");
+  if (!fp) { printf("  (no test/iq_golden.bin: IQ types not checked)\n"); return; }
+  uint32_t hdr[2];
+  while (fread(hdr, 4, 2, fp) == 2) {
+    const uint32_t type = hdr[0], n = hdr[1], bl = cl_type_block(type), bb = cl_type_bytes(type);
+    CHECK(bl > 0 && bb > 0, "IQ type %u is known", type);
+    if (!bl) break;
+    uint8_t *blocks = malloc((size_t)n * bb); float *ref = malloc((size_t)n * bl * 4), *got = malloc((size_t)n * bl * 4);
+    if (fread(blocks, 1, (size_t)n * bb, fp) != (size_t)n * bb || fread(ref, 4, (size_t)n * bl, fp) != (size_t)n * bl) { CHECK(0, "golden file is complete"); break; }
+    cl_dequant_row(type, blocks, got, (int)(n * bl));
+    double worst = 0;
+    for (uint32_t i = 0; i < n * bl; i++) { double e = fabs((double)got[i] - ref[i]) / (fabs((double)ref[i]) + 1e-3); if (e > worst) worst = e; }
+    CHECK(worst < 1e-5, "IQ type %u dequantizes like gguf-py (worst relative difference %.2e)", type, worst);
+    if (cl_type_integer_dot(type)) {   /* a row of n blocks against a random activation vector */
+      const int cols = (int)(n * bl);
+      float *x = malloc((size_t)cols * 4), *xd = malloc((size_t)cols * 4); uint32_t s = 99;
+      for (int i = 0; i < cols; i++) { s = s * 1664525u + 1013904223u; x[i] = ((float)(s >> 8) / (1 << 24) - 0.5f) * 3.0f; }
+      cl_xq q; cl_xq_init(&q, cols); cl_xq_quantize(&q, x);
+      for (int b = 0; b < cols / 256; b++) for (int j = 0; j < 256; j++) xd[b * 256 + j] = q.b[b].d * q.b[b].qs[j];
+      float out = 0; cl_mv job = {type, blocks, 1, cols, x, &q, &out, 1, 0, 0};
+      cl_matvec_batch(&job, 1);
+      double r = 0, mag = 0; for (int i = 0; i < cols; i++) { r += (double)ref[i] * xd[i]; mag += fabs((double)ref[i] * xd[i]); }
+      CHECK(fabs(r - out) <= 1e-4 * mag + 1e-5, "IQ type %u integer dot matches dequantize-and-multiply (%.5f vs %.5f)", type, out, r);
+      cl_xq_free(&q); free(x); free(xd);
+    }
+    free(blocks); free(ref); free(got);
+  }
+  fclose(fp);
+}
+
 /* Every instruction set must give the same bits. Random blocks of all five K-quant types are multiplied with a batch of activations (and with a single one) under each kernel
  * set this processor can run; the integer sums are exact in any order, so the floats must be identical, not just close. A batch must also equal the same inputs one at a time. */
 static void test_isa_paths(void) {
   enum { ROWS = 37, COLS = 768, NB = 11 };
   static const struct { uint32_t type; int bytes, d_off, dm_off; const char *name; } T[] = {
-    {CL_T_Q2_K, 84, 80, 82, "Q2_K"}, {CL_T_Q3_K, 110, 108, -1, "Q3_K"}, {CL_T_Q4_K, 144, 0, 2, "Q4_K"}, {CL_T_Q5_K, 176, 0, 2, "Q5_K"}, {CL_T_Q6_K, 210, 208, -1, "Q6_K"} };
+    {CL_T_Q2_K, 84, 80, 82, "Q2_K"}, {CL_T_Q3_K, 110, 108, -1, "Q3_K"}, {CL_T_Q4_K, 144, 0, 2, "Q4_K"}, {CL_T_Q5_K, 176, 0, 2, "Q5_K"}, {CL_T_Q6_K, 210, 208, -1, "Q6_K"},
+    {CL_T_IQ2_XXS, 66, 0, -1, "IQ2_XXS"}, {CL_T_IQ2_XS, 74, 0, -1, "IQ2_XS"}, {CL_T_IQ2_S, 82, 0, -1, "IQ2_S"}, {CL_T_IQ3_XXS, 98, 0, -1, "IQ3_XXS"}, {CL_T_IQ3_S, 110, 0, -1, "IQ3_S"}, {CL_T_IQ1_S, 50, 0, -1, "IQ1_S"}, {CL_T_IQ4_XS, 136, 0, -1, "IQ4_XS"} };
   static float x[NB][COLS], out[3][NB][ROWS], one[ROWS];
   static uint8_t w[ROWS * 3 * 210];
   uint32_t s = 4242;
@@ -636,7 +672,7 @@ static void test_xs(const char *fixture) {
 }
 
 int main(int argc, char **argv) {
-  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_integer_dot(); test_q2_q3(); test_isa_paths(); test_json_gate(); test_pictures(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
+  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_integer_dot(); test_q2_q3(); test_isa_paths(); test_json_gate(); test_iq(); test_pictures(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   test_gguf(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;
