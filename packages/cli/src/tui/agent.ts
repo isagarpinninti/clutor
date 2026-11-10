@@ -109,7 +109,7 @@ export async function runAgentTask(h: AgentHost, o: AgentRun, state: { allowComm
   const mark = (glyph: string, paint: (s: string) => string, text: string, hang = 4): void => {
     for (const [i, r] of wrap(paint(text), h.cols() - 2, hang).entries()) h.println(i === 0 ? `${glyph} ${r}` : `  ${r}`);
   };
-  const sub = (text: string, paint: (s: string) => string = st.dim): void => { for (const [i, r] of wrap(paint(text), h.cols() - 6, 0).entries()) h.println(i === 0 ? `  ${paint("⎿")}  ${r}` : `     ${r}`); };
+  const sub = (text: string, paint: (s: string) => string = st.dim): void => { for (const [i, r] of wrap(paint(text), h.cols() - 6, 0).entries()) h.println(i === 0 ? `  ${paint("·")}  ${r}` : `     ${r}`); };
 
   const project = new NodeProject(o.dir);
   const ws = new ShadowWorkspace(project);

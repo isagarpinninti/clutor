@@ -329,7 +329,6 @@ describe("the interactive session, against a fake model server", () => {
 
     const text = stripAnsi(screen);
     expect(text).toContain("Clutor v9.9.9");
-    expect(text).toContain("Welcome back!");
     expect(text).toContain("● Hello there");
     expect(text).toContain("2 tokens · 9.5 tok/s");
     expect(text).toContain("thinking on");
@@ -519,25 +518,19 @@ describe("the coding agent inside the session", () => {
   });
 });
 
-describe("welcome panel", () => {
+describe("welcome screen", () => {
   const info = { version: "1.2.3", cwd: "/work/proj", model: "Qwen3.5-9B", detail: "5.6 GB · 8.2k context", recent: ["fix the parser", "explain mmap"] };
-  it("is a two-column panel with the version in the border, every row exactly as wide as the panel", async () => {
+  it("shows the mark, the name and version, the model, the tips and recent conversations, and fits the terminal", async () => {
     const { welcomeLines } = await import("../src/tui/welcome");
-    const rows = welcomeLines(plain, 100, info);
-    expect(rows[0]).toContain("Clutor v1.2.3");
-    expect(rows[0]?.startsWith("╭")).toBe(true);
-    expect(rows[rows.length - 1]?.startsWith("╰")).toBe(true);
-    for (const r of rows) expect(width(r)).toBe(100);
-    const text = rows.join("\n");
-    for (const s of ["Welcome back!", "C L U T O R", "Qwen3.5-9B", "Tips for getting started", "shift+tab", "Recent conversations", "· fix the parser"]) expect(text).toContain(s);
+    for (const cols of [100, 50]) {
+      const rows = welcomeLines(plain, cols, info);
+      for (const r of rows) expect(width(r)).toBeLessThanOrEqual(cols);
+      const text = rows.join("\n");
+      for (const s of ["█", "Clutor v1.2.3", "Qwen3.5-9B", "shift+tab", "Recent", "· fix the parser"]) expect(text).toContain(s);
+    }
   });
-  it("folds into one column on a narrow terminal and says when there is no model", async () => {
+  it("says when there is no model", async () => {
     const { welcomeLines } = await import("../src/tui/welcome");
-    const rows = welcomeLines(plain, 50, { ...info, model: "", recent: [] });
-    for (const r of rows) expect(width(r)).toBe(50);
-    expect(rows.join("\n")).toContain("Welcome");
-    const wide = welcomeLines(plain, 100, { ...info, model: "", recent: [] }).join("\n");
-    expect(wide).toContain("no model loaded");
-    expect(wide).toContain("nothing yet");
+    expect(welcomeLines(plain, 100, { ...info, model: "", recent: [] }).join("\n")).toContain("no model loaded");
   });
 });

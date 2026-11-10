@@ -137,14 +137,16 @@ export class Editor {
    * What to draw: a rounded box holding the text (the first row after the prompt glyph), then either the command menu, the shortcut
    * list, or the status line. `left` and `right` are the status line's two ends; `look` colours the border and glyph for the current mode.
    */
-  view(st: Style, cols: number, status: { left: string; right: string }, notice?: string, look: { border?: (s: string) => string; glyph?: string } = {}): { lines: string[]; cursor: { row: number; col: number } } {
+  view(st: Style, cols: number, status: { left: string; right: string }, notice?: string, look: { border?: (s: string) => string; glyph?: string; placeholder?: string } = {}): { lines: string[]; cursor: { row: number; col: number } } {
     const border = look.border ?? st.dim;
     const inner = Math.max(10, cols - 6);
     const segs = layout(this.text, inner - 1);
     const lines: string[] = [border(`╭${"─".repeat(cols - 2)}╮`)];
     segs.forEach((s, i) => {
       const t = this.text.slice(s.start, s.end);
-      lines.push(`${border("│")} ${i === 0 ? st.accent(look.glyph ?? "❯") : " "} ${t}${" ".repeat(Math.max(0, inner - width(t)))}${border("│")}`);
+      const ghost = this.text === "" && i === 0 && look.placeholder ? st.dim(look.placeholder) : "";   // the hint the app shows in an empty box
+      const body = ghost || t;
+      lines.push(`${border("│")} ${i === 0 ? st.accent(look.glyph ?? "❯") : " "} ${body}${" ".repeat(Math.max(0, inner - width(body)))}${border("│")}`);
     });
     lines.push(border(`╰${"─".repeat(cols - 2)}╯`));
     let row = 1, col = 4;

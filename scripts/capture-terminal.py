@@ -1,19 +1,21 @@
 """Runs the built `clutor` command line in a pseudo-terminal, lets a terminal emulator (pyte) draw what it printed, and writes that screen as coloured HTML for
 scripts/capture-terminal.mjs to turn into a screenshot. Needs `pip install pyte` and `npm run build` first.
 
-    python3 scripts/capture-terminal.py tui    # the interactive screen after typing /help
+    python3 scripts/capture-terminal.py tui    # the interactive screen after one question
     python3 scripts/capture-terminal.py plan   # `clutor plan qwen3-30b-a3b --ram 16`
 It runs with an empty home folder so that no conversation history of yours appears in the picture."""
 import sys, os, pty, time, select, fcntl, termios, struct, html, tempfile
 import pyte
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLI = os.path.join(ROOT, "packages", "cli", "dist", "bin.js")
-WORK = tempfile.mkdtemp(prefix="clutor-demo-")
+WORK = os.path.realpath(tempfile.mkdtemp(prefix="clutor-demo-"))
+PROJECT = os.path.join(WORK, "demo-project")   # the working folder shows as ~/demo-project
+os.makedirs(PROJECT)
 ROWS, COLS = 50, 100
 def run(argv, inputs, first=3.0, wait=2.0):
     pid, fd = pty.fork()
     if pid == 0:
-        os.environ["TERM"] = "xterm-256color"; os.environ["HOME"] = WORK; os.chdir(WORK); os.environ["COLUMNS"] = str(COLS); os.environ["LINES"] = str(ROWS); os.environ["NO_COLOR"] = ""
+        os.environ["TERM"] = "xterm-256color"; os.environ["HOME"] = WORK; os.chdir(PROJECT); os.environ["COLUMNS"] = str(COLS); os.environ["LINES"] = str(ROWS); os.environ["NO_COLOR"] = ""
         os.environ.pop("NO_COLOR", None)
         os.execvp(argv[0], argv)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
@@ -62,7 +64,7 @@ def to_html(screen):
 if __name__ == "__main__":
     which = sys.argv[1]
     if which == "tui":
-        scr = run(["node", CLI], [(b"/help\r", 2.0)])
+        scr = run(["node", CLI], [(b"Give me three tips for writing clear commit messages.\r", 40.0)])
     else:
         scr = run(["node", CLI, "plan", "qwen3-30b-a3b", "--ram", "16"], [], first=3.0)
     open(os.path.join(os.environ.get("OUT", tempfile.gettempdir()), f"term_{which}.html"), "w").write(to_html(scr))
