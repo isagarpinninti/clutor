@@ -174,6 +174,7 @@ void cl_dequant_row(uint32_t type, const void *src, float *dst, int n) {
 /* x86-64: the AVX2 and AVX-512 VNNI kernels are compiled with per-function target attributes, so one binary runs on any x86-64 processor
  * and picks the best kernels at start-up from what the processor reports (CLUTOR_ISA=scalar|avx2 forces a lower one, for measuring and tests). */
 #include <immintrin.h>
+#include <cpuid.h>
 #define CL_X86 1
 #endif
 static int isa_level(void);
@@ -589,15 +590,18 @@ static int float_math(void) {
 /* ---- the instruction set in use (x86-64): picked once from what the processor reports ---- */
 #ifdef CL_X86
 static atomic_int g_isa = -1;   /* 0 portable, 1 AVX2, 2 AVX-512 VNNI */
-static int isa_detect(void) {
-  __builtin_cpu_init();
-  int v = 0;
-  if (__builtin_cpu_supports("avx2")) {
-    v = 1;
+static int isa_detect(void) {   /* cpuid directly (no compiler runtime needed), and the operating system must save the wide registers too */
+  unsigned a, b, c, d;
+  if (!__get_cpuid(1, &a, &b, &c, &d) || !((c >> 27) & 1) || !((c >> 28) & 1)) return 0;
+  unsigned xlo, xhi;
+  __asm__ volatile("xgetbv" : "=a"(xlo), "=d"(xhi) : "c"(0));
+  if ((xlo & 6) != 6 || __get_cpuid_max(0, 0) < 7) return 0;
+  __cpuid_count(7, 0, a, b, c, d);
+  if (!((b >> 5) & 1)) return 0;   /* AVX2 */
+  int v = 1;
 #if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 9)
-    if (__builtin_cpu_supports("avx512vnni") && __builtin_cpu_supports("avx512vl")) v = 2;
+  if ((xlo & 0xe0) == 0xe0 && ((b >> 16) & 1) && ((b >> 31) & 1) && ((c >> 11) & 1)) v = 2;   /* AVX-512 F and VL, VNNI, with the 512-bit state enabled */
 #endif
-  }
   return v;
 }
 static int isa_max(void) { static int m = -1; if (m < 0) m = isa_detect(); return m; }

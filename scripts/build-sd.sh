@@ -14,7 +14,7 @@ if [ ! -f "$SRC/CMakeLists.txt" ]; then
   git -C "$SRC" checkout -q FETCH_HEAD
   git -C "$SRC" submodule update --init --recursive --depth 1 -q
 fi
-FLAGS=(-DCMAKE_BUILD_TYPE=Release -DSD_BUILD_EXAMPLES=OFF -DSD_WEBP=OFF -DSD_WEBM=OFF -DGGML_OPENMP=OFF -DBUILD_SHARED_LIBS=OFF)
+FLAGS=(-DCMAKE_BUILD_TYPE=Release -DSD_BUILD_EXAMPLES=OFF -DSD_WEBP=OFF -DSD_WEBM=OFF -DGGML_OPENMP=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON)   # position independent: the app is a shared library on Linux
 case "$(uname -s)" in
   Darwin) [ "$(uname -m)" = "arm64" ] && FLAGS+=(-DSD_METAL=ON) ;;
   *) FLAGS+=(-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON) ;;   # a program that runs on any x86-64 processor from the last ten years, not only the build machine's
