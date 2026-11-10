@@ -77,7 +77,7 @@ export const THEMES: ThemeName[] = ["dark", "light", "ocean", "mono"];
 export interface Palette { accent: number; hi: number; ok: number; warn: number; bad: number; code: number; kw: number; str: number; num: number; com: number; fn: number; ty: number }
 
 const PALETTES: Record<Exclude<ThemeName, "mono">, Palette> = {
-  dark: { accent: 209, hi: 223, ok: 114, warn: 221, bad: 203, code: 180, kw: 176, str: 114, num: 215, com: 244, fn: 111, ty: 80 },
+  dark: { accent: 69, hi: 111, ok: 114, warn: 221, bad: 203, code: 180, kw: 176, str: 114, num: 215, com: 244, fn: 111, ty: 80 },
   light: { accent: 166, hi: 208, ok: 28, warn: 130, bad: 160, code: 94, kw: 90, str: 28, num: 130, com: 245, fn: 25, ty: 30 },
   ocean: { accent: 75, hi: 159, ok: 79, warn: 222, bad: 204, code: 117, kw: 141, str: 114, num: 215, com: 244, fn: 111, ty: 80 },
 };
@@ -100,7 +100,10 @@ export function makeStyle(color: boolean, theme: ThemeName = "dark"): Style {
   const mono = theme === "mono";
   const pal = PALETTES[mono ? "dark" : theme];
   const fg = (n: number, s: string): string => (color && !mono ? `${ESC}[38;5;${n}m${s}${ESC}[39m` : s);
-  const bold = w("1", "22"), dim = w("2", "22"), italic = w("3", "23");
+  const bold = w("1", "22"), italic = w("3", "23");
+  const faint = w("2", "22");
+  /** Quiet text: a mid grey like the app's (works in every terminal, unlike the faint attribute); emphasis-only themes keep the attribute. */
+  const dim = (s: string): string => (color && !mono ? `${ESC}[38;5;245m${s}${ESC}[39m` : faint(s));
   const hue = (n: number, emphasis: (s: string) => string = (s) => s) => (s: string): string => (mono ? emphasis(s) : fg(n, s));
   return {
     color, theme, pal,

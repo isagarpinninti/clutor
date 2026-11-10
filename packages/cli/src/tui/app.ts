@@ -7,7 +7,7 @@ import { BackendManager, buildLlamaArgs, findLlamaServer, probeLlamaServer } fro
 import { ConfigError, loadConfig, type ClutorConfig } from "../config";
 import { flagInt, flagString, parseArgs } from "../args";
 import type { Io, SessionState } from "../cli";
-import { Region, THEMES, fit, makeStyle, stripAnsi, wrap, type ThemeName } from "./ansi";
+import { Region, THEMES, fit, makeStyle, stripAnsi, width, wrap, type ThemeName } from "./ansi";
 import { runAgentTask, type AgentHost } from "./agent";
 import { welcomeLines } from "./welcome";
 import { discoverModels, displayName, gb, modelFolders, type FoundModel } from "./discover";
@@ -188,8 +188,8 @@ export async function runTui(o: TuiOptions): Promise<number> {
   const mark = (glyph: string, paint: (s: string) => string, s: string): void => {
     for (const [i, r] of wrap(paint(s), cols() - 4, 0).entries()) println(i === 0 ? `  ${paint(glyph)} ${r}` : `    ${r}`);
   };
-  const note = (s: string): void => mark("⎿", st.dim, s);
-  const fail = (s: string): void => mark("⎿", st.bad, s);
+  const note = (s: string): void => mark("·", st.dim, s);
+  const fail = (s: string): void => mark("·", st.bad, s);
 
   // ---- welcome ----
   const recentTitles = (): string[] => {
@@ -210,7 +210,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
   // ---- input ----
   let notice: string | undefined;
   const MODE_TEXT: Record<Mode, string> = {
-    chat: "chat · shift+tab: coding agent",
+    chat: "enter to send · shift+tab: coding agent",
     agent: "agent · edits need approval · shift+tab: next mode",
     auto: "auto-apply · edits are written for you · shift+tab: next mode",
   };
@@ -218,7 +218,13 @@ export async function runTui(o: TuiOptions): Promise<number> {
     left: `${MODE_TEXT[mode]}`,
     right: `${trunc(target?.name ?? "no model", 34)} · ${stats.ctxUsed > 0 ? `${compactNum(stats.ctxUsed)}/${compactNum(chat.ctx)}` : compactNum(chat.ctx)} ctx`,
   });
-  const look = (): { border?: (s: string) => string; glyph?: string } => (mode === "chat" ? {} : { border: mode === "auto" ? st.warn : st.accent, glyph: mode === "auto" ? "⏵⏵" : "⏵" });
+  const look = (): { border?: (s: string) => string; glyph?: string; placeholder?: string } => (mode === "chat" ? { placeholder: "Message Clutor" } : { border: mode === "auto" ? st.warn : st.accent, glyph: mode === "auto" ? "⏵⏵" : "⏵", placeholder: "Describe a task for the coding agent" });
+  /** What you typed, shown as the app shows it: a dark rounded-looking block, not a prompt character. */
+  const echoUser = (text: string): void => {
+    const rows = text.split("\n").flatMap((l) => wrap(l, Math.max(10, cols() - 6)));
+    const w = Math.max(...rows.map((r) => width(r)));
+    println(st.color && st.theme !== "mono" ? rows.map((r) => `  ${st.bg(236, ` ${r}${" ".repeat(w - width(r))} `)}`).join("\n") : rows.map((r) => `  ${r}`).join("\n"));
+  };
 
   const readInput = (): Promise<string | null> => new Promise((done) => {
     let region = new Region(out);
@@ -389,7 +395,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
     const { text, attached } = expandFiles(userText, cwd);
     for (const a of attached) note(`attached ${a}`);
     chat.messages.push({ role: "user", content: text });
-    println(`${st.dim("❯")} ${st.dim(userText.split("\n").join("\n  "))}`);
+    echoUser(userText);
     println();
 
     const md = new MarkdownStream(st, () => cols() - 2);
@@ -465,7 +471,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
     stats.prompt += done?.promptTokens ?? 0; stats.completion += gen; session.usage.promptTokens += done?.promptTokens ?? 0; session.usage.completionTokens += gen;
     if (tps) { stats.lastTps = tps; stats.replyTokens += gen; stats.replyTime += gen / tps; }
     stats.ctxUsed = (done?.promptTokens ?? 0) + gen;
-    if (stats.ctxUsed > chat.ctx * 0.8) println(`  ${st.warn("⎿")} ${st.warn(`context is ${Math.round((stats.ctxUsed / chat.ctx) * 100)}% full: /compact summarises the conversation, /clear starts over`)}`);
+    if (stats.ctxUsed > chat.ctx * 0.8) println(`  ${st.warn("·")} ${st.warn(`context is ${Math.round((stats.ctxUsed / chat.ctx) * 100)}% full: /compact summarises the conversation, /clear starts over`)}`);
     println();
     saveSession();
   };
@@ -478,7 +484,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
   };
   const agentTask = async (task: string): Promise<void> => {
     if (!target) { fail("no model is loaded. Use /model to choose one."); return; }
-    println(`${st.dim("❯")} ${st.dim(task.split("\n").join("\n  "))}`);
+    echoUser(task);
     println();
     try {
       await runAgentTask(host, { task, dir: cwd, config, endpoint: { baseUrl: target.baseUrl, model: target.model, ...(target.apiKey ? { apiKey: target.apiKey } : {}), local: target.backend !== undefined }, ...(target.native ? { llm: target.native.asLlm(target.name) } : {}), session, autoApply: mode === "auto", contextTokens: chat.ctx }, agentState);
@@ -649,7 +655,7 @@ export async function runTui(o: TuiOptions): Promise<number> {
       if (line === null) break;
       try {
         if (line.startsWith("/")) {
-          println(`${st.dim("❯")} ${st.dim(line)}`);
+          echoUser(line);
           if ((await slash(line)) === "exit") break;
         } else if (mode === "chat") await turn(line);
         else await agentTask(line);

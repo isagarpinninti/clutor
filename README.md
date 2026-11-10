@@ -47,7 +47,7 @@ It has three parts:
 <td><img src="docs/screenshots/image-generation.png" alt="Image generation"><br><sub><b>Pictures</b>: describe it, the chat model steps aside, the image model makes it.</sub></td>
 </tr>
 <tr>
-<td><img src="docs/screenshots/terminal-ui.png" alt="The terminal interface"><br><sub><b>Terminal</b>: the same engine and agent in a terminal (`clutor`), with slash commands.</sub></td>
+<td><img src="docs/screenshots/terminal-ui.png" alt="The terminal interface"><br><sub><b>Terminal</b>: the same engine and agent in a terminal (`clutor`), drawn like the app: the logo, the dark theme with the same blue, your message as a block, a quiet speed line.</sub></td>
 <td><img src="docs/screenshots/terminal-plan.png" alt="clutor plan"><br><sub><b>Plan</b>: will a model fit, where the memory goes, how fast the disk allows (`clutor plan`).</sub></td>
 </tr>
 </table>
