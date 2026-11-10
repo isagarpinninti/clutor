@@ -27,5 +27,7 @@ int cl_load_tokenizer(const char *path, cl_meta *meta, uint8_t **map, size_t *ms
 int cl_disk_bench(const char *path, double seconds, double *seq_bps, double *rand_bps, char *err, size_t errlen);
 /* The machine, as the engine's portability layer sees it. */
 uint64_t cl_system_ram(void);
+/* Memory that can be given to a program right now (free and reclaimable pages), or 0 when it cannot be told. */
+uint64_t cl_system_avail(void);
 int cl_system_cores(void);
 #endif

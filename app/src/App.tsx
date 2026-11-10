@@ -346,7 +346,9 @@ export function App() {
   useEffect(() => { if (!conversations.some((c) => c.id === activeId) && conversations[0]) setActiveId(conversations[0].id); }, [conversations, activeId]);
 
   const ready = state.status === "ready";
-  const note = state.ready?.autoStream ? "streaming from disk" : state.ready?.locked ? "pinned" : state.unpinned ? "not pinned" : undefined;
+  const note = state.memory?.level === "over" ? "too big for memory" : state.memory?.level === "tight" ? "memory is tight" : state.ready?.autoStream ? "streaming from disk" : state.ready?.locked ? "pinned" : state.unpinned ? "not pinned" : undefined;
+  const memoryText = state.status === "ready" ? state.memory?.text : undefined;
+  useEffect(() => { if (memoryText) { setNotice(memoryText); const t = setTimeout(() => setNotice((n) => (n === memoryText ? undefined : n)), 12000); return () => clearTimeout(t); } return undefined; }, [memoryText, state.model?.path]);   // said once when the model loads; the picker keeps a short note
   const loadedIsWanted = !!wanted && state.model?.path === wanted.path;
   const picker = <ModelPicker auto={autoOn} autoReason={lib.auto[mode].reason} onAuto={() => { setSettings((s) => ({ ...s, autoModel: true })); lib.rescan(); }} current={wanted} folders={folders} same={settings.sameModel !== false} onSame={(v) => setSettings((s) => ({ ...s, sameModel: v, ...(v ? {} : { models: { chat: s.model, code: s.model } }) }))} status={loadedIsWanted ? state.status : state.status === "loading" ? "loading" : "idle"} note={note} onPick={pickModel} onMore={() => setDialog("models")} />;
   const usage = chatUsage(active?.messages ?? [], state.ready?.nCtx ?? settings.ctx);
