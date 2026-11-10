@@ -27,7 +27,7 @@ export function useEngine() {
     setState({ status: "idle" });
   }, []);
 
-  const load = useCallback(async (model: ModelInfo, settings: Pick<Settings, "ctx" | "lock">, ramBytes?: number): Promise<EngineSession | null> => {
+  const load = useCallback(async (model: ModelInfo, settings: Pick<Settings, "ctx" | "lock" | "kv8">, ramBytes?: number): Promise<EngineSession | null> => {
     const old = session.current;
     session.current = null;
     setState({ status: "loading", model });
@@ -45,7 +45,7 @@ export function useEngine() {
     }
     const pin = shouldPin(settings.lock, model.bytes, ramBytes);
     try {
-      const { transport, ready } = await bridge.openEngine(model.path, settings.ctx, pin);
+      const { transport, ready } = await bridge.openEngine(model.path, settings.ctx, pin, settings.kv8 === true);
       session.current = new EngineSession(transport, ready);
       setState({ status: "ready", model, ready, loadMs: performance.now() - t0, ...(settings.lock && !pin ? { unpinned: true } : {}) });
       return session.current;
