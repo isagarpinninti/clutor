@@ -17,7 +17,7 @@ export function engineLlm(session: AgentSession, name: string, o: { maxTokens?: 
     async chat(messages: CoreMessage[], opts: { signal?: AbortSignal; onPartial?: (text: string) => void; prefill?: string } = {}): Promise<ChatResult> {
       const msgs: ChatMessage[] = messages.map((m) => ({ role: m.role === "tool" ? "user" : m.role, content: m.content ?? "" }));
       let content = opts.prefill ?? "", prompt = 0, completion = 0, lastPartial = 0;
-      for await (const ev of session.stream(msgs, { thinking: false, temp: o.temperature ?? 0.2, max: o.maxTokens ?? 1024, ...(opts.prefill ? { prefill: opts.prefill } : {}), ...(opts.signal ? { signal: opts.signal } : {}) })) {
+      for await (const ev of session.stream(msgs, { thinking: false, json: true, temp: o.temperature ?? 0.2, max: o.maxTokens ?? 1024, ...(opts.prefill ? { prefill: opts.prefill } : {}), ...(opts.signal ? { signal: opts.signal } : {}) })) {
         if (ev.type === "content") { content += ev.text; if (opts.onPartial) { const t = Date.now(); if (t - lastPartial >= 250) { lastPartial = t; opts.onPartial(content); } } }
         else if (ev.type === "done") { prompt = ev.promptTokens ?? 0; completion = ev.completionTokens ?? 0; if (ev.tokensPerSecond) o.onSpeed?.(ev.tokensPerSecond, completion); }
       }

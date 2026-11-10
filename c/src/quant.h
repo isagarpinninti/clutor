@@ -40,6 +40,8 @@ void cl_matvec_batch(const cl_mv *jobs, int n);
 int cl_type_integer_dot(uint32_t type);
 /* Name of the integer dot path compiled in: "neon+dotprod" or "scalar". */
 const char *cl_quant_path(void);
+/* x86-64: switch the kernels to "scalar", "avx2" or "avx512vnni" (or "auto"). Returns 1 when applied, 0 when this processor cannot run it (always 0 on other architectures). For tests and measuring; CLUTOR_ISA does the same at start. */
+int cl_quant_set_isa(const char *name);
 
 /* out[r] = dot(row r of W, x) for rows x cols weights of `type`, using a pool of threads. Dequantizes each block to float on the fly. */
 void cl_matvec(uint32_t type, const void *w, int rows, int cols, const float *x, float *out);

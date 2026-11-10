@@ -18,7 +18,14 @@ export interface Ev { ev: string; [k: string]: unknown }
 export interface SampleOptions {
   /** Text the reply has already begun with (a paused background job resumes from it): the engine continues after it instead of starting the reply again. */
   prefill?: string;
-  thinking?: boolean; temp?: number; topP?: number; topK?: number; repeat?: number; seed?: number; max?: number; signal?: AbortSignal }
+  thinking?: boolean; temp?: number; topP?: number; topK?: number; repeat?: number; seed?: number; max?: number; signal?: AbortSignal;
+  /** Drop tokens much less likely than the best one (min-p, 0 = off); gentler than top-p for small models. */
+  minP?: number;
+  /** Constrained decoding: the reply can only be one valid JSON object (the engine refuses any token that would break it) and ends when the object does. For the coding agent's tool calls. */
+  json?: boolean }
+
+/** The part of an already-written reply that is JSON: from its first brace (anything before it is prose the engine need not check). */
+export function jsonPrefix(prefill: string | undefined): string { const i = (prefill ?? "").indexOf("{"); return i < 0 ? "" : (prefill as string).slice(i); }
 
 export class NativeError extends Error { constructor(message: string, readonly code?: string) { super(message); this.name = "NativeError"; } }
 
@@ -119,7 +126,7 @@ export class EngineSession {
       if (aborted) { this.t.send({ op: "cancel" }); }
       const startsInThink = this.template.thinkTags && o.thinking === true && /<think>\s*$/.test(full);
       const split = new ThinkSplitter(this.template.thinkTags && o.thinking === true, startsInThink);
-      this.t.send({ op: "generate", max: o.max ?? 1024, temp: o.temp ?? 0.7, topP: o.topP ?? 0.95, topK: o.topK ?? 40, repeat: o.repeat ?? 1.0, ...(o.seed !== undefined ? { seed: o.seed } : {}) });
+      this.t.send({ op: "generate", max: o.max ?? 1024, temp: o.temp ?? 0.7, topP: o.topP ?? 0.95, topK: o.topK ?? 40, repeat: o.repeat ?? 1.0, ...(o.seed !== undefined ? { seed: o.seed } : {}), ...(o.minP ? { minP: o.minP } : {}), ...(o.json ? { json: true, jsonPrefix: jsonPrefix(o.prefill) } : {}) });
       let raw = "";
       for (;;) {
         const e = await this.t.queue.next();

@@ -4,6 +4,7 @@
 #include "kernel.h"
 #include "forward.h"
 #include "quant.h"
+#include "jsongate.h"
 #include "vision.h"
 #include "meta.h"
 #include "xs.h"
@@ -377,7 +378,7 @@ static void test_integer_dot(void) {
     uint32_t type = pass ? CL_T_Q6_K : CL_T_Q4_K;
     const uint8_t *w = pass ? w6 : w4;
     static float out[ROWS];
-    cl_mv job = {type, w, ROWS, COLS, x, &q, out};
+    cl_mv job = {type, w, ROWS, COLS, x, &q, out, 1, 0, 0};
     cl_matvec_batch(&job, 1);
     int bad = 0;
     float row[COLS];
@@ -390,6 +391,81 @@ static void test_integer_dot(void) {
     CHECK(bad == 0, "%s integer dot matches dequantize-and-multiply on %d of %d rows (%s)", pass ? "Q6_K" : "Q4_K", ROWS - bad, ROWS, cl_quant_path());
   }
   cl_xq_free(&q);
+}
+
+/* The JSON checker used for constrained decoding: complete objects are accepted and finish, broken text is refused at the first bad character, and the answer does not depend on how the text is cut into pieces. */
+static void test_json_gate(void) {
+  static const char *const good[] = {"{}", " {\"a\": 1}", "{\"tool\": \"write_file\", \"args\": {\"path\": \"a.txt\", \"content\": \"line1\\nline2 \\\"q\\\" \\u00e9 \xc3\xa9\"}}",
+    "{\"a\": [1, -2.5, 3e10, 0, 1E-2, true, false, null, [], {}, \"x\"], \"b\": {\"c\": {}}}\n", "{\"n\":-0.5e+3}"};
+  static const char *const bad[] = {"[1]", "1", "\"s\"", "{a:1}", "{\"a\" 1}", "{\"a\": 01}", "{\"a\": 1,}", "{\"a\": tru}", "{\"a\": \"\n\"}", "{\"a\": \"\\x\"}", "{\"a\": 1.}", "{\"a\": -}", "{\"a\": [1}", "{}}", "{} x", "{\"a\": \"\\u12g4\"}", "{\"a\": 1e}"};
+  for (size_t i = 0; i < sizeof good / sizeof *good; i++) {
+    cl_json j; cl_json_init(&j, 1);
+    CHECK(cl_json_feed(&j, good[i], strlen(good[i])) && cl_json_done(&j), "JSON gate accepts and completes: %s", good[i]);
+    cl_json k; cl_json_init(&k, 1);   /* one byte at a time must agree */
+    int ok = 1; for (size_t b = 0; good[i][b]; b++) ok &= cl_json_feed(&k, good[i] + b, 1);
+    CHECK(ok && cl_json_done(&k), "JSON gate gives the same answer one byte at a time: %s", good[i]);
+    cl_json h; cl_json_init(&h, 1);   /* every proper prefix is still a valid beginning and is not yet complete, unless the text ends in whitespace after the object */
+    size_t n = strlen(good[i]); int pre = 1;
+    for (size_t cut = 1; cut < n; cut++) { cl_json_init(&h, 1); pre &= cl_json_feed(&h, good[i], cut); }
+    CHECK(pre, "JSON gate accepts every prefix of: %s", good[i]);
+  }
+  for (size_t i = 0; i < sizeof bad / sizeof *bad; i++) {
+    cl_json j; cl_json_init(&j, 1);
+    int ok = cl_json_feed(&j, bad[i], strlen(bad[i]));
+    CHECK(!ok || !cl_json_done(&j), "JSON gate refuses or leaves open: %s", bad[i]);
+  }
+  cl_json a; cl_json_init(&a, 0);
+  CHECK(cl_json_feed(&a, "[1, 2]", 6) && cl_json_done(&a), "without object_only, an array is a value too");
+  cl_json d; cl_json_init(&d, 1);
+  CHECK(cl_json_feed(&d, "{\"k\": 1", 7) && !cl_json_done(&d), "an open object is not done");
+  CHECK(cl_json_feed(&d, "}", 1) && cl_json_done(&d) && !cl_json_feed(&d, "{", 1), "after the object, only whitespace may follow");
+}
+
+/* Every instruction set must give the same bits. Random blocks of all five K-quant types are multiplied with a batch of activations (and with a single one) under each kernel
+ * set this processor can run; the integer sums are exact in any order, so the floats must be identical, not just close. A batch must also equal the same inputs one at a time. */
+static void test_isa_paths(void) {
+  enum { ROWS = 37, COLS = 768, NB = 11 };
+  static const struct { uint32_t type; int bytes, d_off, dm_off; const char *name; } T[] = {
+    {CL_T_Q2_K, 84, 80, 82, "Q2_K"}, {CL_T_Q3_K, 110, 108, -1, "Q3_K"}, {CL_T_Q4_K, 144, 0, 2, "Q4_K"}, {CL_T_Q5_K, 176, 0, 2, "Q5_K"}, {CL_T_Q6_K, 210, 208, -1, "Q6_K"} };
+  static float x[NB][COLS], out[3][NB][ROWS], one[ROWS];
+  static uint8_t w[ROWS * 3 * 210];
+  uint32_t s = 4242;
+  for (int b = 0; b < NB; b++) for (int i = 0; i < COLS; i++) { s = s * 1664525u + 1013904223u; x[b][i] = ((float)(s >> 8) / (1 << 24) - 0.5f) * (i % 61 == 0 ? 6.0f : 1.0f); }
+  cl_xq q[NB];
+  for (int b = 0; b < NB; b++) { CHECK(cl_xq_init(&q[b], COLS), "activation buffer"); cl_xq_quantize(&q[b], x[b]); }
+  const char *isas[] = {"scalar", "avx2", "avx512vnni"};
+  int ran = 0;
+  for (size_t ti = 0; ti < sizeof T / sizeof T[0]; ti++) {
+    for (int r = 0; r < ROWS * 3; r++) {
+      uint8_t *blk = w + (size_t)r * T[ti].bytes;
+      for (int i = 0; i < T[ti].bytes; i++) { s = s * 1664525u + 1013904223u; blk[i] = (uint8_t)(s >> 16); }
+      uint16_t d = (uint16_t)(0x2400 + (r % 16) * 8), dm = (uint16_t)(0x2000 + (r % 7) * 8);
+      memcpy(blk + T[ti].d_off, &d, 2);
+      if (T[ti].dm_off >= 0) memcpy(blk + T[ti].dm_off, &dm, 2);
+    }
+    int have = 0;
+    for (int k = 0; k < 3; k++) {
+      if (!cl_quant_set_isa(isas[k]) && k > 0) continue;
+      cl_mv job = {T[ti].type, w, ROWS, COLS, x[0], q, out[have ? 1 : 0][0], NB, COLS, ROWS};
+      cl_matvec_batch(&job, 1);
+      if (k == 0) {   /* the batch against the same inputs one at a time (a different kernel path on most builds) */
+        int bad = 0;
+        for (int b = 0; b < NB; b++) {
+          cl_mv j1 = {T[ti].type, w, ROWS, COLS, x[b], &q[b], one, 1, 0, 0};
+          cl_matvec_batch(&j1, 1);
+          for (int r = 0; r < ROWS; r++) if (fabsf(one[r] - out[0][b][r]) > 1e-4f * (fabsf(one[r]) + 1.0f)) bad++;
+        }
+        CHECK(bad == 0, "%s: a batch of %d equals the same inputs one at a time (%d values differ)", T[ti].name, NB, bad);
+      } else {
+        CHECK(memcmp(out[0], out[1], sizeof out[0]) == 0, "%s: %s gives the same bits as the portable kernel", T[ti].name, isas[k]);
+        ran++;
+      }
+      have = 1;
+    }
+    cl_quant_set_isa("auto");
+  }
+  for (int b = 0; b < NB; b++) cl_xq_free(&q[b]);
+  printf("  instruction sets compared: %d (this processor: %s)\n", ran, cl_quant_path());
 }
 
 /* Q2_K and Q3_K: the dequantizers are checked against a literal transcription of ggml's loops (a different way of indexing the same layout), and the integer dot products against
@@ -464,7 +540,7 @@ static void test_q2_q3(void) {
     }
     CHECK(badq == 0, "%s dequantization equals ggml's reference loops on %d of %d blocks", pass ? "Q3_K" : "Q2_K", ROWS * NBLK - badq, ROWS * NBLK);
     static float out[ROWS];
-    cl_mv job = {type, w, ROWS, COLS, x, &q, out};
+    cl_mv job = {type, w, ROWS, COLS, x, &q, out, 1, 0, 0};
     cl_matvec_batch(&job, 1);
     int bad = 0;
     float row[COLS];
@@ -560,7 +636,7 @@ static void test_xs(const char *fixture) {
 }
 
 int main(int argc, char **argv) {
-  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_integer_dot(); test_q2_q3(); test_pictures(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
+  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_integer_dot(); test_q2_q3(); test_isa_paths(); test_json_gate(); test_pictures(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   test_gguf(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;

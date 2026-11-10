@@ -51,14 +51,14 @@ export class NativeEngine extends EngineSession {
     return new NativeEngine(transport, first as unknown as NativeReady);
   }
 
-  /** The agent's view of the engine. Replies are still validated by the agent loop; there is no grammar-constrained decoding here. */
+  /** The agent's view of the engine. Replies are decoded as JSON (the engine refuses tokens that would break the object) and still validated by the agent loop. */
   asLlm(name: string, o: SampleOptions = {}): LlmClient {
     return {
       model: name,
       toolMode: "json",
       chat: async (messages, opts): Promise<ChatResult> => {
         const msgs: ChatMessage[] = messages.map((m) => ({ role: m.role === "system" ? "system" : m.role === "assistant" ? "assistant" : "user", content: m.content ?? "" }));
-        const r = await this.complete(msgs, { thinking: false, temp: 0.2, max: Math.max(1024, Math.min(4096, Math.floor(this.ready.nCtx / 4))), ...o, ...(opts?.signal ? { signal: opts.signal } : {}) });   // a whole file written into a tool call is long: a cap of 1,024 tokens cut such replies off
+        const r = await this.complete(msgs, { thinking: false, json: true, temp: 0.2, max: Math.max(1024, Math.min(4096, Math.floor(this.ready.nCtx / 4))), ...o, ...(opts?.signal ? { signal: opts.signal } : {}) });   // a whole file written into a tool call is long: a cap of 1,024 tokens cut such replies off
         return { content: r.content, toolCalls: [], finishReason: r.finish, usage: { promptTokens: r.promptTokens, completionTokens: r.completionTokens } };
       },
     };

@@ -167,15 +167,18 @@ void cl_dequant_row(uint32_t type, const void *src, float *dst, int n) {
 #if !defined(CL_FORCE_SCALAR) && defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
 #include <arm_neon.h>
 #define CL_Q_NEON 1
-#elif !defined(CL_FORCE_SCALAR) && defined(__AVX2__)
+#elif !defined(CL_FORCE_SCALAR) && defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+/* x86-64: the AVX2 and AVX-512 VNNI kernels are compiled with per-function target attributes, so one binary runs on any x86-64 processor
+ * and picks the best kernels at start-up from what the processor reports (CLUTOR_ISA=scalar|avx2 forces a lower one, for measuring and tests). */
 #include <immintrin.h>
-#define CL_Q_AVX2 1
+#define CL_X86 1
 #endif
+static int isa_level(void);
 const char *cl_quant_path(void) {
 #ifdef CL_Q_NEON
   return "neon+dotprod";
-#elif defined(CL_Q_AVX2)
-  return "avx2";
+#elif defined(CL_X86)
+  return isa_level() >= 2 ? "avx512vnni" : isa_level() == 1 ? "avx2" : "scalar";
 #else
   return "scalar";
 #endif
@@ -197,7 +200,7 @@ void cl_xq_quantize(cl_xq *q, const float *x) {
   }
 }
 
-#if !defined(CL_Q_NEON) && !defined(CL_Q_AVX2)
+#if !defined(CL_Q_NEON)
 static inline int32_t dot16_s(const int8_t *a, const int8_t *b) { int32_t s = 0; for (int i = 0; i < 16; i++) s += a[i] * b[i]; return s; }
 #endif
 
@@ -264,22 +267,6 @@ static float dot_q4_K(int nb, const b_q4_K *x, const cl_q8k *y) {
       acc = vmlaq_n_s32(vmlaq_n_s32(acc, a, sc[2 * g]), b, sc[2 * g + 1]);
     }
     sumi = vaddvq_s32(acc);
-#elif defined(CL_Q_AVX2)
-    {   /* nibbles are unsigned 0..15 and the activations signed, which is exactly what maddubs wants; each pair-sum fits int16 (at most 15*127*2) */
-      const __m256i m4 = _mm256_set1_epi8(0x0f);
-      __m256i acc = _mm256_setzero_si256();
-      for (int g = 0; g < 4; g++) {
-        __m256i v = _mm256_loadu_si256((const __m256i *)(const void *)(q4 + 32 * g));
-        __m256i lo = _mm256_and_si256(v, m4), hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), m4);
-        __m256i a0 = _mm256_loadu_si256((const __m256i *)(const void *)(q8 + 64 * g)), a1 = _mm256_loadu_si256((const __m256i *)(const void *)(q8 + 64 * g + 32));
-        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(lo, a0), _mm256_set1_epi16((short)sc[2 * g])));
-        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(hi, a1), _mm256_set1_epi16((short)sc[2 * g + 1])));
-      }
-      __m128i t = _mm_add_epi32(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
-      t = _mm_add_epi32(t, _mm_shuffle_epi32(t, _MM_SHUFFLE(1, 0, 3, 2)));
-      t = _mm_add_epi32(t, _mm_shuffle_epi32(t, _MM_SHUFFLE(2, 3, 0, 1)));
-      sumi = _mm_cvtsi128_si32(t);
-    }
 #else
     for (int g = 0; g < 4; g++) {
       int32_t a = 0, b = 0;
@@ -324,18 +311,6 @@ static float dot_q5_K(int nb, const b_q5_K *x, const cl_q8k *y) {
       }
       sumi = vaddvq_s32(acc);
     }
-#elif defined(CL_Q_AVX2)
-    {   /* the values are unsigned 0..31 and the activations signed: maddubs pair-sums are at most 31*127*2 and fit int16 */
-      __m256i acc = _mm256_setzero_si256();
-      for (int g = 0; g < 8; g++) {
-        __m256i v = _mm256_loadu_si256((const __m256i *)(const void *)(q + 32 * g)), a = _mm256_loadu_si256((const __m256i *)(const void *)(q8 + 32 * g));
-        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(_mm256_maddubs_epi16(v, a), _mm256_set1_epi16((short)sc[g])));
-      }
-      __m128i t = _mm_add_epi32(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
-      t = _mm_add_epi32(t, _mm_shuffle_epi32(t, _MM_SHUFFLE(1, 0, 3, 2)));
-      t = _mm_add_epi32(t, _mm_shuffle_epi32(t, _MM_SHUFFLE(2, 3, 0, 1)));
-      sumi = _mm_cvtsi128_si32(t);
-    }
 #else
     for (int g = 0; g < 8; g++) { int32_t a = 0; for (int l = 0; l < 32; l++) a += q[32 * g + l] * q8[32 * g + l]; sumi += sc[g] * a; }
 #endif
@@ -365,22 +340,7 @@ static float dot_q6_K(int nb, const b_q6_K *x, const cl_q8k *y) {
     }
 #endif
     int32_t sumi = 0;
-#if defined(CL_Q_AVX2)
-    {   /* |q| <= 32 and |a| <= 127, so abs(q) x sign-moved a pair-sums to at most 8128 and fits int16 */
-      __m256i acc = _mm256_setzero_si256();
-      for (int j = 0; j < 16; j += 2) {
-        __m256i qv = _mm256_loadu_si256((const __m256i *)(const void *)(q + 16 * j)), av = _mm256_loadu_si256((const __m256i *)(const void *)(y[i].qs + 16 * j));
-        __m256i p16 = _mm256_maddubs_epi16(_mm256_sign_epi8(qv, qv), _mm256_sign_epi8(av, qv));
-        __m256i scv = _mm256_setr_epi16((short)x[i].scales[j], (short)x[i].scales[j], (short)x[i].scales[j], (short)x[i].scales[j], (short)x[i].scales[j], (short)x[i].scales[j], (short)x[i].scales[j], (short)x[i].scales[j],
-                                        (short)x[i].scales[j + 1], (short)x[i].scales[j + 1], (short)x[i].scales[j + 1], (short)x[i].scales[j + 1], (short)x[i].scales[j + 1], (short)x[i].scales[j + 1], (short)x[i].scales[j + 1], (short)x[i].scales[j + 1]);
-        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(p16, scv));
-      }
-      __m128i t = _mm_add_epi32(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
-      t = _mm_add_epi32(t, _mm_shuffle_epi32(t, _MM_SHUFFLE(1, 0, 3, 2)));
-      t = _mm_add_epi32(t, _mm_shuffle_epi32(t, _MM_SHUFFLE(2, 3, 0, 1)));
-      sumi = _mm_cvtsi128_si32(t);
-    }
-#elif defined(CL_Q_NEON)
+#if defined(CL_Q_NEON)
     {
       int32x4_t acc = vdupq_n_s32(0);
       for (int j = 0; j < 16; j++) acc = vmlaq_n_s32(acc, vdotq_s32(vdupq_n_s32(0), vld1q_s8(q + 16 * j), vld1q_s8(y[i].qs + 16 * j)), x[i].scales[j]);
@@ -623,6 +583,239 @@ static int float_math(void) {
   return x;
 }
 
+/* ---- the instruction set in use (x86-64): picked once from what the processor reports ---- */
+#ifdef CL_X86
+static atomic_int g_isa = -1;   /* 0 portable, 1 AVX2, 2 AVX-512 VNNI */
+static int isa_detect(void) {
+  __builtin_cpu_init();
+  int v = 0;
+  if (__builtin_cpu_supports("avx2")) {
+    v = 1;
+#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 9)
+    if (__builtin_cpu_supports("avx512vnni") && __builtin_cpu_supports("avx512vl")) v = 2;
+#endif
+  }
+  return v;
+}
+static int isa_max(void) { static int m = -1; if (m < 0) m = isa_detect(); return m; }
+static int isa_level(void) {
+  int v = atomic_load_explicit(&g_isa, memory_order_relaxed);
+  if (v < 0) {
+    v = isa_max();
+    const char *e = getenv("CLUTOR_ISA");
+    if (e && !strcmp(e, "scalar")) v = 0;
+    else if (e && !strcmp(e, "avx2") && v > 1) v = 1;
+    atomic_store_explicit(&g_isa, v, memory_order_relaxed);
+  }
+  return v;
+}
+int cl_quant_set_isa(const char *name) {
+  int want = !strcmp(name, "scalar") ? 0 : !strcmp(name, "avx2") ? 1 : !strcmp(name, "avx512vnni") ? 2 : !strcmp(name, "auto") ? isa_max() : -1;
+  if (want < 0 || want > isa_max()) return 0;
+  atomic_store_explicit(&g_isa, want, memory_order_relaxed);
+  return 1;
+}
+#else
+static int isa_level(void) __attribute__((unused));
+static int isa_level(void) { return 0; }
+int cl_quant_set_isa(const char *name) { (void)name; return 0; }
+#endif
+
+#ifndef CL_Q_NEON
+/* ---- K-quant products without NEON (x86 and portable C), in the same shape for every type: a block's 256 weights are unpacked to int8 once, a per-16-group scale
+ * vector is made, and each activation block is multiplied with them by dot256. The integer sums are exact in any order, so every path gives the same bits. ---- */
+static void upk_q2(const b_q2_K *x, int8_t *q) { for (int n = 0; n < 2; n++) for (int j = 0; j < 4; j++) for (int l = 0; l < 32; l++) q[128 * n + 32 * j + l] = (int8_t)((x->qs[32 * n + l] >> (2 * j)) & 3); }
+static void upk_q3(const b_q3_K *x, int8_t *q) {
+  for (int n = 0; n < 2; n++) for (int j = 0; j < 4; j++) for (int l = 0; l < 32; l++)
+    q[128 * n + 32 * j + l] = (int8_t)(((x->qs[32 * n + l] >> (2 * j)) & 3) + 4 * ((x->hmask[l] >> (4 * n + j)) & 1) - 4);
+}
+static void upk_q4(const b_q4_K *x, int8_t *q) { for (int g = 0; g < 4; g++) for (int l = 0; l < 32; l++) { q[64 * g + l] = (int8_t)(x->qs[32 * g + l] & 0xF); q[64 * g + 32 + l] = (int8_t)(x->qs[32 * g + l] >> 4); } }
+static void upk_q5(const b_q5_K *x, int8_t *q) {
+  for (int c = 0; c < 4; c++) for (int l = 0; l < 32; l++) {
+    q[64 * c + l] = (int8_t)((x->qs[32 * c + l] & 0xF) + ((x->qh[l] >> (2 * c)) & 1) * 16);
+    q[64 * c + 32 + l] = (int8_t)((x->qs[32 * c + l] >> 4) + ((x->qh[l] >> (2 * c + 1)) & 1) * 16);
+  }
+}
+static void upk_q6(const b_q6_K *x, int8_t *q) {
+  const uint8_t *ql = x->ql, *qh = x->qh;
+  for (int n = 0; n < 256; n += 128) {
+    for (int l = 0; l < 32; l++) {
+      q[n + l] = (int8_t)(((ql[l] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32);
+      q[n + l + 32] = (int8_t)(((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32);
+      q[n + l + 64] = (int8_t)(((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32);
+      q[n + l + 96] = (int8_t)(((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32);
+    }
+    ql += 64; qh += 32;
+  }
+}
+static int32_t dot256_s(const int8_t *q, const int8_t *a, const int16_t *sc) { int32_t s = 0; for (int g = 0; g < 16; g++) s += sc[g] * dot16_s(q + 16 * g, a + 16 * g); return s; }
+
+#ifdef CL_X86
+#define TGT_AVX2 __attribute__((target("avx2")))
+static TGT_AVX2 inline __m256i srl8(__m256i v, int s) { return _mm256_srl_epi16(v, _mm_cvtsi32_si128(s)); }   /* 16-bit shift by a variable count; callers mask the bits that cross a byte */
+static TGT_AVX2 void upk_q2_avx2(const b_q2_K *x, int8_t *q) {
+  const __m256i m3 = _mm256_set1_epi8(3);
+  for (int n = 0; n < 2; n++) {
+    __m256i v = _mm256_loadu_si256((const __m256i *)(const void *)(x->qs + 32 * n));
+    for (int j = 0; j < 4; j++) _mm256_storeu_si256((__m256i *)(void *)(q + 128 * n + 32 * j), _mm256_and_si256(srl8(v, 2 * j), m3));
+  }
+}
+static TGT_AVX2 void upk_q3_avx2(const b_q3_K *x, int8_t *q) {
+  const __m256i m3 = _mm256_set1_epi8(3), one = _mm256_set1_epi8(1), four = _mm256_set1_epi8(4);
+  const __m256i h = _mm256_loadu_si256((const __m256i *)(const void *)x->hmask);
+  for (int n = 0; n < 2; n++) {
+    __m256i v = _mm256_loadu_si256((const __m256i *)(const void *)(x->qs + 32 * n));
+    for (int j = 0; j < 4; j++) {
+      __m256i lo = _mm256_and_si256(srl8(v, 2 * j), m3), hb = _mm256_slli_epi16(_mm256_and_si256(srl8(h, 4 * n + j), one), 2);
+      _mm256_storeu_si256((__m256i *)(void *)(q + 128 * n + 32 * j), _mm256_sub_epi8(_mm256_add_epi8(lo, hb), four));
+    }
+  }
+}
+static TGT_AVX2 void upk_q4_avx2(const b_q4_K *x, int8_t *q) {
+  const __m256i m4 = _mm256_set1_epi8(0x0f);
+  for (int g = 0; g < 4; g++) {
+    __m256i v = _mm256_loadu_si256((const __m256i *)(const void *)(x->qs + 32 * g));
+    _mm256_storeu_si256((__m256i *)(void *)(q + 64 * g), _mm256_and_si256(v, m4));
+    _mm256_storeu_si256((__m256i *)(void *)(q + 64 * g + 32), _mm256_and_si256(srl8(v, 4), m4));
+  }
+}
+static TGT_AVX2 void upk_q5_avx2(const b_q5_K *x, int8_t *q) {
+  const __m256i m4 = _mm256_set1_epi8(0x0f), one = _mm256_set1_epi8(1);
+  const __m256i qh = _mm256_loadu_si256((const __m256i *)(const void *)x->qh);
+  for (int c = 0; c < 4; c++) {
+    __m256i a = _mm256_loadu_si256((const __m256i *)(const void *)(x->qs + 32 * c));
+    __m256i lo = _mm256_or_si256(_mm256_and_si256(a, m4), _mm256_slli_epi16(_mm256_and_si256(srl8(qh, 2 * c), one), 4));
+    __m256i hi = _mm256_or_si256(_mm256_and_si256(srl8(a, 4), m4), _mm256_slli_epi16(_mm256_and_si256(srl8(qh, 2 * c + 1), one), 4));
+    _mm256_storeu_si256((__m256i *)(void *)(q + 64 * c), lo);
+    _mm256_storeu_si256((__m256i *)(void *)(q + 64 * c + 32), hi);
+  }
+}
+static TGT_AVX2 void upk_q6_avx2(const b_q6_K *x, int8_t *q) {
+  const __m256i m4 = _mm256_set1_epi8(0x0f), m3 = _mm256_set1_epi8(3), off = _mm256_set1_epi8(32);
+  for (int n = 0; n < 2; n++) {
+    const uint8_t *ql = x->ql + 64 * n, *qh = x->qh + 32 * n;
+    __m256i l0 = _mm256_loadu_si256((const __m256i *)(const void *)ql), l1 = _mm256_loadu_si256((const __m256i *)(const void *)(ql + 32)), h = _mm256_loadu_si256((const __m256i *)(const void *)qh);
+    __m256i v0 = _mm256_or_si256(_mm256_and_si256(l0, m4), _mm256_slli_epi16(_mm256_and_si256(h, m3), 4));
+    __m256i v1 = _mm256_or_si256(_mm256_and_si256(l1, m4), _mm256_slli_epi16(_mm256_and_si256(srl8(h, 2), m3), 4));
+    __m256i v2 = _mm256_or_si256(_mm256_and_si256(srl8(l0, 4), m4), _mm256_slli_epi16(_mm256_and_si256(srl8(h, 4), m3), 4));
+    __m256i v3 = _mm256_or_si256(_mm256_and_si256(srl8(l1, 4), m4), _mm256_slli_epi16(_mm256_and_si256(srl8(h, 6), m3), 4));
+    int8_t *o = q + 128 * n;
+    _mm256_storeu_si256((__m256i *)(void *)o, _mm256_sub_epi8(v0, off)); _mm256_storeu_si256((__m256i *)(void *)(o + 32), _mm256_sub_epi8(v1, off));
+    _mm256_storeu_si256((__m256i *)(void *)(o + 64), _mm256_sub_epi8(v2, off)); _mm256_storeu_si256((__m256i *)(void *)(o + 96), _mm256_sub_epi8(v3, off));
+  }
+}
+static TGT_AVX2 inline int32_t hsum8(__m256i acc) {
+  __m128i t = _mm_add_epi32(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1));
+  t = _mm_add_epi32(t, _mm_shuffle_epi32(t, _MM_SHUFFLE(1, 0, 3, 2)));
+  t = _mm_add_epi32(t, _mm_shuffle_epi32(t, _MM_SHUFFLE(2, 3, 0, 1)));
+  return _mm_cvtsi128_si32(t);
+}
+/* The values are small (|q| <= 32), so abs(q) times the activation moved to q's sign pair-sums to at most 8128 and fits int16; the scales then widen it. */
+static TGT_AVX2 int32_t dot256_avx2(const int8_t *q, const int8_t *a, const int16_t *sc) {
+  __m256i acc = _mm256_setzero_si256();
+  for (int j = 0; j < 16; j += 2) {
+    __m256i qv = _mm256_loadu_si256((const __m256i *)(const void *)(q + 16 * j)), av = _mm256_loadu_si256((const __m256i *)(const void *)(a + 16 * j));
+    __m256i p16 = _mm256_maddubs_epi16(_mm256_sign_epi8(qv, qv), _mm256_sign_epi8(av, qv));
+    __m256i scv = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_set1_epi16(sc[j])), _mm_set1_epi16(sc[j + 1]), 1);
+    acc = _mm256_add_epi32(acc, _mm256_madd_epi16(p16, scv));
+  }
+  return hsum8(acc);
+}
+#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 9)
+#define CL_X86_VNNI 1
+/* AVX-512 VNNI: one instruction multiplies unsigned by signed bytes and adds four products into each 32-bit lane (no 16-bit step), 16 values per group, two groups per register. */
+static __attribute__((target("avx2,avx512vnni,avx512vl"))) int32_t dot256_vnni(const int8_t *q, const int8_t *a, const int16_t *sc) {
+  __m256i acc = _mm256_setzero_si256();
+  for (int j = 0; j < 16; j += 2) {
+    __m256i qv = _mm256_loadu_si256((const __m256i *)(const void *)(q + 16 * j)), av = _mm256_loadu_si256((const __m256i *)(const void *)(a + 16 * j));
+    __m256i p = _mm256_dpbusd_epi32(_mm256_setzero_si256(), _mm256_sign_epi8(qv, qv), _mm256_sign_epi8(av, qv));
+    __m256i scv = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_set1_epi32(sc[j])), _mm_set1_epi32(sc[j + 1]), 1);
+    acc = _mm256_add_epi32(acc, _mm256_mullo_epi32(p, scv));
+  }
+  return hsum8(acc);
+}
+#endif
+#endif /* CL_X86 */
+
+static void gunpack(int isa, uint32_t t, const void *blk, int8_t *q) {
+#ifdef CL_X86
+  if (isa > 0) {
+    switch (t) {
+      case CL_T_Q2_K: upk_q2_avx2((const b_q2_K *)blk, q); return;
+      case CL_T_Q3_K: upk_q3_avx2((const b_q3_K *)blk, q); return;
+      case CL_T_Q4_K: upk_q4_avx2((const b_q4_K *)blk, q); return;
+      case CL_T_Q5_K: upk_q5_avx2((const b_q5_K *)blk, q); return;
+      default: upk_q6_avx2((const b_q6_K *)blk, q); return;
+    }
+  }
+#else
+  (void)isa;
+#endif
+  switch (t) {
+    case CL_T_Q2_K: upk_q2((const b_q2_K *)blk, q); return;
+    case CL_T_Q3_K: upk_q3((const b_q3_K *)blk, q); return;
+    case CL_T_Q4_K: upk_q4((const b_q4_K *)blk, q); return;
+    case CL_T_Q5_K: upk_q5((const b_q5_K *)blk, q); return;
+    default: upk_q6((const b_q6_K *)blk, q); return;
+  }
+}
+static inline int32_t dot256(int isa, const int8_t *q, const int8_t *a, const int16_t *sc) {
+#ifdef CL_X86
+#ifdef CL_X86_VNNI
+  if (isa >= 2) return dot256_vnni(q, a, sc);
+#endif
+  if (isa == 1) return dot256_avx2(q, a, sc);
+#else
+  (void)isa;
+#endif
+  return dot256_s(q, a, sc);
+}
+/* The block's scale per 16-value group (sc), its minimum per group (mn), and the two block scales (dm is 0 for types without minimums). Returns 1 when the type has minimums. */
+static int gprep(uint32_t t, const void *blk, int16_t *sc, int16_t *mn, float *d, float *dm) {
+  if (t == CL_T_Q2_K) {
+    const b_q2_K *x = (const b_q2_K *)blk;
+    for (int g = 0; g < 16; g++) { sc[g] = x->scales[g] & 0xF; mn[g] = x->scales[g] >> 4; }
+    *d = cl_f16_to_f32(x->d); *dm = cl_f16_to_f32(x->dmin); return 1;
+  }
+  if (t == CL_T_Q3_K) {
+    const b_q3_K *x = (const b_q3_K *)blk;
+    int8_t s8[16]; q3_scales(x->scales, s8);
+    for (int g = 0; g < 16; g++) { sc[g] = s8[g]; mn[g] = 0; }
+    *d = cl_f16_to_f32(x->d); *dm = 0; return 0;
+  }
+  if (t == CL_T_Q6_K) {
+    const b_q6_K *x = (const b_q6_K *)blk;
+    for (int g = 0; g < 16; g++) { sc[g] = x->scales[g]; mn[g] = 0; }
+    *d = cl_f16_to_f32(x->d); *dm = 0; return 0;
+  }
+  const uint8_t *scales = t == CL_T_Q4_K ? ((const b_q4_K *)blk)->scales : ((const b_q5_K *)blk)->scales;
+  uint8_t s8[8], m8[8];
+  unpack_scales(scales, s8, m8);
+  for (int k = 0; k < 8; k++) { sc[2 * k] = sc[2 * k + 1] = s8[k]; mn[2 * k] = mn[2 * k + 1] = m8[k]; }
+  *d = cl_f16_to_f32(t == CL_T_Q4_K ? ((const b_q4_K *)blk)->d : ((const b_q5_K *)blk)->d);
+  *dm = cl_f16_to_f32(t == CL_T_Q4_K ? ((const b_q4_K *)blk)->dmin : ((const b_q5_K *)blk)->dmin);
+  return 1;
+}
+/* nb inputs against one weight row of nblk blocks: sum[b] = the dot product with input b. */
+static void dotb_gen(uint32_t t, int nblk, const uint8_t *row, const cl_xq *xq, int nb, float *sum) {
+  const int isa = isa_level();
+  const size_t bb = cl_type_bytes(t);
+  for (int b = 0; b < nb; b++) sum[b] = 0;
+  for (int i = 0; i < nblk; i++) {
+    int8_t q[256]; int16_t sc[16], mn[16]; float d, dm;
+    const void *blk = row + (size_t)i * bb;
+    gunpack(isa, t, blk, q);
+    const int has_min = gprep(t, blk, sc, mn, &d, &dm);
+    for (int b = 0; b < nb; b++) {
+      const cl_q8k *y = &xq[b].b[i];
+      const int32_t isum = dot256(isa, q, y->qs, sc);
+      if (has_min) { int32_t m = 0; for (int g = 0; g < 16; g++) m += mn[g] * y->bsums[g]; sum[b] += y->d * (d * (float)isum - dm * (float)m); }
+      else sum[b] += d * y->d * (float)isum;
+    }
+  }
+}
+#endif /* !CL_Q_NEON */
+
 static void do_rows(const cl_mv *j, int r0, int r1) {
   uint32_t t = j->type;
   const cl_xq *xq = float_math() ? NULL : j->xq;
@@ -632,7 +825,11 @@ static void do_rows(const cl_mv *j, int r0, int r1) {
   float *out = j->out;
   const size_t os = j->out_stride;
 #ifdef CL_Q_NEON
-  if (nb > 1 && xq && (t == CL_T_Q2_K || t == CL_T_Q3_K || t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K)) {
+  const int tiled = nb > 1;
+#else
+  const int tiled = nb > 1 || isa_level() > 0;   /* without NEON, a lone token takes this path too when the processor has AVX2 */
+#endif
+  if (tiled && xq && (t == CL_T_Q2_K || t == CL_T_Q3_K || t == CL_T_Q4_K || t == CL_T_Q5_K || t == CL_T_Q6_K)) {
     /* The batch is walked in tiles of CL_TILE tokens: a weight row is re-read for each tile (from the processor's cache, it is only a few KB), but the tile's activations stay in
      * the fastest cache, which is where a large batch used to lose most of its speed. */
     float sums[CL_TILE];
@@ -640,17 +837,20 @@ static void do_rows(const cl_mv *j, int r0, int r1) {
       const int nt = nb - b0 < CL_TILE ? nb - b0 : CL_TILE;
       for (int r = r0; r < r1; r++) {
         const void *row = w + (size_t)r * rb;
+#ifndef CL_Q_NEON
+        dotb_gen(t, j->cols / 256, (const uint8_t *)row, xq + b0, nt, sums);
+#else
         if (t == CL_T_Q2_K) dotb_q2_K(j->cols / 256, (const b_q2_K *)row, xq + b0, nt, sums);
         else if (t == CL_T_Q3_K) dotb_q3_K(j->cols / 256, (const b_q3_K *)row, xq + b0, nt, sums);
         else if (t == CL_T_Q4_K) dotb_q4_K(j->cols / 256, (const b_q4_K *)row, xq + b0, nt, sums);
         else if (t == CL_T_Q5_K) dotb_q5_K(j->cols / 256, (const b_q5_K *)row, xq + b0, nt, sums);
         else dotb_q6_K(j->cols / 256, (const b_q6_K *)row, xq + b0, nt, sums);
+#endif
         for (int b = 0; b < nt; b++) out[(size_t)(b0 + b) * os + r] = sums[b];
       }
     }
     return;
   }
-#endif
   if (t == CL_T_Q2_K && xq) for (int r = r0; r < r1; r++) { const b_q2_K *row = (const b_q2_K *)(const void *)(w + (size_t)r * rb); for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = dot_q2_K(j->cols / 256, row, xq[b].b); }
   else if (t == CL_T_Q3_K && xq) for (int r = r0; r < r1; r++) { const b_q3_K *row = (const b_q3_K *)(const void *)(w + (size_t)r * rb); for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = dot_q3_K(j->cols / 256, row, xq[b].b); }
   else if (t == CL_T_Q4_K && xq) for (int r = r0; r < r1; r++) { const b_q4_K *row = (const b_q4_K *)(const void *)(w + (size_t)r * rb); for (int b = 0; b < nb; b++) out[(size_t)b * os + r] = dot_q4_K(j->cols / 256, row, xq[b].b); }

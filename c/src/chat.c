@@ -5,6 +5,7 @@
 #include "tokenizer.h"
 #include "quant.h"
 #include "vision.h"
+#include "jsongate.h"
 #include <math.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -123,29 +124,52 @@ static char *jstr(const char *j, const char *key, size_t *outlen) {
 static uint64_t rng_s = 88172645463325252ull;
 static double rnd(void) { rng_s ^= rng_s >> 12; rng_s ^= rng_s << 25; rng_s ^= rng_s >> 27; return (double)((rng_s * 2685821657736338717ull) >> 11) / 9007199254740992.0; }
 
-/* temp <= 0: the most likely token. Otherwise: repetition penalty over `recent`, the top_k best, temperature, top_p, then a draw. */
-static int sample_token(float *logits, int n, double temp, int top_k, double top_p, double rep, const int32_t *recent, int nrecent) {
+/* Constrained decoding: `ok` says whether a token may follow (the JSON checker below). It is asked only about tokens that would enter the short list, so a few hundred
+ * calls at most per token, never one per vocabulary entry. */
+typedef int (*tok_ok_fn)(void *ctx, int tok);
+
+/* temp <= 0: the most likely token. Otherwise: repetition penalty over `recent`, the top_k best, temperature, min_p and top_p, then a draw. Returns -1 when `ok` refuses every token. */
+static int sample_token(float *logits, int n, double temp, int top_k, double top_p, double min_p, double rep, const int32_t *recent, int nrecent, tok_ok_fn ok, void *okctx) {
   if (rep > 1.0) for (int i = 0; i < nrecent; i++) { float *l = &logits[recent[i]]; *l = *l > 0 ? (float)(*l / rep) : (float)(*l * rep); }
-  if (temp <= 0) { int b = 0; for (int i = 1; i < n; i++) if (logits[i] > logits[b]) b = i; return b; }
+  if (temp <= 0) {
+    int b = -1;
+    for (int i = 0; i < n; i++) if ((b < 0 || logits[i] > logits[b]) && (!ok || ok(okctx, i))) b = i;
+    return b;
+  }
   if (top_k < 1) top_k = 1;
   if (top_k > 200) top_k = 200;
   int idx[200]; float val[200]; int k = 0;
   for (int i = 0; i < n; i++) {
     float v = logits[i];
     if (k == top_k && v <= val[k - 1]) continue;
+    if (ok && !ok(okctx, i)) continue;
     int p = k < top_k ? k++ : k - 1;
     while (p > 0 && val[p - 1] < v) { val[p] = val[p - 1]; idx[p] = idx[p - 1]; p--; }
     val[p] = v; idx[p] = i;
   }
+  if (k == 0) return -1;
   double mx = val[0], sum = 0, pr[200];
   for (int i = 0; i < k; i++) { pr[i] = exp((val[i] - mx) / temp); sum += pr[i]; }
   double cum = 0; int keep = k;
   for (int i = 0; i < k; i++) { cum += pr[i] / sum; if (cum >= top_p) { keep = i + 1; break; } }
+  if (min_p > 0) for (int i = 1; i < keep; i++) if (pr[i] < min_p * pr[0]) { keep = i; break; }   /* min-p: drop tokens far less likely than the best one */
   double tot = 0;
   for (int i = 0; i < keep; i++) tot += pr[i];
   double r = rnd() * tot;
   for (int i = 0; i < keep; i++) { r -= pr[i]; if (r <= 0) return idx[i]; }
   return idx[keep - 1];
+}
+
+typedef struct { const cl_tok *tok; cl_json st; } json_ctx;
+/* A token is allowed when its text keeps the reply a valid beginning of a JSON object. Control tokens (end of reply included) are not: the reply ends when the object does. */
+static int json_tok_ok(void *vc, int tok) {
+  json_ctx *c = vc;
+  if (cl_tok_is_eog(c->tok, tok)) return 0;
+  char piece[256];
+  int pl = cl_tok_piece(c->tok, tok, piece, sizeof piece);
+  if (pl <= 0) return 0;
+  cl_json t = c->st;
+  return cl_json_feed(&t, piece, (size_t)pl);
 }
 
 /* How many bytes of p[0..n) end on a character boundary: an incomplete UTF-8 sequence at the end is held back until its remaining bytes arrive. */
@@ -395,7 +419,17 @@ int cl_chat_run(cl_chat *c, const char *line) {
     if (!c->have_logits) { ev_error(c, "nothing to continue from: append the prompt first"); goto done; }
     int maxn = (int)jnum(line, "max", 512), top_k = (int)jnum(line, "topK", 40);
     double temp = jnum(line, "temp", 0.7), top_p = jnum(line, "topP", 0.95), rep = jnum(line, "repeat", 1.0);
-    double seed = jnum(line, "seed", -1);
+    double seed = jnum(line, "seed", -1), min_p = jnum(line, "minP", 0);
+    const char *jv = jfind(line, "json");
+    json_ctx jc = {c->tok, {0}};
+    int json_on = jv && *jv == 't', json_complete = 0;
+    if (json_on) {   /* JSON mode: the reply must be one JSON object. jsonPrefix is the part of it already written (a reply being continued). */
+      cl_json_init(&jc.st, 1);
+      size_t pl = 0; char *pre = jstr(line, "jsonPrefix", &pl);
+      if (pre && pl && !cl_json_feed(&jc.st, pre, pl)) json_on = 0;   /* a prefix that is not JSON cannot be continued as JSON: leave the reply unconstrained */
+      free(pre);
+      if (json_on && cl_json_done(&jc.st)) json_complete = 1;   /* already a whole object: nothing more to write */
+    }
     if (seed >= 0) rng_s = (uint64_t)seed * 0x9E3779B97F4A7C15ull + 88172645463325252ull;
     unsigned char pend[8]; int np = 0;
     double t0 = now_s(), tfirst = 0;
@@ -404,10 +438,13 @@ int cl_chat_run(cl_chat *c, const char *line) {
     const char *finish = "length";
     cl_xs_stats s0 = f->xs ? cl_xs_get_stats(f->xs) : (cl_xs_stats){0};
     for (;;) {
-      int b = sample_token(c->logits, f->n_vocab, temp, top_k, top_p, rep, c->hist + (c->nhist > 64 ? c->nhist - 64 : 0), c->nhist > 64 ? 64 : c->nhist);
-      if (cl_tok_is_eog(c->tok, b)) { finish = "stop"; break; }
+      if (json_complete) { finish = "stop"; break; }
+      int b = sample_token(c->logits, f->n_vocab, temp, top_k, top_p, min_p, rep, c->hist + (c->nhist > 64 ? c->nhist - 64 : 0), c->nhist > 64 ? 64 : c->nhist, json_on ? json_tok_ok : NULL, &jc);
+      if (b < 0 || cl_tok_is_eog(c->tok, b)) { finish = "stop"; break; }
       char piece[256];
       int pl = cl_tok_piece(c->tok, b, piece, sizeof piece);
+      int json_done = 0;
+      if (json_on) { cl_json_feed(&jc.st, piece, (size_t)pl); json_done = cl_json_done(&jc.st); }
       unsigned char tmp[272];
       memcpy(tmp, pend, (size_t)np); memcpy(tmp + np, piece, (size_t)pl);
       int total = np + pl, whole = utf8_complete(tmp, total);
@@ -419,6 +456,7 @@ int cl_chat_run(cl_chat *c, const char *line) {
       if (f->pos + 1 >= c->ctx) { finish = "context"; desync = 1; break; }
       if (cl_fwd_step(f, b, c->logits, NULL, err, sizeof err)) { ev_error(c, err); finish = "error"; desync = 1; c->have_logits = 0; break; }
       c->hist[c->nhist++] = b;
+      if (json_done) { finish = "stop"; break; }   /* the object is complete: nothing more may follow it */
       if (gen >= maxn) { finish = "length"; break; }
       if (cancelled(c)) { finish = "cancel"; break; }
     }
