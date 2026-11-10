@@ -1,3 +1,4 @@
+import { memoryAdvice, type MemoryAdvice } from "./memory";
 import { useCallback, useRef, useState } from "react";
 import { EngineSession, type NativeReady } from "@engine/session";
 import { bridge, type ModelInfo } from "./bridge";
@@ -13,6 +14,8 @@ export interface EngineState {
   loadMs?: number;
   /** Pinning was wanted but skipped because the model is large for this machine. */
   unpinned?: boolean;
+  /** Set when the model does not fit comfortably in the memory that is free (see memory.ts). */
+  memory?: MemoryAdvice;
 }
 
 /** Loads a model into the engine and keeps the running session. One model at a time; loading another closes the first. */
@@ -43,11 +46,13 @@ export function useEngine() {
       setState({ status: "ready", model, ready: s.ready, loadMs: performance.now() - t0 });
       return s;
     }
+    let memory: MemoryAdvice | undefined;
+    try { const sys = await bridge.system(); memory = memoryAdvice(model.bytes, settings.ctx, sys.ramBytes, sys.availBytes); } catch { /* no memory information: no advice */ }
     const pin = shouldPin(settings.lock, model.bytes, ramBytes);
     try {
       const { transport, ready } = await bridge.openEngine(model.path, settings.ctx, pin, settings.kv8 === true);
       session.current = new EngineSession(transport, ready);
-      setState({ status: "ready", model, ready, loadMs: performance.now() - t0, ...(settings.lock && !pin ? { unpinned: true } : {}) });
+      setState({ status: "ready", model, ready, loadMs: performance.now() - t0, ...(settings.lock && !pin ? { unpinned: true } : {}), ...(memory ? { memory } : {}) });
       return session.current;
     } catch (e) {
       setState({ status: "error", model, error: e instanceof Error ? e.message : String(e) });

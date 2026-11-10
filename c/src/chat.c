@@ -569,4 +569,5 @@ done:
 }
 
 uint64_t cl_system_ram(void) { return cl_phys_mem(); }
+uint64_t cl_system_avail(void) { return cl_avail_mem(); }
 int cl_system_cores(void) { return cl_ncpu(); }

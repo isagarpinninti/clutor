@@ -7,12 +7,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 extern "C" {
     fn cl_system_ram() -> u64;
+    fn cl_system_avail() -> u64;
     fn cl_system_cores() -> i32;
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SystemInfo { os: String, arch: String, ram_bytes: u64, cores: u32, models_dir: String }
+pub struct SystemInfo { os: String, arch: String, ram_bytes: u64, avail_bytes: u64, cores: u32, models_dir: String }
 
 #[derive(Serialize, Clone)]
 pub struct ModelInfo { path: String, name: String, bytes: u64 }
@@ -47,6 +48,7 @@ pub fn system_info(app: AppHandle) -> Result<SystemInfo, String> {
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         ram_bytes: unsafe { cl_system_ram() },
+        avail_bytes: unsafe { cl_system_avail() },
         cores: unsafe { cl_system_cores() }.max(1) as u32,
         models_dir: models_dir(&app)?.display().to_string(),
     })

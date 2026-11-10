@@ -1,6 +1,6 @@
 import type { NativeReady, Transport } from "@engine/session";
 
-export interface SystemInfo { os: string; arch: string; ramBytes: number; cores: number; modelsDir: string }
+export interface SystemInfo { os: string; arch: string; ramBytes: number; /** Memory free or reclaimable right now (0 when unknown). */ availBytes?: number; cores: number; modelsDir: string }
 export interface FileInfo { path: string; name: string; bytes: number }
 export interface ModelInfo { path: string; name: string; bytes: number; /** Set for a cloud model: the provider's name. The path is then `cloud:<provider id>:<model>`. */ cloud?: string }
 export interface CatalogItem { id: string; name: string; bytes: number; description: string }
