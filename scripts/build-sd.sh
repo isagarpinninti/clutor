@@ -20,6 +20,9 @@ case "$(uname -s)" in
   *) FLAGS+=(-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON) ;;   # a program that runs on any x86-64 processor from the last ten years, not only the build machine's
 esac
 cmake -S "$SRC" -B "$SRC/build" "${FLAGS[@]}" >&2
-cmake --build "$SRC/build" --config Release --target stable-diffusion -j >&2
+# Linux runners have 4 cores and 16 GB: an unbounded -j once starved the hosted runner until it lost contact with the server, so the parallelism is capped there.
+JOBS=()
+[ "$(uname -s)" = "Linux" ] && JOBS=(-j 2) || JOBS=(-j)
+cmake --build "$SRC/build" --config Release --target stable-diffusion "${JOBS[@]}" >&2
 echo "$SRC"
 if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "dir=$SRC" >> "$GITHUB_OUTPUT"; fi
