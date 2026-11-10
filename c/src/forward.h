@@ -47,6 +47,8 @@ typedef struct {
   cl_w tok_embd, output;
   float *out_norm_f;
   cl_fwd_layer *L;
+  int kv8;                 /* the key/value cache holds 8-bit integers with one scale per head and position (CLUTOR_KV=q8): about half the memory of half precision */
+  float *kvs_k, *kvs_v;    /* kv8: the scales, [layer][position][n_head_kv] */
   uint16_t *kc, *vc;       /* the key/value cache, stored as half-precision floats (half the memory and half the traffic of single precision): [layer][position][n_head_kv * head_dim] */
   float *x, *xn, *q, *k, *v, *att, *scores, *logits_buf, *moe, *hg, *hu, *hd, *rl;
   cl_xq xq_e, xq_q, xq_ff, *xq_ffk;       /* the current activation vector, quantized for the integer dot products */
@@ -76,6 +78,8 @@ typedef struct {
   cl_xq *ps_xqe, *ps_xqq, *ps_xqff;
   float *attn_part; size_t attn_part_cap;   /* partial results of the one-token attention, one per (key/value head, chunk of positions) */
   int locked;              /* the mapped weights are pinned in memory */
+  int stream_from;         /* a dense model too big to pin whole: layers before this one are pinned, the rest are read from disk each token (with the next layer asked for ahead of time); n_layer when nothing is streamed */
+  int pinned_layers;
   int auto_stream;         /* the model did not fit in memory and no cache size was given, so the engine chose to stream its experts */
   int pos;                 /* tokens already in the KV cache */
   /* Qwen3-VL: a picture takes many cache entries but advances the rotary position by only the larger side of its token grid, so later text sits at cache position + rope_delta. */
@@ -117,4 +121,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
 #define CL_PF_B 32
 #define CL_PS_B 512   /* the most tokens one batch can hold; 64 are used unless the experts are streamed from disk (a bigger batch then shares each read among more tokens) */
 int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err, size_t errlen);
+/* Feeds n tokens (at most CL_PS_B) and writes the distribution after EACH of them (n * n_vocab floats). For checking a guess of the next few tokens in one pass: the caller then
+ * takes back the tokens that were wrong by setting f->pos. Not for architectures with a recurrent state (hybrid): they cannot take tokens back. */
+int cl_fwd_verify(cl_fwd *f, const int *tokens, int n, float *logits_all, char *err, size_t errlen);
 #endif

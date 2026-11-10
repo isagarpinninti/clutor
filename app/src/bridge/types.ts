@@ -114,7 +114,7 @@ export interface Bridge {
   scanFiles(folders?: string[]): Promise<FileInfo[]>;
   catalog(): Promise<CatalogItem[]>;
   download(id: string, onProgress: (p: DownloadProgress) => void): Promise<void>;
-  openEngine(path: string, ctx: number, lock: boolean): Promise<OpenEngine>;
+  openEngine(path: string, ctx: number, lock: boolean, kv8?: boolean): Promise<OpenEngine>;
   revealModels(): Promise<void>;
   /** A desktop notification (asks permission the first time). Silent if the system refuses. */
   notify(title: string, body: string): Promise<void>;

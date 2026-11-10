@@ -157,11 +157,11 @@ export const tauriBridge: Bridge = {
     const un = await listen<DownloadProgress>("download-progress", (e) => { if (e.payload.id === id) onProgress(e.payload); });
     try { await invoke("download_model", { id }); } finally { un(); }
   },
-  async openEngine(path, ctx, lock): Promise<OpenEngine> {
+  async openEngine(path, ctx, lock, kv8): Promise<OpenEngine> {
     const transport = new TauriTransport();
     await transport.attach();
     try {
-      const ready = await invoke<string>("engine_open", { path, ctx, lock });
+      const ready = await invoke<string>("engine_open", { path, ctx, lock, kv8: kv8 === true });
       return { transport, ready: JSON.parse(ready) as NativeReady };
     } catch (e) {
       await transport.close();

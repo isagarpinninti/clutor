@@ -14,6 +14,8 @@ export interface Settings {
   /** The longest answer a background job may write, in tokens. */
   jobTokens: number;
   lock: boolean;
+  /** Keep the attention cache as 8-bit numbers: about half the memory for a long conversation, at a tiny cost in speed. */
+  kv8?: boolean;
   /** Chat looks things up on the web before answering. */
   browse: boolean;
   /** The model used last time: it is selected again when the app opens (and loaded when you first need it). */

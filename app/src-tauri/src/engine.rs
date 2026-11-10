@@ -64,7 +64,7 @@ fn find_mmproj(model: &str) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn engine_open(app: AppHandle, state: State<'_, EngineState>, path: String, ctx: u32, lock: bool) -> Result<String, String> {
+pub async fn engine_open(app: AppHandle, state: State<'_, EngineState>, path: String, ctx: u32, lock: bool, kv8: Option<bool>) -> Result<String, String> {
     let old = state.0.lock().map_err(|e| e.to_string())?.take();   // the lock is released here, before any await
     if let Some(old) = old {
         tauri::async_runtime::spawn_blocking(move || stop(old)).await.map_err(|e| e.to_string())?;
@@ -76,6 +76,7 @@ pub async fn engine_open(app: AppHandle, state: State<'_, EngineState>, path: St
     let mut args = vec![path, "--ctx".to_string(), ctx.to_string()];
     if let Some(m) = mmproj { args.push("--mmproj".to_string()); args.push(m); }
     if lock { args.push("--lock".to_string()); }
+    if kv8.unwrap_or(false) { args.push("--kv".to_string()); args.push("q8".to_string()); }
     let ctx_box = Box::new(Ctx { app, ready: Mutex::new(Some(ready_tx.clone())) });
     let worker = std::thread::spawn(move || {
         let ctx_ptr = Box::into_raw(ctx_box);

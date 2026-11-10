@@ -173,6 +173,7 @@ export function SettingsDialog({ settings, onChange, system, modelName, servers,
                   </Row>
                 )}
                 <Row title="Context window" hint={ctxHint(settings.ctx, engine)}><Select label="Context window" value={settings.ctx} options={CTX_OPTIONS.map((n) => ({ id: n, label: `${n >= 1024 ? `${Math.round(n / 1024)}K` : n} tokens` }))} onChange={(v) => set("ctx", v)} /></Row>
+                <Row title="Compact attention cache" hint="Stores the conversation memory as 8-bit numbers: about half the memory for long chats, a few percent slower. Takes effect when the model loads next."><Switch on={settings.kv8 === true} onChange={(v) => set("kv8", v)} label="Compact attention cache" /></Row>
                 <Row title="Keep the model in memory" hint="Much faster when other apps are open. Models over 40% of your RAM are never pinned."><Switch on={settings.lock} onChange={(v) => set("lock", v)} label="Keep the model in memory" /></Row>
               </>
             ) : null}

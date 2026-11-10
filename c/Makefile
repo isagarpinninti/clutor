@@ -77,6 +77,8 @@ golden: $(BIN) golden-files
 # The chat protocol (the terminal UI's way into the engine) on every architecture, checked against `generate`.
 chat-test: $(BIN) golden-files
 	for g in $(GOLDEN_GGUF) $(GOLDEN_Q3) $(GOLDEN_GR) $(GOLDEN_Q2) $(GOLDEN_LL) $(GOLDEN_Q35) $(GOLDEN_VL); do echo "== $$g"; python3 test/chat_protocol.py $(BIN) $$g || exit 1; done
+	# the 8-bit key/value cache must run the same protocol (its numbers differ slightly from half precision, so only the behaviour is checked)
+	for g in $(GOLDEN_LL) $(GOLDEN_Q3); do echo "== $$g (CLUTOR_KV=q8)"; CLUTOR_KV=q8 python3 test/chat_protocol.py $(BIN) $$g || exit 1; done
 golden-paths: $(BIN) golden-files
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_GGUF)
 	python3 test/tiny_olmoe.py check $(BIN) $(GOLDEN_Q3) --arch qwen3moe

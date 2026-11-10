@@ -160,6 +160,24 @@ static int sample_token(float *logits, int n, double temp, int top_k, double top
   return idx[keep - 1];
 }
 
+/* Prompt lookup: guess the next tokens from the text itself. If the last `ngram` tokens (the history and `last`) occurred before, the tokens that followed them then are the guess.
+ * Code and edited text repeat themselves a lot, so the guess is often right, and a right guess is verified in one pass over the weights instead of one pass per token. */
+static int lookup_draft(const int32_t *h, int n, int last, int32_t *out, int kmax, int ngram) {
+  const int m = n + 1;
+  if (m < ngram + 1) return 0;
+  #define SEQ(i) ((i) == n ? last : h[i])
+  for (int i = m - ngram - 1; i >= 0; i--) {
+    int ok = 1;
+    for (int j = 0; j < ngram && ok; j++) ok = SEQ(i + j) == SEQ(m - ngram + j);
+    if (!ok) continue;
+    int k = 0;
+    for (int p = i + ngram; p < m && k < kmax; p++) out[k++] = SEQ(p);
+    return k;
+  }
+  #undef SEQ
+  return 0;
+}
+
 typedef struct { const cl_tok *tok; cl_json st; } json_ctx;
 /* A token is allowed when its text keeps the reply a valid beginning of a JSON object. Control tokens (end of reply included) are not: the reply ends when the object does. */
 static int json_tok_ok(void *vc, int tok) {
@@ -252,6 +270,7 @@ cl_chat *cl_chat_open(int argc, const char *const *argv, cl_chat_emit emit, void
   if (ctx < 64) ctx = 64;
   cl_fwd_opts fo = cl_fwd_opts_from_args(argc, argv, err, errlen);
   if ((int)fo.policy == -1) { free(c); return NULL; }
+  { const char *kv = arg_of(argc, argv, "--kv"); if (kv && !strcmp(kv, "q8")) cl_setenv_("CLUTOR_KV", "q8"); }
   if (cl_fwd_open(&c->f, argv[0], ctx, &fo, err, errlen)) { cl_tok_free(c->tok); free(c->tokmap); free(c); return NULL; }
   if (c->f.n_ctx_max > 0 && ctx > c->f.n_ctx_max) ctx = c->f.n_ctx_max;   /* the model's own limit; the caller reads the real size from the ready event */
   c->ctx = ctx;
@@ -268,7 +287,7 @@ cl_chat *cl_chat_open(int argc, const char *const *argv, cl_chat_emit emit, void
   if (!c->logits || !c->hist) { snprintf(err, errlen, "out of memory"); cl_chat_close(c); return NULL; }
   cl_str tpl = {0};
   cl_meta_str(&c->meta, "tokenizer.chat_template", &tpl);
-  ob_fmt(&c->out, "{\"ev\":\"ready\",\"arch\":\"%s\",\"name\":\"%s\",\"nCtx\":%d,\"nVocab\":%d,\"nLayer\":%d,\"threads\":%d,\"streaming\":%s,\"autoStream\":%s,\"locked\":%s,\"addBos\":%s,\"nCtxTrain\":%d,\"kvBytesPerToken\":%zu,\"vision\":%s,\"template\":", c->f.arch, c->f.model.name, ctx, c->f.n_vocab, c->f.n_layer, cl_get_threads(), c->f.xs ? "true" : "false", c->f.auto_stream ? "true" : "false", c->f.locked ? "true" : "false", cl_tok_add_bos(c->tok) ? "true" : "false", c->f.n_ctx_train, (size_t)4 * (size_t)c->f.n_kv_layers * (size_t)c->f.n_kvw, c->vis ? "true" : "false");
+  ob_fmt(&c->out, "{\"ev\":\"ready\",\"arch\":\"%s\",\"name\":\"%s\",\"nCtx\":%d,\"nVocab\":%d,\"nLayer\":%d,\"threads\":%d,\"streaming\":%s,\"autoStream\":%s,\"locked\":%s,\"addBos\":%s,\"nCtxTrain\":%d,\"kvBytesPerToken\":%zu,\"vision\":%s,\"pinnedLayers\":%d,\"template\":", c->f.arch, c->f.model.name, ctx, c->f.n_vocab, c->f.n_layer, cl_get_threads(), c->f.xs ? "true" : "false", c->f.auto_stream ? "true" : "false", c->f.locked ? "true" : "false", cl_tok_add_bos(c->tok) ? "true" : "false", c->f.n_ctx_train, c->f.kv8 ? (size_t)2 * (size_t)c->f.n_kv_layers * ((size_t)c->f.n_kvw + 4 * (size_t)c->f.n_head_kv) : (size_t)4 * (size_t)c->f.n_kv_layers * (size_t)c->f.n_kvw, c->vis ? "true" : "false", c->f.stream_from < c->f.n_layer ? c->f.pinned_layers : -1);
   ob_json(&c->out, tpl.p ? tpl.p : "", tpl.p ? (int)(tpl.len < 12000 ? tpl.len : 12000) : 0);
   ob_put(&c->out, "}", 1);
   flush_event(c);
@@ -437,9 +456,17 @@ int cl_chat_run(cl_chat *c, const char *line) {
     int32_t *gids = malloc((size_t)(maxn > 0 ? maxn : 1) * sizeof *gids);
     const char *finish = "length";
     cl_xs_stats s0 = f->xs ? cl_xs_get_stats(f->xs) : (cl_xs_stats){0};
+    /* Speculation by prompt lookup (see lookup_draft). Off unless asked for ("spec":1 or CLUTOR_SPEC=1): it gives exactly the same tokens, but in the measurements it was not faster (see the changelog). */
+    enum { SPEC_K = 6, SPEC_N = 3 };
+    const char *sv = jfind(line, "spec"); const char *se = getenv("CLUTOR_SPEC");
+    const int spec_on = !f->hybrid && ((sv && *sv == '1') || (se && *se == '1')) && f->ps_cap >= SPEC_K + 1;
+    float *Lall = NULL;
+    int32_t q[SPEC_K + 2]; int qfed[SPEC_K + 2], qn = 0, qi = 0;   /* tokens already decided, to be emitted next: accepted guesses (already in the model) and the token that ended the guess (not yet) */
+    uint64_t sp_drafted = 0, sp_accepted = 0, sp_runs = 0; int sp_miss = 0, sp_pause = 0;
     for (;;) {
       if (json_complete) { finish = "stop"; break; }
-      int b = sample_token(c->logits, f->n_vocab, temp, top_k, top_p, min_p, rep, c->hist + (c->nhist > 64 ? c->nhist - 64 : 0), c->nhist > 64 ? 64 : c->nhist, json_on ? json_tok_ok : NULL, &jc);
+      int already_fed = 0;
+      int b = qi < qn ? (already_fed = qfed[qi], q[qi++]) : sample_token(c->logits, f->n_vocab, temp, top_k, top_p, min_p, rep, c->hist + (c->nhist > 64 ? c->nhist - 64 : 0), c->nhist > 64 ? 64 : c->nhist, json_on ? json_tok_ok : NULL, &jc);
       if (b < 0 || cl_tok_is_eog(c->tok, b)) { finish = "stop"; break; }
       char piece[256];
       int pl = cl_tok_piece(c->tok, b, piece, sizeof piece);
@@ -453,17 +480,74 @@ int cl_chat_run(cl_chat *c, const char *line) {
       if (gen < maxn) gids[gen] = b;
       gen++;
       if (!tfirst) tfirst = now_s();
+      if (already_fed) {   /* an accepted guess: the model already holds it (and the history was extended when it was accepted) */
+        if (json_done) { finish = "stop"; break; }
+        if (gen >= maxn) { finish = "length"; break; }
+        if (cancelled(c)) { finish = "cancel"; break; }
+        continue;
+      }
       if (f->pos + 1 >= c->ctx) { finish = "context"; desync = 1; break; }
-      if (cl_fwd_step(f, b, c->logits, NULL, err, sizeof err)) { ev_error(c, err); finish = "error"; desync = 1; c->have_logits = 0; break; }
-      c->hist[c->nhist++] = b;
+      /* a guess for what follows this token, if the text has repeated itself and the guess has been paying off */
+      int32_t dr[SPEC_K]; int k = 0;
+      if (spec_on && !json_done && gen < maxn) {
+        if (sp_pause > 0) sp_pause--;
+        else {
+          k = lookup_draft(c->hist, c->nhist, b, dr, SPEC_K, SPEC_N);
+          if (k > maxn - gen - 1) k = maxn - gen - 1;
+          if (k > c->ctx - f->pos - 3) k = c->ctx - f->pos - 3;
+          if (k < 1) k = 0;
+          for (int i = 0; i < k; i++) if (cl_tok_is_eog(c->tok, dr[i])) { k = i; break; }
+        }
+      }
+      if (k == 0) {
+        if (cl_fwd_step(f, b, c->logits, NULL, err, sizeof err)) { ev_error(c, err); finish = "error"; desync = 1; c->have_logits = 0; break; }
+        c->hist[c->nhist++] = b;
+      } else {
+        if (!Lall) Lall = malloc((size_t)(SPEC_K + 1) * (size_t)f->n_vocab * sizeof *Lall);
+        int batch[SPEC_K + 1]; batch[0] = b; for (int i = 0; i < k; i++) batch[i + 1] = dr[i];
+        if (!Lall) { snprintf(err, sizeof err, "out of memory"); ev_error(c, err); finish = "error"; desync = 1; c->have_logits = 0; break; }
+        const int pos0 = f->pos, nh0 = c->nhist;
+        c->hist[c->nhist++] = b;
+        if (cl_fwd_verify(f, batch, k + 1, Lall, err, sizeof err)) { ev_error(c, err); finish = "error"; desync = 1; c->have_logits = 0; break; }
+        /* walk the distributions: the token drawn after each one either is the guessed token (kept, it is already in the model) or is not (it ends the guess and is emitted next) */
+        json_ctx jw = jc;
+        qn = qi = 0; int acc = 0;
+        for (int i = 0; i <= k; i++) {
+          memcpy(c->logits, Lall + (size_t)i * f->n_vocab, (size_t)f->n_vocab * sizeof *Lall);
+          const int sm = sample_token(c->logits, f->n_vocab, temp, top_k, top_p, min_p, rep, c->hist + (c->nhist > 64 ? c->nhist - 64 : 0), c->nhist > 64 ? 64 : c->nhist, json_on ? json_tok_ok : NULL, &jw);
+          if (i < k && sm == dr[i]) {
+            q[qn] = sm; qfed[qn++] = 1; c->hist[c->nhist++] = sm; acc++;
+            if (json_on) { char pc[256]; int pn = cl_tok_piece(c->tok, sm, pc, sizeof pc); if (pn > 0) cl_json_feed(&jw.st, pc, (size_t)pn); }
+            continue;
+          }
+          q[qn] = sm; qfed[qn++] = 0;   /* a token not yet in the model (or -1 when the constraint refused everything: the loop stops on it) */
+          break;
+        }
+        f->pos = pos0 + 1 + acc;   /* take back what was fed beyond the accepted guesses */
+        (void)nh0;
+        sp_drafted += (uint64_t)k; sp_accepted += (uint64_t)acc; sp_runs++;
+        if (acc == 0) { if (++sp_miss >= 3) { sp_pause = 16; sp_miss = 0; } } else sp_miss = 0;
+      }
       if (json_done) { finish = "stop"; break; }   /* the object is complete: nothing more may follow it */
       if (gen >= maxn) { finish = "length"; break; }
       if (cancelled(c)) { finish = "cancel"; break; }
     }
+    /* tokens that were accepted but never emitted (the reply ended first) are taken back, so the model holds exactly what was sent */
+    if (qi < qn) {
+      for (int j = qi; j < qn; j++) if (qfed[j]) { f->pos--; c->nhist--; }
+      /* the logits held now belong to a different position: run the last token that stays once more to get the right ones (a later "generate" may continue from them) */
+      if (finish[0] != 'e' && c->nhist > 0 && f->pos > 0) {
+        f->pos--; c->nhist--;
+        if (cl_fwd_step(f, c->hist[c->nhist], c->logits, NULL, err, sizeof err)) { ev_error(c, err); desync = 1; c->have_logits = 0; }
+        else c->nhist++;
+      }
+    }
+    free(Lall);
     if (np > 0) { ob_put(&c->out, "{\"ev\":\"t\",\"s\":", 14); ob_json(&c->out, (const char *)pend, np); ob_put(&c->out, "}", 1); flush_event(c); }
     double secs = now_s() - t0;
     double dec = tfirst && gen > 1 ? now_s() - tfirst : 0;
     ob_fmt(&c->out, "{\"ev\":\"done\",\"finish\":\"%s\",\"tokens\":%d,\"seconds\":%.3f,\"tokensPerSecond\":%.3f,\"pos\":%d,\"desync\":%s", finish, gen, secs, dec > 0 ? (gen - 1) / dec : (secs > 0 ? gen / secs : 0.0), f->pos, desync ? "true" : "false");
+    if (sp_runs) ob_fmt(&c->out, ",\"spec\":{\"runs\":%llu,\"drafted\":%llu,\"accepted\":%llu}", (unsigned long long)sp_runs, (unsigned long long)sp_drafted, (unsigned long long)sp_accepted);
     ob_put(&c->out, ",\"ids\":[", 8);
     for (int i = 0; i < gen && i < maxn; i++) ob_fmt(&c->out, "%s%d", i ? "," : "", gids[i]);
     ob_put(&c->out, "]", 1);

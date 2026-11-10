@@ -106,6 +106,7 @@ int cl_should_lock(uint64_t file_bytes, uint64_t ram, uint64_t avail) {
   return 1;
 }
 
+static void partial_lock(cl_fwd *f);
 int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts, char *err, size_t errlen) {
   memset(f, 0, sizeof *f);
   if (cl_model_open(&f->model, path, err, errlen)) return 1;
@@ -122,7 +123,7 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   f->map = cl_map_ro(fd, f->map_size);
   cl_close(fd);
   if (!f->map) { snprintf(err, errlen, "cannot map %s", path); goto fail; }
-  if (opts && opts->lock && !opts->cache_bytes && cl_should_lock((uint64_t)f->map_size, cl_phys_mem(), cl_avail_mem())) f->locked = cl_lock_memory(f->map, f->map_size);   /* reads the whole file in, so it can take seconds; failing just leaves the model evictable */
+  if (opts && opts->lock && !opts->cache_bytes && !getenv("CLUTOR_LOCK_MB") && cl_should_lock((uint64_t)f->map_size, cl_phys_mem(), cl_avail_mem())) f->locked = cl_lock_memory(f->map, f->map_size);   /* reads the whole file in, so it can take seconds; failing just leaves the model evictable */
   if (cl_meta_parse(&f->meta, f->map, f->map_size, err, errlen)) goto fail;
   REQ_U("embedding_length", f->n_embd);
   REQ_U("attention.head_count", f->n_head);
@@ -240,7 +241,9 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
   if (!f->hybrid) f->n_kv_layers = f->n_layer;
   size_t kvn = (size_t)f->n_kv_layers * f->n_ctx_max * f->n_kvw;
   size_t E = (size_t)f->n_embd;
-  f->kc = calloc(kvn, sizeof(uint16_t)); f->vc = calloc(kvn, sizeof(uint16_t));
+  { const char *e = getenv("CLUTOR_KV"); f->kv8 = !f->hybrid && e && !strcmp(e, "q8"); }   /* the hybrid architecture's attention layers keep the half-precision cache */
+  f->kc = calloc(kvn, f->kv8 ? 1 : sizeof(uint16_t)); f->vc = calloc(kvn, f->kv8 ? 1 : sizeof(uint16_t));
+  if (f->kv8) { size_t ns = (size_t)f->n_kv_layers * f->n_ctx_max * f->n_head_kv; f->kvs_k = calloc(ns, 4); f->kvs_v = calloc(ns, 4); if (!f->kvs_k || !f->kvs_v) { snprintf(err, errlen, "out of memory"); goto fail; } }
   f->x = calloc(E, 4); f->xn = calloc(E, 4); f->q = calloc((size_t)f->n_q, 4); f->k = calloc((size_t)f->n_kvw, 4); f->v = calloc((size_t)f->n_kvw, 4); f->att = calloc((size_t)f->n_q, 4);
   f->scores = calloc((size_t)f->n_ctx_max, 4); f->moe = calloc(E, 4); f->hg = calloc((size_t)f->n_ff_exp * (size_t)(f->n_used + NU), 4); f->hu = calloc((size_t)f->n_ff_exp * (size_t)(f->n_used + NU), 4); f->hd = calloc(E * (size_t)(f->n_used + NU), 4);
   f->rl = calloc((size_t)f->n_expert + 1, 4); f->rlogit = calloc((size_t)f->n_expert + 1, 4);
@@ -306,10 +309,47 @@ int cl_fwd_open(cl_fwd *f, const char *path, int n_ctx, const cl_fwd_opts *opts,
     if (!f->pred_sel) { snprintf(err, errlen, "out of memory"); goto fail; }
     for (int i = 0; i < f->n_layer * f->n_used; i++) f->prev_sel[i] = f->pred_sel[i] = -1;
   }
+  f->stream_from = f->n_layer;
+  { const char *pl = getenv("CLUTOR_PARTIAL_LOCK"); if (!f->locked && !f->xs && opts && opts->lock && !opts->cache_bytes && !(pl && *pl == '0')) partial_lock(f); }
   return 0;
 fail:
   cl_fwd_close(f);
   return 1;
+}
+
+/* ---- A dense model bigger than memory ----
+ * Every token reads every weight once, so under memory pressure the system's least-recently-used eviction is the worst case: it throws out exactly the pages that are needed next, and
+ * nothing is ever found in memory. Pinning the first layers (as many as fit comfortably) leaves the system only the rest to evict and reload, so each token reads (model size - pinned
+ * bytes) from disk instead of the whole model, and the next layer is asked for while this one computes. */
+static int layer_tensors(const cl_fwd_layer *y, const cl_w **w) {
+  const cl_w *all[] = {&y->wq, &y->wk, &y->wv, &y->wo, &y->gate, &y->up, &y->down, &y->attn_qkv, &y->attn_gate, &y->ssm_out};
+  int n = 0;
+  for (size_t i = 0; i < sizeof all / sizeof *all; i++) if (all[i]->p && all[i]->rows > 0 && all[i]->cols > 0) w[n++] = all[i];
+  return n;
+}
+static uint64_t tensor_bytes(const cl_w *w) { return (uint64_t)w->rows * cl_row_bytes(w->type, (uint64_t)w->cols); }
+static void prefetch_layer(const cl_fwd *f, int l) {
+  const cl_w *w[10]; const int n = layer_tensors(&f->L[l], w);
+  for (int i = 0; i < n; i++) cl_advise_willneed(w[i]->p, (size_t)tensor_bytes(w[i]));
+}
+static void partial_lock(cl_fwd *f) {
+  if (!(f->dense || f->hybrid)) return;   /* a mixture of experts streams its experts instead */
+  const uint64_t ram = cl_phys_mem(), avail = cl_avail_mem();
+  uint64_t budget = avail ? avail / 100 * 60 : ram / 100 * 40;
+  if (ram && budget > ram / 100 * 50) budget = ram / 100 * 50;
+  { const char *e = getenv("CLUTOR_LOCK_MB"); if (e && atoll(e) > 0) budget = (uint64_t)atoll(e) << 20; }   /* for tests: pin only this much */
+  const uintptr_t pg = (uintptr_t)cl_page_size();
+  uint64_t used = 0; int l = 0;
+  for (; l < f->n_layer; l++) {
+    const cl_w *w[10]; const int n = layer_tensors(&f->L[l], w);
+    uint64_t lb = 0; for (int i = 0; i < n; i++) lb += tensor_bytes(w[i]);
+    if (used + lb > budget) break;
+    int ok = 1;
+    for (int i = 0; i < n && ok; i++) { const uintptr_t a = (uintptr_t)w[i]->p & ~(pg - 1), e = ((uintptr_t)w[i]->p + (size_t)tensor_bytes(w[i]) + pg - 1) & ~(pg - 1); ok = cl_lock_memory((void *)a, (size_t)(e - a)); }
+    if (!ok) break;
+    used += lb;
+  }
+  f->pinned_layers = l; f->stream_from = l;
 }
 
 /* CLUTOR_PROFILE=1: where the time of the batched prompt path goes, printed to stderr after each prompt (for finding the next thing to speed up). Costs two clock reads per section. */
@@ -349,7 +389,7 @@ void cl_fwd_close(cl_fwd *f) {
     free(f->ps_xqe); free(f->ps_xqq); free(f->ps_xqff);
     free(f->ps_x); free(f->ps_xn); free(f->ps_xg); free(f->ps_q); free(f->ps_k); free(f->ps_v); free(f->ps_att); free(f->ps_hd); free(f->ps_moe); free(f->ps_hg); free(f->ps_hu); free(f->ps_rg); free(f->ps_wt); free(f->ps_hde); free(f->ps_sel);
   }
-  free(f->attn_part); free(f->logits_buf); free(f->kc); free(f->vc); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
+  free(f->attn_part); free(f->logits_buf); free(f->kc); free(f->vc); free(f->kvs_k); free(f->kvs_v); free(f->x); free(f->xn); free(f->q); free(f->k); free(f->v); free(f->att); free(f->scores); free(f->moe); free(f->hg); free(f->hu); free(f->hd); free(f->rl); free(f->rlogit);
   cl_xq_free(&f->xq_e); cl_xq_free(&f->xq_q); cl_xq_free(&f->xq_ff);
   if (f->xq_ffk) for (int k = 0; k < f->n_used; k++) cl_xq_free(&f->xq_ffk[k]);
   free(f->xq_ffk);
@@ -481,6 +521,54 @@ static void axpy_h(float *o, const uint16_t *v, float p, int n) {
   for (; i < n; i++) o[i] += p * cl_f16_to_f32(v[i]);
 }
 
+/* ---- Optional 8-bit key/value cache (CLUTOR_KV=q8): each head's key and value vector is stored as int8 with its own scale (the largest absolute value / 127), so a long context takes about half
+ * the memory of the half-precision cache. The error is that of 8-bit rounding per vector (about 0.4% of the largest component). ---- */
+static void kv8_quant(int8_t *dst, float *scale, const float *src, int n) {
+  float amax = 0;
+  for (int i = 0; i < n; i++) { const float a = fabsf(src[i]); if (a > amax) amax = a; }
+  const float d = amax / 127.0f, id = d != 0.0f ? 1.0f / d : 0.0f;
+  *scale = d;
+  for (int i = 0; i < n; i++) dst[i] = (int8_t)lrintf(src[i] * id);
+}
+static float dot_q8(const float *a, const int8_t *b, int n) {
+  int i = 0; float t = 0;
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+  float32x4_t s0 = vdupq_n_f32(0), s1 = s0;
+  for (; i + 8 <= n; i += 8) {
+    const int16x8_t w = vmovl_s8(vld1_s8(b + i));
+    s0 = vfmaq_f32(s0, vld1q_f32(a + i), vcvtq_f32_s32(vmovl_s16(vget_low_s16(w))));
+    s1 = vfmaq_f32(s1, vld1q_f32(a + i + 4), vcvtq_f32_s32(vmovl_high_s16(w)));
+  }
+  t = vaddvq_f32(vaddq_f32(s0, s1));
+#else
+  float s[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+  for (; i + 8 <= n; i += 8) for (int u = 0; u < 8; u++) s[u] += a[i + u] * (float)b[i + u];
+  t = ((s[0] + s[1]) + (s[2] + s[3])) + ((s[4] + s[5]) + (s[6] + s[7]));
+#endif
+  for (; i < n; i++) t += a[i] * (float)b[i];
+  return t;
+}
+static void axpy_q8(float *o, const int8_t *v, float p, int n) {
+  int i = 0;
+#if defined(__aarch64__) && !defined(CL_FORCE_SCALAR)
+  for (; i + 8 <= n; i += 8) {
+    const int16x8_t w = vmovl_s8(vld1_s8(v + i));
+    vst1q_f32(o + i, vfmaq_n_f32(vld1q_f32(o + i), vcvtq_f32_s32(vmovl_s16(vget_low_s16(w))), p));
+    vst1q_f32(o + i + 4, vfmaq_n_f32(vld1q_f32(o + i + 4), vcvtq_f32_s32(vmovl_high_s16(w)), p));
+  }
+#endif
+  for (; i < n; i++) o[i] += p * (float)v[i];
+}
+/* Stores one position's key and value (n_kvw floats each) into layer l's cache, in whichever format the cache has. */
+static void kv_put(cl_fwd *f, int l, int pos, const float *k, const float *v) {
+  const size_t KW = (size_t)f->n_kvw, row = (size_t)l * f->n_ctx_max + pos;
+  if (!f->kv8) { kv_store(f->kc + row * KW, k, f->n_kvw); kv_store(f->vc + row * KW, v, f->n_kvw); return; }
+  for (int h = 0; h < f->n_head_kv; h++) {
+    kv8_quant((int8_t *)f->kc + row * KW + (size_t)h * f->head_dim, &f->kvs_k[row * (size_t)f->n_head_kv + h], k + (size_t)h * f->head_dim, f->head_dim);
+    kv8_quant((int8_t *)f->vc + row * KW + (size_t)h * f->head_dim, &f->kvs_v[row * (size_t)f->n_head_kv + h], v + (size_t)h * f->head_dim, f->head_dim);
+  }
+}
+
 /* A float dot product with eight independent running sums, so the compiler can use the vector unit (a single sum in order cannot be vectorised without changing the answer). Both
  * the one-token path and the batched prompt path use it for the router, so they still agree to the last bit. */
 static float dotf(const float *a, const float *b, int n) {
@@ -503,6 +591,20 @@ static void attn_task(void *vp, int i) {
   float *sc = scores_for(pos + 1);
   const int kvo = (h / GROUP) * hd;
   float mx = -INFINITY;
+  if (f->kv8) {
+    const int8_t *kb = (const int8_t *)f->kc, *vb = (const int8_t *)f->vc;
+    const int hk = h / GROUP, KVH = f->n_head_kv;
+    for (int t = 0; t <= pos; t++) {
+      const size_t row = (size_t)a->l * f->n_ctx_max + t;
+      sc[t] = dot_q8(qh, kb + row * KW + kvo, hd) * f->kvs_k[row * KVH + hk] * f->attn_scale;
+      if (sc[t] > mx) mx = sc[t];
+    }
+    float sum = 0;
+    for (int t = 0; t <= pos; t++) { sc[t] = expf(sc[t] - mx); sum += sc[t]; }
+    memset(oh, 0, (size_t)hd * 4);
+    for (int t = 0; t <= pos; t++) { const size_t row = (size_t)a->l * f->n_ctx_max + t; axpy_q8(oh, vb + row * KW + kvo, sc[t] / sum * f->kvs_v[row * KVH + hk], hd); }
+    return;
+  }
   for (int t = 0; t <= pos; t++) {
     const uint16_t *kt = f->kc + ((size_t)a->l * f->n_ctx_max + t) * KW + kvo;
     sc[t] = dotf_h(qh, kt, hd) * f->attn_scale;
@@ -570,6 +672,21 @@ static void gattn_chunk(void *vp, int i) {
   float sc[ATT_MAXGROUP][ATT_CHUNK];
   const float *q[ATT_MAXGROUP];
   for (int j = 0; j < GROUP; j++) { q[j] = a->Q + (size_t)(g * GROUP + j) * hd; m[j] = -INFINITY; lsum[j] = 0; }
+  if (f->kv8) {   /* 8-bit cache: the same two passes, one position at a time */
+    const int8_t *kb = (const int8_t *)f->kc + ((size_t)a->l * f->n_ctx_max) * KW + (size_t)g * hd, *vb = (const int8_t *)f->vc + ((size_t)a->l * f->n_ctx_max) * KW + (size_t)g * hd;
+    const float *ksc = f->kvs_k + (size_t)a->l * f->n_ctx_max * f->n_head_kv + g, *vsc = f->kvs_v + (size_t)a->l * f->n_ctx_max * f->n_head_kv + g;
+    for (int tt = 0; tt < n; tt++) {
+      const size_t at = (size_t)(t0 + tt);
+      for (int j = 0; j < GROUP; j++) { const float sv = dot_q8(q[j], kb + at * KW, hd) * ksc[at * f->n_head_kv] * f->attn_scale; sc[j][tt] = sv; if (sv > m[j]) m[j] = sv; }
+    }
+    memset(o, 0, (size_t)GROUP * hd * sizeof(float));
+    for (int j = 0; j < GROUP; j++) { float sum = 0; for (int tt = 0; tt < n; tt++) { const float e = expf(sc[j][tt] - m[j]); sc[j][tt] = e; sum += e; } lsum[j] = sum; }
+    for (int tt = 0; tt < n; tt++) {
+      const size_t at = (size_t)(t0 + tt);
+      for (int j = 0; j < GROUP; j++) axpy_q8(o + (size_t)j * hd, vb + at * KW, sc[j][tt] * vsc[at * f->n_head_kv], hd);
+    }
+    return;
+  }
   int t = 0;
 #ifdef CL_ATT_BLOCK4
   if ((hd & 7) == 0) for (; t + 4 <= n; t += 4) {
@@ -727,6 +844,7 @@ static int run_q35(cl_fwd *f, const int *tok, int nb, float *logits) {
   for (int b = 0; b < nb; b++) cl_dequant_row(f->tok_embd.type, f->tok_embd.p + (size_t)tok[b] * cl_row_bytes(f->tok_embd.type, (uint64_t)E), X + (size_t)b * E, E);
   for (int l = 0; l < f->n_layer; l++) {
     cl_fwd_layer *y = &f->L[l];
+    if (l + 1 >= f->stream_from && l + 1 < f->n_layer) prefetch_layer(f, l + 1);   /* a layer that is not pinned: ask for the next one while this one computes */
     for (int b = 0; b < nb; b++) { rmsnorm(XN + (size_t)b * E, X + (size_t)b * E, y->attn_norm_f, E, f->rms_eps); cl_xq_quantize(&f->pf_xqe[b], XN + (size_t)b * E); }
     if (y->recurrent) {
       { cl_mv j[4] = {mvb(&y->attn_qkv, XN, E, f->pf_xqe, f->pf_qkv, nb), mvb(&y->attn_gate, XN, E, f->pf_xqe, f->pf_z, nb), mvb(&y->ssm_beta, XN, E, f->pf_xqe, f->pf_ab, nb), mvb(&y->ssm_alpha, XN, E, f->pf_xqe, f->pf_ab + HV, nb)};
@@ -760,7 +878,7 @@ static int run_q35(cl_fwd *f, const int *tok, int nb, float *logits) {
 int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *err, size_t errlen) {
   if (token < 0 || token >= f->n_vocab) { snprintf(err, errlen, "token %d is outside the vocabulary", token); return 1; }
   if (f->pos >= f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
-  const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos, KW = f->n_kvw;
+  const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, pos = f->pos;
   if (prof_on < 0) { const char *e = getenv("CLUTOR_PROFILE"); prof_on = e && *e && *e != '0'; }
   PD0();
   if (prof_on > 0) prof_steps++;
@@ -771,6 +889,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
   if (f->xs && f->prefetch) for (int k = 0; k < f->prefetch_n; k++) { cl_xs_prefetch(f->xs, 0, f->prev_sel[k]); f->pred_sel[k] = f->prev_sel[k]; }   /* layer 0, as the previous token chose it (nothing else is known yet) */
   for (int l = 0; l < f->n_layer; l++) {
     cl_fwd_layer *y = &f->L[l];
+    if (l + 1 >= f->stream_from && l + 1 < f->n_layer) prefetch_layer(f, l + 1);   /* a layer that is not pinned: ask for the next one while this one computes */
     /* while this layer's attention and experts compute, read the experts the NEXT layer chose for the previous token */
     if (f->xs && f->prefetch == 1 && l + 1 < f->n_layer) for (int k = 0; k < f->prefetch_n; k++) { int e = f->prev_sel[(l + 1) * f->n_used + k]; cl_xs_prefetch(f->xs, l + 1, e); f->pred_sel[(l + 1) * f->n_used + k] = e; }
     rmsnorm(f->xn, f->x, y->attn_norm_f, E, f->rms_eps);
@@ -792,8 +911,7 @@ int cl_fwd_step(cl_fwd *f, int token, float *logits, cl_fwd_route *route, char *
     }
     for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->q + h * hd, hd, pos + f->rope_delta, f->rope_base, f->rope_factors);
     for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(f->k + h * hd, hd, pos + f->rope_delta, f->rope_base, f->rope_factors);
-    uint16_t *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
-    kv_store(kc, f->k, KW); kv_store(vc, f->v, KW);
+    kv_put(f, l, pos, f->k, f->v);
     PD(2);
     attend(f, l, f->q, f->att, pos, 1);
     PD(3);
@@ -957,7 +1075,7 @@ static void route_task(void *vc, int b) {
  * mixture-of-experts layer each token picks its experts as it would alone, then each chosen expert is read once and run over all the tokens that chose it. The attention
  * for each token still looks only at earlier positions, in order. Gives the same results as nb calls to cl_fwd_step (the integer dot products are exact; only the order in
  * which a token's expert outputs are added differs from a step's, which can change the last bits). `logits` may be NULL when only the state is wanted. */
-static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, size_t errlen) {
+static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, float *logits_all, char *err, size_t errlen) {
   const int E = f->n_embd, H = f->n_head, KVH = f->n_head_kv, hd = f->head_dim, KW = f->n_kvw, NQ = f->n_q, FF = f->n_ff_exp, pos0 = f->pos;
   if (prof_on < 0) { const char *e = getenv("CLUTOR_PROFILE"); prof_on = e && *e && *e != '0'; }
   P0();
@@ -970,6 +1088,7 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
   }
   for (int l = 0; l < f->n_layer; l++) {
     cl_fwd_layer *y = &f->L[l];
+    if (l + 1 >= f->stream_from && l + 1 < f->n_layer) prefetch_layer(f, l + 1);   /* a layer that is not pinned: ask for the next one while this one computes */
     for (int b = 0; b < nb; b++) { rmsnorm(XN + (size_t)b * E, X + (size_t)b * E, y->attn_norm_f, E, f->rms_eps); cl_xq_quantize(&f->ps_xqe[b], XN + (size_t)b * E); }
     PA(0);
     { cl_mv j[3] = {mvb(&y->wq, XN, E, f->ps_xqe, Q, nb), mvb(&y->wk, XN, E, f->ps_xqe, K, nb), mvb(&y->wv, XN, E, f->ps_xqe, V, nb)}; cl_matvec_batch(j, 3); }
@@ -990,8 +1109,7 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
         for (int h = 0; h < H; h++) (f->rope_pairs ? rope_pairs : rope_neox)(q + h * hd, hd, rpos, f->rope_base, f->rope_factors);
         for (int h = 0; h < KVH; h++) (f->rope_pairs ? rope_pairs : rope_neox)(k + h * hd, hd, rpos, f->rope_base, f->rope_factors);
       }
-      uint16_t *kc = f->kc + ((size_t)l * f->n_ctx_max + pos) * KW, *vc = f->vc + ((size_t)l * f->n_ctx_max + pos) * KW;
-      kv_store(kc, k, KW); kv_store(vc, v, KW);
+      kv_put(f, l, pos, k, v);
     }
     PA(2);
     attend(f, l, Q, ATT, pos0, nb);
@@ -1092,7 +1210,11 @@ static int run_std(cl_fwd *f, const int *tok, int nb, float *logits, char *err, 
     PA(8);
   }
   f->pos += nb;
-  if (logits) {
+  if (logits_all) {   /* the distribution after every one of the tokens (for checking a guess of several tokens at once) */
+    for (int b = 0; b < nb; b++) { rmsnorm(XN + (size_t)b * E, X + (size_t)b * E, f->out_norm_f, E, f->rms_eps); cl_xq_quantize(&f->ps_xqe[b], XN + (size_t)b * E); }
+    cl_mv j = mvb(&f->output, XN, E, f->ps_xqe, logits_all, nb); cl_matvec_batch(&j, 1);
+    if (f->logit_scale != 1.0f) for (size_t i = 0; i < (size_t)nb * f->n_vocab; i++) logits_all[i] /= f->logit_scale;
+  } else if (logits) {
     rmsnorm(f->xn, X + (size_t)(nb - 1) * E, f->out_norm_f, E, f->rms_eps);
     cl_xq_quantize(&f->xq_e, f->xn);
     cl_mv j = mv(&f->output, f->xn, &f->xq_e, logits); cl_matvec_batch(&j, 1);
@@ -1116,13 +1238,21 @@ int cl_fwd_image(cl_fwd *f, const cl_mm_image *img, char *err, size_t errlen) {
     cl_mm_batch mb = {img->emb + (size_t)i * E, rp, {NULL, NULL, NULL}, img->n_ds < f->n_deepstack ? img->n_ds : f->n_deepstack};
     for (int d = 0; d < 3; d++) mb.ds[d] = img->ds[d] ? img->ds[d] + (size_t)i * E : NULL;
     f->mm = &mb;
-    const int rc = run_std(f, NULL, nb, NULL, err, errlen);
+    const int rc = run_std(f, NULL, nb, NULL, NULL, err, errlen);
     f->mm = NULL;
     if (rc) { free(rp); return 1; }
   }
   free(rp);
   f->rope_delta += (img->gh > img->gw ? img->gh : img->gw) - img->n;   /* the cache advanced by n, the rotary position by the larger side of the grid */
   return 0;
+}
+
+int cl_fwd_verify(cl_fwd *f, const int *tokens, int n, float *logits_all, char *err, size_t errlen) {
+  if (f->hybrid) { snprintf(err, errlen, "this architecture keeps a recurrent state and cannot take back tokens"); return 1; }
+  if (n < 1 || f->pos + n > f->n_ctx_max) { snprintf(err, errlen, "the context is full (%d tokens)", f->n_ctx_max); return 1; }
+  for (int i = 0; i < n; i++) if (tokens[i] < 0 || tokens[i] >= f->n_vocab) { snprintf(err, errlen, "token %d is outside the vocabulary", tokens[i]); return 1; }
+  if (ps_alloc(f) || n > f->ps_cap) { snprintf(err, errlen, "cannot check %d tokens at once", n); return 1; }
+  return run_std(f, tokens, n, NULL, logits_all, err, errlen);
 }
 
 int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err, size_t errlen) {
@@ -1139,7 +1269,7 @@ int cl_fwd_prefill(cl_fwd *f, const int *tokens, int n, float *logits, char *err
     /* CLUTOR_PS_B=k (1..CL_PS_B) shrinks the batch, so the tests can cross many batch boundaries with short prompts */
     int cap = f->ps_cap;
     { const char *e = getenv("CLUTOR_PS_B"); if (e && atoi(e) >= 1 && atoi(e) < f->ps_cap) cap = atoi(e); }
-    for (int i = 0; i < n; i += cap) { int nb = n - i < cap ? n - i : cap; if (run_std(f, tokens + i, nb, i + nb == n ? logits : NULL, err, errlen)) return 1; }
+    for (int i = 0; i < n; i += cap) { int nb = n - i < cap ? n - i : cap; if (run_std(f, tokens + i, nb, i + nb == n ? logits : NULL, NULL, err, errlen)) return 1; }
     if (prof_on > 0) {
       double tot = 0; for (int k = 0; k < 10; k++) tot += prof_t[k];
       fprintf(stderr, "[profile: %d tokens, %.2f s in the batched path]", n, tot);
