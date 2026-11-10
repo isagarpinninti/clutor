@@ -66,6 +66,8 @@ static inline int cl_ncpu(void) { SYSTEM_INFO i; GetSystemInfo(&i); return i.dwN
 static inline uint64_t cl_peak_rss(void) { PROCESS_MEMORY_COUNTERS c; return GetProcessMemoryInfo(GetCurrentProcess(), &c, sizeof c) ? (uint64_t)c.PeakWorkingSetSize : 0; }
 static inline void *cl_aligned_alloc(size_t align, size_t size) { return _aligned_malloc(size, align); }
 static inline void cl_aligned_free(void *p) { _aligned_free(p); }
+static inline void cl_setenv_(const char *k, const char *v) { _putenv_s(k, v); }
+static inline void cl_advise_willneed(const void *p, size_t n) { (void)p; (void)n; }   /* no readahead hint on Windows */
 /* True when a read on standard input would not block (bytes waiting, or the other end closed). */
 static inline int cl_stdin_ready(void) {
   HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
@@ -192,6 +194,9 @@ static inline uint64_t cl_avail_mem(void) {
   return pages > 0 && psz > 0 ? (uint64_t)pages * (uint64_t)psz : 0;
 }
 #endif
+static inline void cl_setenv_(const char *k, const char *v) { setenv(k, v, 1); }
+/* Asks the system to start reading these mapped pages now (they will be needed soon). The range is widened to whole pages. */
+static inline void cl_advise_willneed(const void *p, size_t n) { const uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE), a = (uintptr_t)p & ~(pg - 1), e = ((uintptr_t)p + n + pg - 1) & ~(pg - 1); madvise((void *)a, (size_t)(e - a), MADV_WILLNEED); }
 static inline size_t cl_page_size(void) { long p = sysconf(_SC_PAGESIZE); return p > 0 ? (size_t)p : 4096; }
 static inline int cl_ncpu(void) { long c = sysconf(_SC_NPROCESSORS_ONLN); return c > 0 ? (int)c : 1; }
 static inline uint64_t cl_peak_rss(void) {

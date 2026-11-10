@@ -10,7 +10,7 @@ What is checked:
   * reset really forgets; a cancel stops generation promptly; an over-long append is refused, not crashed;
   * a seed makes sampling repeatable, and a hung-up input ends the process.
 """
-import json, subprocess, sys, time
+import json, os, subprocess, sys, time
 
 ENGINE, MODEL = sys.argv[1], sys.argv[2]
 failed = 0
@@ -20,8 +20,8 @@ def check(ok, what, detail=""):
     failed += 0 if ok else 1
 
 class Chat:
-    def __init__(self, ctx=256):
-        self.p = subprocess.Popen([ENGINE, "chat", MODEL, "--ctx", str(ctx)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1)
+    def __init__(self, ctx=256, env=None):
+        self.p = subprocess.Popen([ENGINE, "chat", MODEL, "--ctx", str(ctx)], env=({**os.environ, **env} if env else None), stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1)
         self.ready = self.read()
     def send(self, **o): self.p.stdin.write(json.dumps(o) + "\n"); self.p.stdin.flush()
     def read(self):
@@ -137,6 +137,26 @@ c.send(op="reset"); c.until({"reset"})
 c.send(op="append", text='Reply in JSON: {"a": 1}'); c.until({"appended", "error"})
 c.send(op="generate", max=8, temp=0, json=True, jsonPrefix='{"a": 1}'); g = c.until({"done", "error"})
 check(g[-1]["ev"] == "done" and g[-1]["finish"] == "stop" and g[-1]["tokens"] == 0, "JSON mode: a reply that is already a complete object ends at once", g[-1])
+
+# Speculation by prompt lookup must not change what is generated: the same tokens with it on and off, greedy and with a seeded sampler, on text that repeats itself
+if c.ready.get("arch") != "qwen35":
+    for gen in ({"temp": 0}, {"temp": 0.8, "seed": 5, "topK": 20}):
+        outs = []
+        for env in ({"CLUTOR_SPEC": "0"}, {"CLUTOR_SPEC": "1"}):
+            c2 = Chat(ctx=1024, env=env)
+            c2.send(op="append", text="one two three four one two three four one two three four one two"); c2.until({"appended", "error"})
+            c2.send(op="generate", max=400, **gen); g = c2.until({"done", "error"})
+            outs.append(g[-1]); c2.p.stdin.close(); c2.p.wait(timeout=10)
+        same = outs[0].get("ids") == outs[1].get("ids")
+        check(same, f"speculation changes nothing ({'greedy' if gen['temp'] == 0 else 'sampled'}): {len(outs[1].get('ids', []))} tokens, guesses {outs[1].get('spec')}", (outs[0].get("ids"), outs[1].get("ids")))
+    # stopping in the middle of a guess and carrying on must give the same tokens as one uninterrupted run
+    for cut in (7, 23, 51):
+        c3 = Chat(ctx=1024, env={"CLUTOR_SPEC": "0"}); c3.send(op="append", text="one two three four one two three four one two three four one two"); c3.until({"appended", "error"})
+        c3.send(op="generate", max=cut + 60, temp=0); whole = c3.until({"done", "error"})[-1].get("ids"); c3.p.stdin.close(); c3.p.wait(timeout=10)
+        c4 = Chat(ctx=1024, env={"CLUTOR_SPEC": "1"}); c4.send(op="append", text="one two three four one two three four one two three four one two"); c4.until({"appended", "error"})
+        c4.send(op="generate", max=cut, temp=0); a = c4.until({"done", "error"})[-1].get("ids", [])
+        c4.send(op="generate", max=60, temp=0); b = c4.until({"done", "error"})[-1].get("ids", []); c4.p.stdin.close(); c4.p.wait(timeout=10)
+        check(a + b == whole, f"speculation: stopping after {cut} tokens and carrying on gives the same tokens", (a + b, whole))
 
 # closing stdin ends the process
 c.p.stdin.close()
