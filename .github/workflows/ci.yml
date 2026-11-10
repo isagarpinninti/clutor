@@ -90,15 +90,18 @@ jobs:
         with:
           path: ~/.cache/clutor-sd
           key: sd-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-sd.sh') }}
+      # Not on macOS: there it compiles the Metal backend and, on the hosted runners, took longer than the job's hour (twice), and the killed build left the machine too busy to finish the program.
+      # The image engine is built and linked on a Mac by hand and in the release workflow; this job checks the program without it there.
       - name: Build the image engine
         id: sd
+        if: runner.os != 'macOS'
         continue-on-error: true
         timeout-minutes: 30
         shell: bash
         run: scripts/build-sd.sh
       - name: Report the image engine
         shell: bash
-        run: if [ "${{ steps.sd.outcome }}" = "success" ]; then echo "::notice::image engine built"; else echo "::warning::the image engine could not be built here; the program is built without it"; fi
+        run: if [ "${{ steps.sd.outcome }}" = "success" ]; then echo "::notice::image engine built"; else echo "::warning::the image engine was not built here; the program is built without it"; fi
       - name: Build the program (no installer)
         run: npx tauri build --debug --no-bundle
         working-directory: app
