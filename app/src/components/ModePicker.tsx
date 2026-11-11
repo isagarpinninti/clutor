@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronIcon } from "./icons";
 
-export interface ModeOption<T extends string> { id: T; label: string; hint: string }
+export interface ModeOption<T extends string> { id: T; label: string; hint: string; /** When set, the option cannot be chosen and this says why (for example a policy forbids it). */ disabled?: string }
 
 interface Props<T extends string> { value: T; options: ModeOption<T>[]; onChange: (v: T) => void; label: string }
 
@@ -25,8 +25,8 @@ export function ModePicker<T extends string>({ value, options, onChange, label }
       {open ? (
         <div className="pmenu" role="listbox" aria-label={label}>
           {options.map((o) => (
-            <button type="button" role="option" aria-selected={o.id === value} key={o.id} className={`menu-item two${o.id === value ? " on" : ""}`} onClick={() => { setOpen(false); onChange(o.id); }}>
-              <span className="mi-text"><b>{o.label}</b><small>{o.hint}</small></span>
+            <button type="button" role="option" aria-selected={o.id === value} aria-disabled={o.disabled ? true : undefined} key={o.id} className={`menu-item two${o.id === value ? " on" : ""}${o.disabled ? " off" : ""}`} title={o.disabled} onClick={() => { if (o.disabled) return; setOpen(false); onChange(o.id); }}>
+              <span className="mi-text"><b>{o.label}</b><small>{o.disabled ?? o.hint}</small></span>
             </button>
           ))}
         </div>

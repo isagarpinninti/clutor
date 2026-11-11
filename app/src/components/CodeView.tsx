@@ -81,6 +81,17 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
   useEffect(() => { setError(undefined); }, [active?.id]);
 
   const openFile = useCallback((p: string): void => { setFocusFile(p); onTab("files"); onPanel(true); }, [onTab, onPanel]);
+  // The folder's policy file may forbid auto-approval; say so in the picker instead of letting the person pick it and be asked anyway.
+  const [policy, setPolicy] = useState<{ forbidAutoApprove: boolean; source: string | null; error?: string }>({ forbidAutoApprove: false, source: null });
+  useEffect(() => {
+    setPolicy({ forbidAutoApprove: false, source: null });
+    if (!active?.root || !bridge.host.policy) return;
+    let alive = true;
+    bridge.host.policy(active.root).then((p) => { if (alive) setPolicy({ forbidAutoApprove: p.forbidAutoApprove, source: p.source }); }, (e: unknown) => { if (alive) setPolicy({ forbidAutoApprove: true, source: null, error: e instanceof Error ? e.message : String(e) }); });
+    return () => { alive = false; };
+  }, [active?.root, active?.turns.length]);
+  const why = policy.error ? `This folder's policy file cannot be used (${policy.error}), so tasks will not start.` : policy.source ? `Not available: the policy ${policy.source} requires approval for every command.` : undefined;
+  const permissions = PERMISSIONS.map((o) => (o.id === "auto" && policy.forbidAutoApprove && why ? { ...o, disabled: why } : o));
   const chooseFolder = async (): Promise<void> => { const p = await bridge.host.pickFolder(); if (p) onCreate(p); };
 
   const pending = approvals.filter((a) => a.sessionId === active?.id);
@@ -241,8 +252,9 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
               <div className="approval" role="alertdialog" aria-label="Approval needed">
                 <b>{approval.network ? "Allow this, with network access?" : "Allow this to run?"}{approval.source === "remote" ? <span className="tag">asked from {approval.device ?? "your phone"}</span> : null}</b>
                 <code>{approval.command}</code>
+                {policy.forbidAutoApprove && policy.source ? <small>Asked because the policy {policy.source} requires approval for every command, so "allow for this session" and "always allow" are not offered.</small> : null}
                 <small>Commands run in a scratch copy of the project, with a clean environment and a time limit. They can still read files your user can read.</small>
-                <div className="actions"><button type="button" className="btn small" onClick={() => ctl.answer(approval.id, true, { source: "local" })}>Allow once</button>{!approval.network && approval.source === "local" ? <><button type="button" className="btn small ghost" onClick={() => { ctl.allowSession(approval.sessionId); ctl.answer(approval.id, true, { source: "local" }); }}>Allow for this session</button><button type="button" className="btn small ghost" onClick={() => { ctl.allowAlways(approval.sessionId, approval.command); ctl.answer(approval.id, true, { source: "local" }); }}>Always allow this command here</button></> : null}<button type="button" className="btn small ghost" onClick={() => ctl.answer(approval.id, false, { source: "local" })}>Refuse</button></div>
+                <div className="actions"><button type="button" className="btn small" onClick={() => ctl.answer(approval.id, true, { source: "local" })}>Allow once</button>{!approval.network && approval.source === "local" && !policy.forbidAutoApprove ? <><button type="button" className="btn small ghost" onClick={() => { ctl.allowSession(approval.sessionId); ctl.answer(approval.id, true, { source: "local" }); }}>Allow for this session</button><button type="button" className="btn small ghost" onClick={() => { ctl.allowAlways(approval.sessionId, approval.command); ctl.answer(approval.id, true, { source: "local" }); }}>Always allow this command here</button></> : null}<button type="button" className="btn small ghost" onClick={() => ctl.answer(approval.id, false, { source: "local" })}>Refuse</button></div>
               </div>
             ) : null}
             {error && !panel ? <Alert tone="error" title="That did not work">{error}</Alert> : null}
@@ -282,7 +294,7 @@ export function CodeView({ active, onCreate, ready, ctl, approvals, picker, onCh
                 { id: "tools", label: "Tools (MCP servers)", hint: "Extra tools for the agent", onSelect: onMcp },
                 { id: "panel", label: "Changes and files panel", checked: panel, onSelect: () => onPanel(!panel) },
               ]} />
-              <ModePicker value={perm} options={PERMISSIONS} onChange={onPerm} label="Permissions" />
+              <ModePicker value={policy.forbidAutoApprove && perm === "auto" ? "ask" : perm} options={permissions} onChange={onPerm} label="Permissions" />
               <span className="spacer" />
               {contextUsed > 0 ? <span className={`ctx-meter${contextUsed / Math.max(1, contextMax) > 0.8 ? " hot" : ""}`} title={`${contextUsed.toLocaleString()} of ${contextMax.toLocaleString()} tokens`}>{Math.round((contextUsed / Math.max(1, contextMax)) * 100)}% context</span> : null}
               {picker}
