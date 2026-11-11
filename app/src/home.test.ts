@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { firstRun, fitLabel, homeRows } from "./home";
+import { firstRun, fitLabel, homeRows, whyOf } from "./home";
 import type { Auto } from "./library";
 
 const GiB = 2 ** 30;
@@ -37,5 +37,12 @@ describe("first run", () => {
     expect(r.found).toBe("No model files found yet.");
     expect(r.recommended).toBeUndefined();
     expect(r.machine).toMatch(/not available/);
+  });
+});
+
+describe("why", () => {
+  it("keeps the reason and drops the model name the row already shows", () => {
+    expect(whyOf("Qwen3-30B.gguf: 30B mixture-of-experts; tight on memory")).toBe("30B mixture-of-experts; tight on memory");
+    expect(whyOf("no chat model in the folder")).toBe("no chat model in the folder");
   });
 });
