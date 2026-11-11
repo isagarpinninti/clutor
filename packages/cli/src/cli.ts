@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +13,7 @@ import { runDecide } from "./decide";
 import { BackendManager, buildLlamaArgs, findLlamaServer, probeLlamaServer } from "./backend";
 import { CONFIG_FILE, ConfigError, DEFAULT_PORT, loadConfig, type ClutorConfig } from "./config";
 import { formatGates, formatPlan, formatReport, formatSimulation, pct, table, tps } from "./format";
-import { EngineError, buildEngine, installPrebuilt, run, engineInfo, engineRun, engineStream, findEngine, type StreamOptions, type StreamReport } from "./engine";
+import { EngineError, buildEngine, installPrebuilt, run, engineChatBench, engineInfo, engineRun, engineStream, findEngine, type StreamOptions, type StreamReport } from "./engine";
 import { DOWNLOADS, downloadFile, downloadUrl, listLocalModels, resolveModel } from "./models";
 import { createClutorServer } from "./server";
 import { discoverModels, modelFolders } from "./tui/discover";
@@ -267,6 +267,41 @@ async function simulate(io: Io, args: ReturnType<typeof parseArgs>, id: string |
   return 0;
 }
 
+async function writeBenchRecord(io: Io, args: ReturnType<typeof parseArgs>, o: { recordPath: string; file: string | undefined; path: string; layout: { name: string; arch: string; expertCount: number; expertsUsed: number }; fileBytes: number; disk: { bytesPerSec: number; samples: number; likelyCold: boolean } | undefined; bin: string | undefined; startedAt: string }): Promise<void> {
+  const h = hostInfo();
+  const { recordPath, file, path, layout, bin, startedAt } = o;
+  const caps = detectCapabilities();
+  const notes: string[] = [];
+  const results = emptyResults();
+  if (o.disk) results.diskReadBytesPerSec = { value: o.disk.bytesPerSec, basis: "measured", runs: o.disk.samples };
+  else notes.push("Disk read speed is not recorded for a model without experts (the test reads expert-sized pieces).");
+  let promptText: string | null = null, genTokens: number | null = null;
+  if (!file) notes.push("Synthetic test model: it cannot generate text, so only the disk read speed is recorded.");
+  else if (!bin) notes.push("Native engine not installed: generation was not measured.");
+  else {
+    promptText = "The harbour town woke slowly. Fishermen carried nets down to the boats while gulls argued over scraps on the quay, and the baker propped her door open so the smell of warm bread drifted along the lane. ".repeat(3);
+    genTokens = flagInt(args, "tokens", 8, 4096) ?? 64;
+    try {
+      io.err(`Measuring generation on ${path} (one fresh engine process, ${genTokens} greedy tokens)...`);
+      const c = await engineChatBench(bin, path, { prompt: promptText, maxTokens: genTokens });
+      Object.assign(results, { loadSeconds: { value: c.loadSeconds, basis: "measured", runs: 1 }, firstTokenSeconds: { value: c.firstTokenSeconds, basis: "measured", runs: 1 }, generationTokensPerSec: { value: c.generationTokensPerSec, basis: "measured", runs: 1 }, promptTokensPerSec: { value: c.promptTokensPerSec, basis: "measured", runs: 1 } });
+      genTokens = c.generated;
+      notes.push(`One run of ${c.generated} tokens after a ${c.promptTokens}-token prompt. The file cache was not dropped, so load time is for a warm file unless it was not read recently.`);
+    } catch (e) { notes.push(`Generation was not measured: ${e instanceof Error ? e.message : String(e)}`); }
+  }
+  notes.push("Cache hit rate and peak memory are not recorded by this command (null).");
+  if (o.disk) notes.unshift(o.disk.likelyCold ? "File larger than 1.5x RAM: most reads came from the SSD." : "File not much larger than RAM: reads may have been served from the operating system's cache, so the disk figure is an upper bound.");
+  const rec: BenchRecord = {
+    schema: 1, clutorVersion: version(), createdAt: startedAt,
+    machine: { os: h.platformName, osRelease: h.osRelease, arch: h.arch, cpu: h.cpuModel, cores: h.logicalCores, ramBytes: h.totalRamBytes, cpuFeatures: caps.cpuFeatures, accelerators: caps.accelerators },
+    model: { name: layout.name, arch: layout.arch, quantization: null, fileBytes: o.fileBytes, experts: layout.expertCount, expertsUsed: layout.expertsUsed, synthetic: !file },
+    runtime: { engine: bin ?? null, contextTokens: file && bin ? 1024 : null, cacheBytes: null, cachePolicy: null, prompt: promptText, tokens: genTokens },
+    results, notes,
+  };
+  writeFileSync(resolve(io.cwd, recordPath), `${JSON.stringify(rec, null, 2)}\n`);
+  io.err(`Wrote ${recordPath}`);
+}
+
 async function bench(io: Io, args: ReturnType<typeof parseArgs>, json: boolean): Promise<number> {
   const h = hostInfo();
   const file = flagString(args, "file");
@@ -284,27 +319,19 @@ async function bench(io: Io, args: ReturnType<typeof parseArgs>, json: boolean):
     const r = await fileReader(path);
     const layout = buildModelLayout(await parseGguf(r));
     await r.close();
-    if (!layout.expertCount) throw new UsageError("this model has no experts; bench measures expert-sized reads");
+    const recordPath = flagString(args, "record");
+    if (!layout.expertCount) {
+      if (!recordPath || !file) throw new UsageError("this model has no experts; bench measures expert-sized reads (with --file and --record it still records generation speed)");
+      await writeBenchRecord(io, args, { recordPath, file, path, layout, fileBytes: statSync(path).size, disk: undefined, bin: findEngine(), startedAt: new Date().toISOString() });
+      return 0;
+    }
     const m = await measureExpertReads(path, layout, h.totalRamBytes, 96);
     const dm = diskModelFrom(m, expertSizeBytes(layout), layout.layers.find((l) => l.experts.length)?.experts[0]?.length ?? 1);
     const bin = findEngine();
     if (flagBool(args, "engine") && !bin) throw new UsageError("the native engine is not installed: run `clutor engine install` (prebuilt) or `clutor engine build` (needs a C compiler)");
     const startedAt = new Date().toISOString();
     const cmp = bin ? await compareStrategies(bin, path, flagInt(args, "cache-mb", 1, 1_000_000) ?? Math.max(64, Math.floor(h.totalRamBytes / 2 ** 20 / 16)), flagInt(args, "tokens", 10, 100_000) ?? 300, (flagString(args, "dense") as StreamOptions["dense"] | undefined), computeFlag(args)) : undefined;
-    const recordPath = flagString(args, "record");
-    if (recordPath) {
-      const caps = detectCapabilities();
-      const rec: BenchRecord = {
-        schema: 1, clutorVersion: version(), createdAt: startedAt,
-        machine: { os: h.platformName, osRelease: h.osRelease, arch: h.arch, cpu: h.cpuModel, cores: h.logicalCores, ramBytes: h.totalRamBytes, cpuFeatures: caps.cpuFeatures, accelerators: caps.accelerators },
-        model: { name: layout.name, arch: layout.arch, quantization: null, fileBytes: m.fileBytes, experts: layout.expertCount, expertsUsed: layout.expertsUsed, synthetic: !file },
-        runtime: { engine: bin ?? null, contextTokens: null, cacheBytes: null, cachePolicy: null, prompt: null, tokens: null },
-        results: { ...emptyResults(), diskReadBytesPerSec: { value: m.bytesPerSec, basis: "measured", runs: m.samples } },
-        notes: [m.likelyCold ? "File larger than 1.5x RAM: most reads came from the SSD." : "File not much larger than RAM: reads may have been served from the operating system's cache, so the disk figure is an upper bound.", "Generation speed, first token and cache hit rate are not recorded by this command (null)."],
-      };
-      writeFileSync(resolve(io.cwd, recordPath), `${JSON.stringify(rec, null, 2)}\n`);
-      io.err(`Wrote ${recordPath}`);
-    }
+    if (recordPath) await writeBenchRecord(io, args, { recordPath, file, path, layout, fileBytes: m.fileBytes, disk: { bytesPerSec: m.bytesPerSec, samples: m.samples, likelyCold: m.likelyCold }, bin, startedAt });
     if (json) { io.out(JSON.stringify({ measurement: m, diskModel: dm, ...(cmp ? { engine: cmp } : {}) }, null, 2)); return 0; }
     io.out(`${m.samples} random expert reads from ${path} (${fmtBytes(m.fileBytes)}):`);
     io.out(table([["throughput", `${(m.bytesPerSec / 2 ** 30).toFixed(2)} GiB/s`], ["mean per expert", `${(m.meanReadSec * 1000).toFixed(2)} ms`], ["95th percentile", `${(m.p95ReadSec * 1000).toFixed(2)} ms`], ["modelled request overhead", `${(dm.requestLatencySec * 1e6).toFixed(0)} us`]]));

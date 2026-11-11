@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 
 /**
  * The native engine (c/): a C program that reads a GGUF file directly and streams its experts from disk through Clutor's cache.
- * It does not run a transformer yet. What it measures is real (bytes read, time spent waiting for them, cache and prefetch behaviour);
- * what it routes with is a synthetic router, and every report says so.
+ * `stream` replays a synthetic router over the real file and measures real reads (bytes, time waiting, cache and prefetch behaviour); `chat` runs
+ * the model itself. Every report says which it is.
  */
 
 export class EngineError extends Error {
@@ -188,4 +188,36 @@ export async function installPrebuilt(version: string, dest = join(homedir(), ".
     chmodSync(out, 0o755);
     return out;
   } finally { rmSync(work, { recursive: true, force: true }); }
+}
+
+export interface ChatBench { loadSeconds: number; promptTokens: number; promptTokensPerSec: number; firstTokenSeconds: number; generationTokensPerSec: number; generated: number }
+
+/** One fresh engine process on a real model: wait for `ready`, feed a prompt, decode greedily. These are the engine's own `chat` events, timed here; nothing is estimated. */
+export function engineChatBench(bin: string, file: string, o: { prompt: string; maxTokens: number; ctx?: number; timeoutMs?: number }): Promise<ChatBench> {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const p = spawn(bin, ["chat", file, "--ctx", String(o.ctx ?? 1024)], { stdio: ["pipe", "pipe", "ignore"] });
+    const timer = setTimeout(() => { p.kill(); reject(new EngineError("the engine did not finish the benchmark in time")); }, o.timeoutMs ?? 600_000);
+    const r: Partial<ChatBench> = {};
+    let buf = "", sentGen = false, gotFirst = false, tGen = 0;
+    const send = (x: unknown): void => void p.stdin.write(`${JSON.stringify(x)}\n`);
+    const finish = (err?: Error): void => { clearTimeout(timer); p.stdin.end(); p.kill(); err ? reject(err) : resolve(r as ChatBench); };
+    p.on("error", (e) => finish(e));
+    p.on("close", () => { if (r.generationTokensPerSec === undefined) { clearTimeout(timer); reject(new EngineError("the engine exited before the benchmark finished")); } });
+    p.stdout.on("data", (d: Buffer) => {
+      buf += d.toString();
+      let i: number;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        let ev: { ev?: string; tokens?: number; seconds?: number; tokensPerSecond?: number };
+        try { ev = JSON.parse(line); } catch { continue; }
+        if (ev.ev === "ready") { r.loadSeconds = (Date.now() - t0) / 1000; send({ op: "append", text: o.prompt, raw: true }); }
+        else if (ev.ev === "appended" && !sentGen) {
+          r.promptTokens = ev.tokens ?? 0; r.promptTokensPerSec = ev.seconds ? (ev.tokens ?? 0) / ev.seconds : 0; r.firstTokenSeconds = ev.seconds ?? 0;
+          sentGen = true; tGen = Date.now(); send({ op: "generate", max: o.maxTokens, temp: 0 });
+        } else if (ev.ev === "t" && !gotFirst && r.firstTokenSeconds !== undefined) { gotFirst = true; r.firstTokenSeconds += (Date.now() - tGen) / 1000; }
+        else if (ev.ev === "done") { r.generationTokensPerSec = ev.tokensPerSecond ?? 0; r.generated = ev.tokens ?? 0; finish(); }
+      }
+    });
+  });
 }
