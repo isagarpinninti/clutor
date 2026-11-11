@@ -167,6 +167,19 @@ describe("running commands in a scratch copy", () => {
     expect(r.output).not.toContain("NEVER");
   });
 
+  it("refuses to run commands when the policy requires a sandbox and there is none", async () => {
+    const { r, project, ws } = await proj({ "ok.js": "console.log('ran')", "clutor.policy.json": '{"requireSandbox":true}' });
+    const before = process.env["CLUTOR_SANDBOX"];
+    process.env["CLUTOR_SANDBOX"] = "off";   // pretend there is no sandbox
+    try {
+      const out = await scratchRunner(project, ws)(plan("node ok.js"), "node ok.js");
+      expect(out.exitCode).toBeNull();
+      expect(out.output).toContain("requires an operating-system sandbox");
+      expect(out.output).not.toContain("ran");
+    } finally { if (before === undefined) delete process.env["CLUTOR_SANDBOX"]; else process.env["CLUTOR_SANDBOX"] = before; }
+    void r;
+  });
+
   it("kills a program that runs too long", async () => {
     const { project, ws } = await proj({ "hang.js": "setInterval(() => {}, 1000)" });
     const t0 = Date.now();

@@ -1,0 +1,63 @@
+{
+  "machine": {
+    "platform": "macOS-27.2-arm64-arm-64bit",
+    "cpu": "arm"
+  },
+  "model": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+  "model_bytes": 807694464,
+  "prompt_tokens": 109,
+  "gen_tokens": 64,
+  "clutor": {
+    "start_s": {
+      "mean": 0.04,
+      "min": 0.04,
+      "max": 0.05,
+      "runs": 3
+    },
+    "prefill_tps": {
+      "mean": 196.06,
+      "min": 194.3,
+      "max": 198.18,
+      "runs": 3
+    },
+    "decode_tps": {
+      "mean": 46.59,
+      "min": 42.56,
+      "max": 50.28,
+      "runs": 3
+    },
+    "first_token_s": {
+      "mean": 0.56,
+      "min": 0.55,
+      "max": 0.56,
+      "runs": 3
+    }
+  },
+  "clutor_peak_rss_mib": 888.0,
+  "llama.cpp cpu": {
+    "threads": 4,
+    "prefill_tps": {
+      "mean": 129.52,
+      "runs": 3,
+      "stddev": 3.06
+    },
+    "decode_tps": {
+      "mean": 56.49,
+      "runs": 3,
+      "stddev": 0.86
+    }
+  },
+  "llama.cpp gpu": {
+    "threads": 4,
+    "prefill_tps": {
+      "mean": 812.91,
+      "runs": 3,
+      "stddev": 8.83
+    },
+    "decode_tps": {
+      "mean": 89.12,
+      "runs": 3,
+      "stddev": 2.66
+    }
+  }
+}

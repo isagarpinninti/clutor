@@ -181,7 +181,7 @@ async fn run_in(root: &Path, dir: &Path, overlay: Vec<Overlay>, steps: Vec<Vec<S
         #[cfg(windows)]
         let mut cmd = { let mut c = Command::new("cmd"); c.arg("/C").arg(program); c };
         #[cfg(not(windows))]
-        let mut cmd = Command::new(program);
+        let mut cmd = sandboxed_command(program, dir, step_needs_network(&step));
         cmd.args(&step[1..]).current_dir(dir).env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", dir.join(".home")).env("TMPDIR", dir).env("CI", "1").env("NO_COLOR", "1").env("FORCE_COLOR", "0").env("LANG", "C.UTF-8").env("NODE_ENV", "test")
@@ -504,5 +504,68 @@ mod tests {
         for d in ["beta", "alpha", ".git", "node_modules"] { std::fs::create_dir_all(base.join(d)).unwrap(); }
         std::fs::write(base.join("file.txt"), "x").unwrap();
         assert_eq!(project_dirs(base.to_string_lossy().to_string()).unwrap(), vec!["alpha".to_string(), "beta".to_string()]);
+    }
+}
+
+/// Folders under the home directory that hold credentials, tokens or private browsing data (the same list as the command line's sandbox).
+const SECRET_DIRS: [&str; 17] = [".ssh", ".aws", ".gnupg", ".kube", ".config", ".docker", ".azure", ".npmrc", ".netrc", ".pypirc", ".git-credentials", ".cargo/credentials.toml", "Library/Keychains", "Library/Application Support/Google/Chrome", "Library/Application Support/Firefox", "Library/Safari", "Library/Cookies"];
+
+fn sbpl_quote(p: &str) -> String { format!("\"{}\"", p.replace('\\', "\\\\").replace('"', "\\\"")) }
+
+/// The macOS sandbox profile for a scratch folder: writes only there (and the temporary folders), no secrets, and no network unless the step installs packages.
+#[allow(dead_code)]
+pub fn seatbelt_profile(scratch: &Path, network: bool, home: &str) -> String {
+    let real = std::fs::canonicalize(scratch).unwrap_or_else(|_| scratch.to_path_buf());
+    let mut lines = vec![
+        "(version 1)".to_string(),
+        "(allow default)".to_string(),
+        "(deny file-write*)".to_string(),
+        format!("(allow file-write* (subpath {}) (subpath \"/private/tmp\") (subpath \"/private/var/folders\") (subpath \"/dev\"))", sbpl_quote(&real.to_string_lossy())),
+    ];
+    for d in SECRET_DIRS { lines.push(format!("(deny file-read* (subpath {}))", sbpl_quote(&format!("{home}/{d}")))); }
+    if !network { lines.push("(deny network*)".to_string()); lines.push("(allow network* (local ip \"localhost:*\"))".to_string()); }
+    lines.join("\n")
+}
+
+/// True for the commands the policy lets download things: package installs and `go mod`.
+#[allow(dead_code)]
+fn step_needs_network(step: &[String]) -> bool {
+    let name = step.first().map(|s| s.as_str()).unwrap_or("");
+    let sub = step.iter().skip(1).find(|a| !a.starts_with('-')).map(|s| s.as_str()).unwrap_or("");
+    match name { "npm" | "pnpm" | "yarn" | "bun" => matches!(sub, "ci" | "install" | "i" | "add"), "go" => sub == "mod", _ => false }
+}
+
+/// The command to run, wrapped in `sandbox-exec` on macOS unless CLUTOR_SANDBOX=off or the tool is not there.
+#[cfg(not(windows))]
+fn sandboxed_command(program: &str, scratch: &Path, network: bool) -> Command {
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::var("CLUTOR_SANDBOX").map(|v| v != "off").unwrap_or(true) && Path::new("/usr/bin/sandbox-exec").exists() {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let mut c = Command::new("/usr/bin/sandbox-exec");
+            c.arg("-p").arg(seatbelt_profile(scratch, network, &home)).arg(program);
+            return c;
+        }
+    }
+    let _ = (scratch, network);
+    Command::new(program)
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    use super::*;
+    #[test]
+    fn profile_denies_network_and_names_secrets() {
+        let p = seatbelt_profile(Path::new("/tmp"), false, "/home/u");
+        assert!(p.contains("(deny network*)"));
+        for d in SECRET_DIRS { assert!(p.contains(&format!("/home/u/{d}"))); }
+        assert!(!seatbelt_profile(Path::new("/tmp"), true, "/home/u").contains("(deny network*)"));
+    }
+    #[test]
+    fn installs_may_use_the_network_tests_may_not() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(step_needs_network(&v(&["npm", "ci"])));
+        assert!(!step_needs_network(&v(&["npm", "test"])));
+        assert!(!step_needs_network(&v(&["pytest"])));
     }
 }

@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { sandboxed, sandboxMode } from "./osandbox";
+import { loadPolicy } from "./policy";
 import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -57,7 +59,8 @@ function runStep(step: CommandStep, cwd: string, env: NodeJS.ProcessEnv, timeout
     // On Windows, programs like npm are .cmd files and need a shell; the arguments were already restricted by the command policy,
     // and are refused here if they contain anything cmd.exe would interpret.
     if (win && step.argv.some((a) => /[&|<>^%"!`]/.test(a))) return resolve({ code: null, out: "an argument contains a character that is not allowed on Windows", timedOut: false });
-    const child = spawn(step.argv[0] as string, step.argv.slice(1), { cwd, env, shell: win, detached: !win, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const argv = win ? step.argv : sandboxed(step.argv, cwd, step.network);   // macOS and Linux: writes only in the scratch folder, no secrets, no network unless it is an install
+    const child = spawn(argv[0] as string, argv.slice(1), { cwd, env, shell: win, detached: !win, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let out = "";
     let size = 0;
     let timedOut = false;
@@ -75,6 +78,10 @@ function runStep(step: CommandStep, cwd: string, env: NodeJS.ProcessEnv, timeout
 export function scratchRunner(project: NodeProject, ws: ShadowWorkspace, o: ScratchOptions = {}): (plan: Extract<CommandPlan, { ok: true }>, command: string) => Promise<CommandResult> {
   return async (plan) => {
     const t0 = Date.now();
+    try {
+      const policy = loadPolicy(project.root);
+      if (policy.requireSandbox && sandboxMode() === "none") return { exitCode: null, output: `${policy.source}: the policy requires an operating-system sandbox for commands, and none is available on this computer (macOS needs sandbox-exec, Linux needs bwrap). The command was not run.`, timedOut: false, durationMs: 0 };
+    } catch (e) { return { exitCode: null, output: e instanceof Error ? e.message : String(e), timedOut: false, durationMs: 0 }; }
     const dir = await mkdtemp(join(tmpdir(), "clutor-run-"));
     try {
       await mkdir(join(dir, ".home"), { recursive: true });

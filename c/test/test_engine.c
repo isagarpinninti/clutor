@@ -4,6 +4,7 @@
 #include "kernel.h"
 #include "forward.h"
 #include "quant.h"
+#include "backend.h"
 #include "jsongate.h"
 #include "iq.h"
 #include "vision.h"
@@ -395,6 +396,46 @@ static void test_integer_dot(void) {
 }
 
 /* The JSON checker used for constrained decoding: complete objects are accepted and finish, broken text is refused at the first bad character, and the answer does not depend on how the text is cut into pieces. */
+
+/* ---- backends: a backend gets the products it supports, the CPU keeps the rest, and the result is the same ---- */
+static int be_calls, be_jobs, be_types_seen;
+static int be_supports(uint32_t type) { return type == CL_T_F32; }       /* handles F32 only */
+static void be_run(const cl_mv *jobs, int n) {
+  be_calls++; be_jobs += n;
+  for (int j = 0; j < n; j++) { if (jobs[j].type != CL_T_F32) be_types_seen++; cl_backend_cpu()->matvec_batch(&jobs[j], 1); }
+}
+static const cl_backend counting = {"counting", be_supports, be_run};
+static void test_backend(void) {
+  CHECK(strcmp(cl_backend_active()->name, "cpu") == 0, "the default backend is cpu");
+  CHECK(!cl_backend_select("nope"), "an unknown backend is refused");
+  CHECK(strcmp(cl_backend_active()->name, "cpu") == 0, "and the active one is unchanged");
+  CHECK(cl_backend_register(&counting) == 1 && cl_backend_register(&counting) == 0, "a backend registers once");
+  enum { R = 8, C = 256 };
+  float w[R * C], x[C], ref[R], got[R], ref2[R], got2[R];
+  for (int i = 0; i < R * C; i++) w[i] = (float)((i * 37) % 19 - 9) / 7.0f;
+  for (int i = 0; i < C; i++) x[i] = (float)((i * 11) % 13 - 6) / 5.0f;
+  cl_matvec(CL_T_F32, w, R, C, x, ref);
+  cl_backend_select("counting");
+  be_calls = be_jobs = be_types_seen = 0;
+  cl_matvec(CL_T_F32, w, R, C, x, got);
+  int same = 1; for (int i = 0; i < R; i++) if (got[i] != ref[i]) same = 0;
+  CHECK(be_calls == 1 && be_jobs == 1 && same, "an F32 product goes to the backend and gives the same numbers");
+  /* a type the backend does not support (F16) stays on the CPU */
+  uint16_t h[R * C]; for (int i = 0; i < R * C; i++) { float v = w[i]; uint32_t u; memcpy(&u, &v, 4); h[i] = (uint16_t)(u >> 16); }   /* not real F16: compared with itself below */
+  cl_backend_select("cpu"); cl_matvec(CL_T_BF16, h, R, C, x, ref2);
+  cl_backend_select("counting"); be_calls = be_jobs = 0;
+  cl_matvec(CL_T_BF16, h, R, C, x, got2);
+  int same2 = 1; for (int i = 0; i < R; i++) if (got2[i] != ref2[i]) same2 = 0;
+  CHECK(be_calls == 0 && same2, "a type the backend does not support runs on the CPU, unchanged");
+  /* one batch with both kinds is split */
+  cl_xq none = {0}; (void)none;
+  cl_mv jobs[2] = {{CL_T_F32, w, R, C, x, NULL, got, 1, 0, 0}, {CL_T_BF16, h, R, C, x, NULL, got2, 1, 0, 0}};
+  be_calls = be_jobs = 0;
+  cl_matvec_batch(jobs, 2);
+  CHECK(be_calls == 1 && be_jobs == 1, "a mixed batch sends only the supported product to the backend");
+  cl_backend_select("cpu");
+}
+
 static void test_json_gate(void) {
   static const char *const good[] = {"{}", " {\"a\": 1}", "{\"tool\": \"write_file\", \"args\": {\"path\": \"a.txt\", \"content\": \"line1\\nline2 \\\"q\\\" \\u00e9 \xc3\xa9\"}}",
     "{\"a\": [1, -2.5, 3e10, 0, 1E-2, true, false, null, [], {}, \"x\"], \"b\": {\"c\": {}}}\n", "{\"n\":-0.5e+3}"};
@@ -672,7 +713,7 @@ static void test_xs(const char *fixture) {
 }
 
 int main(int argc, char **argv) {
-  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_integer_dot(); test_q2_q3(); test_isa_paths(); test_json_gate(); test_iq(); test_pictures(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
+  test_lru(); test_pins(); test_stage(); test_scan_resistance(); test_invariants(); test_route(); test_kernel(); test_quant(); test_integer_dot(); test_q2_q3(); test_isa_paths(); test_backend(); test_json_gate(); test_iq(); test_pictures(); test_xs(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE")); test_meta(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   test_gguf(argc > 1 ? argv[1] : getenv("CLUTOR_FIXTURE"));
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;

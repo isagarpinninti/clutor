@@ -16,9 +16,20 @@ The planner's ceilings come from arithmetic. Reading 12 GB of active experts per
 
 Routing traces are generated with a stated shape (skewed expert popularity, neighbouring tokens that pick similar experts, layers that see correlated inputs). A policy that does well here may do differently on a real model. If you have a real routing trace, `parseRoutingTrace` reads one (one JSON object per layer, tokens separated by a blank line), but no tool in this release records one from llama.cpp.
 
-## The sandbox is not a security boundary
+## The sandbox is a seatbelt, not a vault
 
-Commands run without a shell, from a short list of programs, in a scratch copy of the project, with a clean environment and a timeout, and only after you approve anything that runs project code. That stops a confused or prompt-injected model from running `rm -rf ~` or `curl | sh`. It does not stop a program you approved from doing what your user account can do, including reading files outside the project or using the network. There is no operating-system-level sandbox in this release. Only approve commands you recognise, in projects you trust.
+Commands run without a shell, from a short list of programs, in a scratch copy of the project, with a clean environment and a timeout, and only after you approve anything that runs project code. That stops a confused or prompt-injected model from running `rm -rf ~` or `curl | sh`.
+
+On top of that, on **macOS** (`sandbox-exec`) and on **Linux with `bwrap` installed** the command and everything it starts also run in an operating-system sandbox: writes are allowed only in the scratch copy and the temporary folders, the usual credential places (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.config`, `~/.npmrc`, the keychain and browser profile folders) cannot be read, and the network is off except for a package install. `clutor doctor` says which one is active. Tested: on macOS the tests run real commands and confirm that a write outside the scratch folder fails, that `~/.ssh` cannot be listed and that a download fails. **Not tested:** the Linux (`bwrap`) path has never been run by the author. **Not covered:**
+
+- Windows has no OS sandbox here; only the policy, the scratch copy and your approval protect you.
+- The sandbox does not limit CPU, memory, disk use or how long a command runs apart from the timeout.
+- The list of secret places is a list, not a guarantee: a token kept anywhere else, or in an environment variable you pass through, is readable.
+- `sandbox-exec` is deprecated by Apple and could stop working in a future macOS; a flaw in the sandbox itself would also break this.
+- A package install still has network access and runs the package's own scripts.
+- The app also has a command box that runs what you type with your own permissions and no sandbox (the agent never uses it).
+
+Only approve commands you recognise, in projects you trust. `CLUTOR_SANDBOX=off` turns the OS sandbox off for a tool that cannot run inside it.
 
 ## Receipts prove less than they sound like
 

@@ -9,4 +9,4 @@ Each milestone ends with something checkable. Dates are not promised; order is.
 5. **A sixth architecture** (DeepSeek-style with latent attention, YaRN rotary scaling and shared experts, or Mixtral-style with a SentencePiece tokenizer). Five work today (`olmoe`, `qwen3moe`, `granitemoe`, and the dense `qwen2` and `llama`). Llama's `rope_freqs` factors and BOS handling are in place; DeepSeek would still need latent attention and YaRN.
 6. **Invite others in.** A `clutor report` JSON format and a results table for benchmark submissions from other hardware; good-first-issue labels; GitHub Discussions. None of this raises the community score until others use it.
 
-Not planned: GPU backends, training, a desktop app (it was removed on purpose).
+Not planned: training. The desktop app exists now (`app/`). GPU backends are not built; the place one would plug in, and what it would take, is in [DIRECTIONS.md](DIRECTIONS.md).
