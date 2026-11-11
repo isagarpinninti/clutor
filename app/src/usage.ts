@@ -9,7 +9,7 @@ export interface ChatUsage {
   /** The slowest, median and fastest generation speed among the replies that measured one (tokens per second). */
   speed?: { min: number; median: number; max: number; replies: number };
   /** Expert-cache behaviour over the replies that streamed experts from disk: the mean hit rate and the total read. Absent when no reply streamed. */
-  cache?: { replies: number; hitRate: number; gbRead: number };
+  cache?: { replies: number; hitRate: number; gbRead: number; /** Seconds waiting for the disk, and the seconds of reply time those replies took, over the replies that report the wait. Absent when none did. */ wait?: { seconds: number; of: number } };
   /** Tokens in the model's context right now (the last prompt plus its reply), and the most it can hold. */
   contextUsed: number;
   contextMax: number;
@@ -17,14 +17,14 @@ export interface ChatUsage {
 
 /** What a conversation has used, from the numbers the engine measured for each reply. Nothing is estimated except where the field is absent, which counts as zero. */
 export function chatUsage(messages: Msg[], contextMax: number): ChatUsage {
-  let tokens = 0, replies = 0, weighted = 0, timed = 0, contextUsed = 0, hitSum = 0, gb = 0, cached = 0;
+  let tokens = 0, replies = 0, weighted = 0, timed = 0, contextUsed = 0, hitSum = 0, gb = 0, cached = 0, waitS = 0, waitOf = 0;
   const speeds: number[] = [];
   for (const m of messages) {
     if (m.role !== "assistant" || !m.stats) continue;
     replies++;
     tokens += m.stats.tokens;
     if (m.stats.tps) { weighted += m.stats.tps * m.stats.tokens; timed += m.stats.tokens; speeds.push(m.stats.tps); }
-    if (m.stats.cache) { cached++; hitSum += m.stats.cache.hitRate; gb += m.stats.cache.gbRead; }
+    if (m.stats.cache) { cached++; hitSum += m.stats.cache.hitRate; gb += m.stats.cache.gbRead; if (m.stats.cache.waitSeconds !== undefined && m.stats.ms > 0) { waitS += m.stats.cache.waitSeconds; waitOf += m.stats.ms / 1000; } }
     contextUsed = (m.stats.promptTokens ?? 0) + m.stats.tokens;
   }
   speeds.sort((a, b) => a - b);
@@ -32,7 +32,7 @@ export function chatUsage(messages: Msg[], contextMax: number): ChatUsage {
   return {
     replies, tokens, ...(timed > 0 ? { tps: weighted / timed } : {}),
     ...(speeds.length ? { speed: { min: speeds[0] as number, median: mid, max: speeds[speeds.length - 1] as number, replies: speeds.length } } : {}),
-    ...(cached ? { cache: { replies: cached, hitRate: hitSum / cached, gbRead: gb } } : {}),
+    ...(cached ? { cache: { replies: cached, hitRate: hitSum / cached, gbRead: gb, ...(waitOf > 0 ? { wait: { seconds: waitS, of: waitOf } } : {}) } } : {}),
     contextUsed, contextMax,
   };
 }

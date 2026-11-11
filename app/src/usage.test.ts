@@ -27,6 +27,10 @@ describe("measured performance", () => {
     expect(u.cache?.replies).toBe(2);
     expect(u.cache?.hitRate).toBeCloseTo(0.6);
     expect(u.cache?.gbRead).toBe(3);
+    const w = chatUsage([{ id: "a", role: "assistant", content: "x", stats: { tokens: 10, ms: 4000, tps: 3, cache: { hitRate: 0.5, gbRead: 1, waitSeconds: 3 } } }, { id: "b", role: "assistant", content: "x", stats: { tokens: 10, ms: 1000, tps: 9, cache: { hitRate: 0.9, gbRead: 0, waitSeconds: 0.2 } } }, reply(5, { hitRate: 0.5, gbRead: 1 })], 4096);
+    expect(w.cache?.wait?.seconds).toBeCloseTo(3.2);
+    expect(w.cache?.wait?.of).toBeCloseTo(5);   // a reply from an older engine, with no wait figure, is left out of both
+    expect(chatUsage([reply(5, { hitRate: 0.5, gbRead: 1 })], 4096).cache?.wait).toBeUndefined();
     const none = chatUsage([{ id: "u", role: "user", content: "hi" }], 4096);
     expect(none.speed).toBeUndefined();
     expect(none.cache).toBeUndefined();

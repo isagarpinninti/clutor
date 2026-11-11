@@ -57,6 +57,7 @@ export function UsagePanel({ state, ramBytes, usage, agent, jobs, agentContext }
       {usage.speed || usage.cache ? (
         <Table rows={[
           ...(usage.speed ? [["Generation speed", `${usage.speed.median.toFixed(1)} tok/s median (${usage.speed.min.toFixed(1)} to ${usage.speed.max.toFixed(1)}), ${usage.speed.replies} repl${usage.speed.replies === 1 ? "y" : "ies"}`] as [string, string]] : []),
+          ...(usage.cache?.wait ? [["Waiting for the disk", `${Math.round((usage.cache.wait.seconds / usage.cache.wait.of) * 100)}% of reply time (${usage.cache.wait.seconds.toFixed(1)} s of ${usage.cache.wait.of.toFixed(1)} s). A high share means the disk, not the processor, is the limit`] as [string, string]] : []),
           ...(usage.cache ? [["Expert cache", `${Math.round(usage.cache.hitRate * 100)}% hit on average, ${usage.cache.gbRead.toFixed(2)} GB read from disk, ${usage.cache.replies} repl${usage.cache.replies === 1 ? "y" : "ies"}`] as [string, string]] : []),
         ]} />
       ) : <p className="lead">Nothing measured yet: send a message. Cache figures appear only when the model is streaming from disk.</p>}

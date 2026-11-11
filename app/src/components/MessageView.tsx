@@ -80,7 +80,7 @@ export function MessageView({ msg, streaming, showReasoning, job, position, onJo
             {s ? <span>{s.tokens} tokens</span> : null}
             {s?.tps ? <span>{s.tps.toFixed(1)} tok/s</span> : null}
             {s?.promptTokens ? <span>context {s.promptTokens}</span> : null}
-            {s?.cache ? <span>cache {Math.round(s.cache.hitRate * 100)}% hit · {s.cache.gbRead.toFixed(2)} GB read</span> : null}
+            {s?.cache ? <span>cache {Math.round(s.cache.hitRate * 100)}% hit · {s.cache.gbRead.toFixed(2)} GB read{s.cache.waitSeconds !== undefined ? ` · ${s.cache.waitSeconds.toFixed(1)} s waiting for disk` : ""}</span> : null}
             {msg.content ? <button type="button" className="icon-btn" onClick={copy} title="Copy reply" aria-label="Copy reply">{copied ? <span className="copied">Copied</span> : <CopyIcon />}</button> : null}
             {onRegenerate && !busy ? <button type="button" className="icon-btn" onClick={() => onRegenerate(msg.id)} title="Regenerate" aria-label="Regenerate this reply"><RedoIcon /></button> : null}
           </div>
