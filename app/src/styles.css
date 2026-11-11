@@ -1093,3 +1093,5 @@ body.resizing * { transition: none !important; }
 .fit-streams, .fit-tight { color: var(--warn, #b7791f); } .fit-memory { color: var(--ok, #2f855a); }
 .linklike { align-self: flex-start; background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font-size: 12px; }
 @media (max-width: 560px) { .machine-rows li { grid-template-columns: 52px 1fr auto; } .machine-rows .msize { display: none; } }
+
+.menu-item.off { opacity: .6; cursor: not-allowed; } .menu-item.off:hover { background: none; }
