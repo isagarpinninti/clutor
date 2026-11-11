@@ -176,7 +176,7 @@ The native engine runs a real forward pass, checked against llama.cpp, for these
 | Qwen3.5 (`qwen35`) | hybrid dense (Gated DeltaNet + attention) | thinking models supported |
 | Qwen3-VL (`qwen3vlmoe`) | MoE, **reads pictures** | text and pictures; needs the `mmproj` projector file next to it; checked on a 30B-A3B abliterated Q2_K build |
 
-Weight formats: F32, F16, BF16, Q8_0, Q5_0, Q4_0 and the K-quants **Q2_K, Q3_K, Q4_K, Q5_K, Q6_K** (integer dot products; NEON kernels on Apple and ARM, AVX2 for Q4_K to Q6_K on x86, while Q2_K and Q3_K use plain C there). The IQ formats are not supported.
+Weight formats: F32, F16, BF16, Q8_0, Q5_0, Q4_0, the K-quants **Q2_K, Q3_K, Q4_K, Q5_K, Q6_K** and the IQ formats (IQ1_S, IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS, IQ4_NL). Integer dot products run as NEON kernels on Apple and ARM, and as AVX2 or AVX-512 VNNI kernels on x86, picked at run time from the CPU. The IQ unpackers are checked against the reference implementation's output, but no IQ model file has been run end to end, and the x86 kernels have not been timed.
 
 **Image models** (through stable-diffusion.cpp, in the app): Qwen-Image-2.1 and Turbo as GGUF, with the Qwen3-VL-8B text encoder and the VAE. Only the Turbo Q4_K_M has been run here. Its licence (qwen-research) does not allow commercial use, and Clutor does not ship it: you download the files yourself. Other models the runtime supports (FLUX, Stable Diffusion and others) are recognised by the models folder but have not been tried.
 
