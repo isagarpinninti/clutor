@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { MemoryProject, generateReceiptSigner, ShadowWorkspace, extractJsonObject, fitContext, runAgent, verifyReceiptChain, GENESIS_TAG, type AgentEvent, type ChatMessage, type ChatResult, type CommandResult, type LlmClient } from "../src";
+import { MemoryProject, generateReceiptSigner, ShadowWorkspace, extractJsonObject, fitContext, runAgent, verifyReceiptChain, sealReceipt, GENESIS_TAG, type AgentEvent, type ChatMessage, type ChatResult, type CommandResult, type LlmClient } from "../src";
 
 type Step = (messages: ChatMessage[]) => ChatResult | Promise<ChatResult>;
 const say = (name: string, args: Record<string, unknown>): ChatResult => ({ content: JSON.stringify({ tool: name, args }), toolCalls: [] });
@@ -145,6 +145,18 @@ describe("agent loop", () => {
     expect(events.map((e) => e.type)).toEqual(["start", "tool_call", "tool_result", "tool_call", "tool_result", "diff", "tool_call", "tool_result", "diff", "tool_call", "tool_result", "diff", "done"]);
     expect(r.receipt?.files.map((f) => f.path)).toEqual(["src/math.test.ts", "src/math.ts"]);
     expect(await verifyReceiptChain([r.receipt!])).toMatchObject({ ok: true });
+    // version 3 also records what was read, the tokens used and how long it took; never file contents
+    expect(r.receipt).toMatchObject({ v: 3, filesRead: ["src/math.ts"], tokens: { prompt: expect.any(Number), completion: expect.any(Number) }, durationMs: expect.any(Number) });
+    expect(JSON.stringify(r.receipt)).not.toContain("a + b");
+  });
+
+  it("still verifies a version 2 receipt, and a version 3 receipt whose new fields were edited fails", async () => {
+    const draft = { v: 2 as const, id: "r1", task: "t", model: "m", startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:00:01.000Z", status: "finished", files: [], commands: [], steps: 1, previous: GENESIS_TAG };
+    const old = await sealReceipt(key, draft);
+    expect(await verifyReceiptChain([old])).toMatchObject({ ok: true });
+    const v3 = await sealReceipt(key, { ...draft, v: 3, filesRead: ["a.ts"], tokens: { prompt: 1, completion: 2 }, durationMs: 5 });
+    expect(await verifyReceiptChain([v3])).toMatchObject({ ok: true });
+    expect(await verifyReceiptChain([{ ...v3, filesRead: [] }])).toMatchObject({ ok: false });
   });
 
   it("shows the model the project map first and the task last, so tasks on one project share a prefix", async () => {

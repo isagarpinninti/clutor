@@ -497,7 +497,8 @@ async function receipts(io: Io, args: ReturnType<typeof parseArgs>, dirArg: stri
   const cps = await listCheckpoints(new NodeProject(dir));
   if (json) { io.out(JSON.stringify({ verification: v, receipts: all, checkpoints: cps }, null, 2)); return v.ok ? 0 : 1; }
   io.out(v.ok ? `Receipt chain intact: ${v.count} receipt${v.count === 1 ? "" : "s"}, hash chain and ECDSA signatures verified${v.keyIds.length ? ` (key id ${v.keyIds.join(", ")})` : ""}.` : `Receipt chain BROKEN at entry ${v.index}: ${v.reason}`);
-  if (all.length) io.out(table(all.slice(-15).map((r) => [r.finishedAt.slice(0, 19), r.status, `${r.files.length} files`, r.task.slice(0, 50)]), ["finished", "status", "changed", "task"]));
+  if (all.length) io.out(table(all.slice(-15).map((r) => [r.finishedAt.slice(0, 19), r.status, `${r.files.length} changed`, r.filesRead ? `${r.filesRead.length} read` : "-", `${r.commands.length} cmds${r.commands.some((c) => c.network) ? " (network)" : ""}`, r.tokens ? String(r.tokens.prompt + r.tokens.completion) : "-", r.durationMs !== undefined ? `${(r.durationMs / 1000).toFixed(0)} s` : "-", r.task.slice(0, 40)]), ["finished", "status", "changed", "read", "commands", "tokens", "time", "task"]));
+  if (all.some((r) => r.v === 2)) io.out("Receipts marked - were written by an older version and do not record reads, tokens, time or network use.");
   if (cps.length) io.out(`\nCheckpoints:\n${table(cps.slice(0, 10).map((c) => [c.id, c.createdAt.slice(0, 19), `${c.files} files`]))}`);
   return v.ok ? 0 : 1;
 }

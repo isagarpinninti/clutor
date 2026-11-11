@@ -197,6 +197,7 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
   const turns: ChatMessage[][] = [];
   const commands: AgentResult["commands"] = [];
   const usage = { promptTokens: 0, completionTokens: 0 };
+  const filesRead = new Set<string>();
   let droppedTurns = false, lastPlan = "", compacted = "";
   let steps = 0, toolCalls = 0, invalidTotal = 0, invalidRun = 0, heals = 0, idleFinishes = 0, workCalls = 0, claimChecks = 0;
   const maxIdleFinishes = o.maxIdleFinishes ?? 2;
@@ -302,6 +303,7 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
         if (!refused && !again && r.ok && o.hooks?.post) for (const h of o.hooks.post) if (hookMatches(h, v.call.name)) { const x = await hook(h); if (x.text) r.output = `${r.output}\n\n[${x.text}]`; }
         if (!again && v.call.name === "write_file" && r.ok && typeof wa.path === "string" && typeof wa.content === "string") writtenSame.set(wa.path, wa.content);
         if (r.command) commands.push(r.command);
+        if (v.call.name === "read_file" && r.ok && typeof wa.path === "string") filesRead.add(wa.path);
         out = r;
         emit({ type: "tool_result", step: steps, name: v.call.name, ok: r.ok, output: r.output.slice(0, 4000) });
         if (["write_file", "edit_file", "delete_file"].includes(v.call.name) && r.ok) emit({ type: "diff", diffs: await o.ws.diffs() });
@@ -375,9 +377,11 @@ export async function runAgent(o: AgentOptions): Promise<AgentResult> {
   if (o.receipt) {
     const cs = await o.ws.changeSet();
     const body: ReceiptDraft = {
-      v: 2, id: o.receipt.id ?? `rcpt_${now().toString(36)}`, task: o.task, model: o.llm.model, startedAt, finishedAt: new Date(now()).toISOString(), status,
+      v: 3, id: o.receipt.id ?? `rcpt_${now().toString(36)}`, task: o.task, model: o.llm.model, startedAt, finishedAt: new Date(now()).toISOString(), status,
       files: await Promise.all(cs.map(async (c) => ({ path: c.path, status: (c.before === null ? "added" : c.after === null ? "deleted" : "modified") as "added" | "modified" | "deleted", beforeSha256: c.before === null ? null : await sha256Hex(c.before), afterSha256: c.after === null ? null : await sha256Hex(c.after) }))),
-      commands, steps, previous: o.receipt.previous,
+      commands: commands.map((c) => { const pl = planCommand(c.command); return { ...c, network: c.approved && pl.ok && pl.steps.some((st) => st.network) }; }),
+      steps, previous: o.receipt.previous,
+      filesRead: [...filesRead].sort().slice(0, 500), tokens: { prompt: usage.promptTokens, completion: usage.completionTokens }, durationMs: Math.max(0, now() - Date.parse(startedAt)),
     };
     result.receipt = await sealReceipt(o.receipt.signer, body);
   }
