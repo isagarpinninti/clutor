@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  BASELINE, CATALOG, CLUTOR_DEFAULTS, GiB, QUANTS, ShadowWorkspace, OpenAiCompatibleClient, buildModelLayout, evaluateGates, expertSizeBytes, fmtGiB, generateRoutingTrace, parseGguf, planMemory, runAgent, simulateStreaming, validateBounds, approximateLayout, fmtBytes,
+  BASELINE, CATALOG, CLUTOR_DEFAULTS, GiB, QUANTS, ShadowWorkspace, OpenAiCompatibleClient, buildModelLayout, evaluateGates, expertSizeBytes, fmtGiB, generateRoutingTrace, parseGguf, planMemory, runAgent, simulateStreaming, validateBounds, approximateLayout, fmtBytes, buildReport,
   keyThumbprint, sealReceipt, verifyReceiptChain, type AgentEvent, type LlmClient, type PublicJwk, type Receipt,
 } from "@clutor/core";
 import { NodeProject, applyChanges, diskModelFrom, fileReader, hostInfo, lastReceiptTag, listCheckpoints, loadOrCreateReceiptSigner, measureExpertReads, appendReceipt, readReceipts, rollbackCheckpoint, loadPolicy, sandboxMode, scratchRunner, verifyReceiptLog, writeSyntheticGguf, ConflictError } from "@clutor/core/node";
@@ -12,7 +12,7 @@ import { agentLlm, ensureSlotDir } from "./agentllm";
 import { runDecide } from "./decide";
 import { BackendManager, buildLlamaArgs, findLlamaServer, probeLlamaServer } from "./backend";
 import { CONFIG_FILE, ConfigError, DEFAULT_PORT, loadConfig, type ClutorConfig } from "./config";
-import { formatGates, formatPlan, formatSimulation, pct, table, tps } from "./format";
+import { formatGates, formatPlan, formatReport, formatSimulation, pct, table, tps } from "./format";
 import { EngineError, buildEngine, installPrebuilt, run, engineInfo, engineRun, engineStream, findEngine, type StreamOptions, type StreamReport } from "./engine";
 import { DOWNLOADS, downloadFile, downloadUrl, listLocalModels, resolveModel } from "./models";
 import { createClutorServer } from "./server";
@@ -231,7 +231,12 @@ async function plan(io: Io, args: ReturnType<typeof parseArgs>, ref: string | un
     ...(disk ? { diskBytesPerSec: disk * GiB, diskMeasured: measuredDisk || flagString(args, "disk") !== undefined || config.memory.diskGBps !== undefined } : {}),
   });
   const gates = evaluateGates({ hostRamBytes: hostRam, plan: p, cache: { policy: config.cache.policy }, smartRoute: { enabled: config.cache.smartRoute.enabled, maxDeltaP: config.cache.smartRoute.maxDeltaP }, ...(m.gguf ? { gguf: m.gguf } : {}) });
-  if (json) { io.out(JSON.stringify({ model: { id: m.id, name: m.name, approximate: m.layout.approximate }, plan: p, gates }, null, 2)); return p.fits ? 0 : 1; }
+  const report = buildReport(m.layout, p);
+  if (json) { io.out(JSON.stringify({ model: { id: m.id, name: m.name, approximate: m.layout.approximate }, plan: p, report, gates }, null, 2)); return p.fits ? 0 : 1; }
+  io.out(formatReport(m.name, m.quant, report, { ram: `${(hostRam / GiB).toFixed(0)} GiB`, disk: `${(disk ?? p.disk.bytesPerSec / GiB).toFixed(1)} GiB/s ${measuredDisk || flagString(args, "disk") !== undefined || config.memory.diskGBps !== undefined ? "(given or measured)" : "(assumed)"}`, cpu: `${h.cpuModel} (${h.logicalCores} cores)` }));
+  io.out("");
+  io.out("DETAILS");
+  io.out("-".repeat(32));
   io.out(formatPlan(m.name, m.quant, p));
   io.out("");
   io.out(formatGates(gates));
