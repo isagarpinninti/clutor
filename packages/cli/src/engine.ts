@@ -201,7 +201,7 @@ export function engineChatBench(bin: string, file: string, o: { prompt: string; 
     const r: Partial<ChatBench> = {};
     let buf = "", sentGen = false, gotFirst = false, tGen = 0;
     const send = (x: unknown): void => void p.stdin.write(`${JSON.stringify(x)}\n`);
-    const finish = (err?: Error): void => { clearTimeout(timer); p.stdin.end(); p.kill(); err ? reject(err) : resolve(r as ChatBench); };
+    const finish = (err?: Error): void => { clearTimeout(timer); p.stdin.end(); p.kill(); if (err) reject(err); else resolve(r as ChatBench); };
     p.on("error", (e) => finish(e));
     p.on("close", () => { if (r.generationTokensPerSec === undefined) { clearTimeout(timer); reject(new EngineError("the engine exited before the benchmark finished")); } });
     p.stdout.on("data", (d: Buffer) => {
