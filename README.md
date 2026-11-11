@@ -265,6 +265,7 @@ examples/          sample clutor.config.json
 | [Planner](docs/ENGINE.md) | The arithmetic and what is measured versus modelled |
 | [Security model](docs/SECURITY_MODEL.md) | Who can talk to the server and how |
 | [What works where](docs/CAPABILITIES.md) | Capability matrix by operating system, and how each cell is known |
+| [All docs](docs/README.md) | Every topic, the page that covers it, and its status |
 | [Limits](docs/LIMITS.md) | What Clutor will not do |
 | [Changelog](CHANGELOG.md) | What changed |
 
