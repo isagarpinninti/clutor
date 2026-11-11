@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  BASELINE, CATALOG, CLUTOR_DEFAULTS, GiB, QUANTS, ShadowWorkspace, OpenAiCompatibleClient, buildModelLayout, evaluateGates, expertSizeBytes, fmtGiB, generateRoutingTrace, parseGguf, planMemory, runAgent, simulateStreaming, validateBounds, approximateLayout, fmtBytes, buildReport,
+  BASELINE, CATALOG, CLUTOR_DEFAULTS, GiB, QUANTS, ShadowWorkspace, OpenAiCompatibleClient, buildModelLayout, evaluateGates, expertSizeBytes, fmtGiB, generateRoutingTrace, parseGguf, planMemory, runAgent, simulateStreaming, validateBounds, approximateLayout, fmtBytes, buildReport, emptyResults, type BenchRecord,
   keyThumbprint, sealReceipt, verifyReceiptChain, type AgentEvent, type LlmClient, type PublicJwk, type Receipt,
 } from "@clutor/core";
-import { NodeProject, applyChanges, diskModelFrom, fileReader, hostInfo, lastReceiptTag, listCheckpoints, loadOrCreateReceiptSigner, measureExpertReads, appendReceipt, readReceipts, rollbackCheckpoint, loadPolicy, sandboxMode, scratchRunner, verifyReceiptLog, writeSyntheticGguf, ConflictError } from "@clutor/core/node";
+import { NodeProject, applyChanges, diskModelFrom, fileReader, hostInfo, lastReceiptTag, listCheckpoints, loadOrCreateReceiptSigner, measureExpertReads, appendReceipt, readReceipts, rollbackCheckpoint, loadPolicy, sandboxMode, detectCapabilities, scratchRunner, verifyReceiptLog, writeSyntheticGguf, ConflictError } from "@clutor/core/node";
 import { UsageError, flagBool, flagInt, flagString, parseArgs } from "./args";
 import { agentLlm, ensureSlotDir } from "./agentllm";
 import { runDecide } from "./decide";
@@ -291,6 +291,20 @@ async function bench(io: Io, args: ReturnType<typeof parseArgs>, json: boolean):
     if (flagBool(args, "engine") && !bin) throw new UsageError("the native engine is not installed: run `clutor engine install` (prebuilt) or `clutor engine build` (needs a C compiler)");
     const startedAt = new Date().toISOString();
     const cmp = bin ? await compareStrategies(bin, path, flagInt(args, "cache-mb", 1, 1_000_000) ?? Math.max(64, Math.floor(h.totalRamBytes / 2 ** 20 / 16)), flagInt(args, "tokens", 10, 100_000) ?? 300, (flagString(args, "dense") as StreamOptions["dense"] | undefined), computeFlag(args)) : undefined;
+    const recordPath = flagString(args, "record");
+    if (recordPath) {
+      const caps = detectCapabilities();
+      const rec: BenchRecord = {
+        schema: 1, clutorVersion: version(), createdAt: startedAt,
+        machine: { os: h.platformName, osRelease: h.osRelease, arch: h.arch, cpu: h.cpuModel, cores: h.logicalCores, ramBytes: h.totalRamBytes, cpuFeatures: caps.cpuFeatures, accelerators: caps.accelerators },
+        model: { name: layout.name, arch: layout.arch, quantization: null, fileBytes: m.fileBytes, experts: layout.expertCount, expertsUsed: layout.expertsUsed, synthetic: !file },
+        runtime: { engine: bin ?? null, contextTokens: null, cacheBytes: null, cachePolicy: null, prompt: null, tokens: null },
+        results: { ...emptyResults(), diskReadBytesPerSec: { value: m.bytesPerSec, basis: "measured", runs: m.samples } },
+        notes: [m.likelyCold ? "File larger than 1.5x RAM: most reads came from the SSD." : "File not much larger than RAM: reads may have been served from the operating system's cache, so the disk figure is an upper bound.", "Generation speed, first token and cache hit rate are not recorded by this command (null)."],
+      };
+      writeFileSync(resolve(io.cwd, recordPath), `${JSON.stringify(rec, null, 2)}\n`);
+      io.err(`Wrote ${recordPath}`);
+    }
     if (json) { io.out(JSON.stringify({ measurement: m, diskModel: dm, ...(cmp ? { engine: cmp } : {}) }, null, 2)); return 0; }
     io.out(`${m.samples} random expert reads from ${path} (${fmtBytes(m.fileBytes)}):`);
     io.out(table([["throughput", `${(m.bytesPerSec / 2 ** 30).toFixed(2)} GiB/s`], ["mean per expert", `${(m.meanReadSec * 1000).toFixed(2)} ms`], ["95th percentile", `${(m.p95ReadSec * 1000).toFixed(2)} ms`], ["modelled request overhead", `${(dm.requestLatencySec * 1e6).toFixed(0)} us`]]));
@@ -486,6 +500,12 @@ async function doctor(io: Io, args: ReturnType<typeof parseArgs>, dirArg: string
   try { const l = cfgFor(args, io, dirArg); cfg = l.config; root = l.root; add(l.path ? "ok" : "info", l.path ? `Configuration ${l.path}` : `No ${CONFIG_FILE}: using defaults (run clutor init)`); } catch (e) { add("fail", e instanceof Error ? e.message : String(e)); }
   const ls = findLlamaServer(process.env, cfg?.backend.llamaServer.binary ? [dirname(cfg.backend.llamaServer.binary)] : []);
   add(ls ? "ok" : "warn", ls ? `llama-server at ${ls}` : "llama-server not found (install llama.cpp to run models; the planner, simulator and agent tools still work)");
+  const caps = detectCapabilities();
+  add("info", `CPU features: ${caps.cpuFeatures.length ? caps.cpuFeatures.join(", ") : "none detected"}`);
+  for (const a of caps.accelerators) add("info", `${a.kind.toUpperCase()}: ${a.name} (${a.api}) is present; Clutor does not use it yet`);
+  for (const n of caps.notes) if (!n.startsWith("The engine computes")) add("info", n);
+  if (!caps.accelerators.length) add("info", "No GPU or NPU detected; inference runs on the CPU, which is all the engine uses today.");
+  add("info", "Disk speed is not measured here: run `clutor bench --file <model.gguf>` or `clutor plan <model.gguf> --measure-disk`.");
   const sbx = sandboxMode();
   add(sbx === "none" ? "warn" : "ok", sbx === "none" ? "No operating-system sandbox for the agent's commands (macOS needs sandbox-exec, Linux needs bwrap installed; Windows has none). They still run in a scratch copy with the command policy." : `Agent commands run in an OS sandbox (${sbx}): writes only in the scratch copy, no credentials folders, no network except installs.`);
   const eng = findEngine();
