@@ -1,6 +1,6 @@
 # Limits, and claims Clutor will not make
 
-## The engine does not generate text yet
+## What the engine generates text for
 
 `c/` is a native streaming engine: it parses GGUF, reads experts from disk with `pread`, manages the expert cache, prefetches the next layer and applies cache-aware routing. For seven architectures (`olmoe`, `qwen3moe`, `granitemoe`, `qwen3vlmoe`, the dense `qwen2` and `llama`, and the hybrid `qwen35`) it also has a real forward pass (a tokenizer, attention or Gated DeltaNet, K-quant integer kernels, the model's own router) and can generate text with `clutor generate`; the interactive terminal chat and its coding agent run on it for those models. No other architecture has one yet, so for them the chat and the agent, and always `clutor decide` and the HTTP server, use llama.cpp (`llama-server`) or any OpenAI-compatible server. When a model is larger than memory, the operating system pages it in through llama.cpp's memory mapping; Clutor cannot control that cache.
 
@@ -20,7 +20,7 @@ Routing traces are generated with a stated shape (skewed expert popularity, neig
 
 Commands run without a shell, from a short list of programs, in a scratch copy of the project, with a clean environment and a timeout, and only after you approve anything that runs project code. That stops a confused or prompt-injected model from running `rm -rf ~` or `curl | sh`.
 
-On top of that, on **macOS** (`sandbox-exec`) and on **Linux with `bwrap` installed** the command and everything it starts also run in an operating-system sandbox: writes are allowed only in the scratch copy and the temporary folders, the usual credential places (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.config`, `~/.npmrc`, the keychain and browser profile folders) cannot be read, and the network is off except for a package install. `clutor doctor` says which one is active. Tested: on macOS the tests run real commands and confirm that a write outside the scratch folder fails, that `~/.ssh` cannot be listed and that a download fails. **Not tested:** the Linux (`bwrap`) path has never been run by the author. **Not covered:**
+On top of that, on **macOS** (`sandbox-exec`) and on **Linux with `bwrap` installed** the command and everything it starts also run in an operating-system sandbox: writes are allowed only in the scratch copy and the temporary folders, the usual credential places (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.config`, `~/.npmrc`, the keychain and browser profile folders) cannot be read, and the network is off except for a package install. `clutor doctor` says which one is active. Tested: on macOS the tests run real commands and confirm that a write outside the scratch folder fails, that `~/.ssh` cannot be listed and that a download fails. The Linux (`bwrap`) path runs in CI (the agent's command tests execute under it), which is how a real flaw in it was found and fixed; the author has not used it on a Linux desktop. **Not covered:**
 
 - Windows has no OS sandbox here; only the policy, the scratch copy and your approval protect you.
 - The sandbox does not limit CPU, memory, disk use or how long a command runs apart from the timeout.
@@ -38,9 +38,9 @@ Receipts are a chain of ECDSA P-256 signatures. Anyone can verify a log with no 
 ## Platform status
 
 - **macOS (Apple silicon):** developed and tested here (Apple M2, 16 GiB): TypeScript tests, C unit tests, ASan/UBSan/TSan runs, and the engine on a 2.4 GiB generated model.
-- **Linux:** the engine and CLI are expected to work and CI builds and tests them; the author has not run them on Linux hardware.
-- **Windows:** not supported by the engine (it uses POSIX `pread` and pthreads). The TypeScript CLI paths are written for Windows but untested.
-- **Hardware:** one machine. `clutor bench` is how you learn yours. Disk numbers from the generated test file are real reads of real (zero-filled) bytes.
+- **Linux:** CI builds and tests the engine (unit, golden, chat protocol, sanitizers) and the command line on x86-64; the author has not run a real model on Linux hardware, so no speed is known there.
+- **Windows:** the engine builds with MinGW-w64 and CI runs its unit, golden and chat-protocol tests there; no real model has been run and no speed measured. The Node command line is not tested on Windows. There is no OS sandbox for agent commands.
+- **Hardware:** one machine (see [CAPABILITIES.md](CAPABILITIES.md) for the full table). `clutor bench` is how you learn yours. Disk numbers from the generated test file are real reads of real (zero-filled) bytes.
 
 ## Models
 
