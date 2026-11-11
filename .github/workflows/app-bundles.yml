@@ -27,8 +27,10 @@ jobs:
       - name: System libraries for the web view (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev libssl-dev libxdo-dev build-essential
+          # Short network timeouts and a few retries, and a hard limit on the whole step: when the runner cannot reach the Ubuntu mirrors this fails in minutes, so it can be re-run, instead of retrying until the job's own limit.
+          APT='-o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20'
+          sudo timeout 600 apt-get $APT update
+          sudo timeout 900 apt-get $APT install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev libssl-dev libxdo-dev build-essential
       - uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab # v2.7.5
         with:
           workspaces: app/src-tauri
