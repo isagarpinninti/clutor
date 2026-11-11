@@ -10,7 +10,7 @@ import { join } from "node:path";
  *
  * What it is not: protection against the person at the keyboard. Anyone who can edit files on their own computer can delete the policy file or
  * change CLUTOR_POLICY; a company that needs more than a statement of intent must put the file where users cannot write (device management).
- * The desktop app does not read this file yet.
+ * The desktop app reads the same file (app/src-tauri/src/policy.rs) with the same rules.
  */
 export interface Policy { requireSandbox: boolean; forbidAutoApprove: boolean; source: string | null }
 

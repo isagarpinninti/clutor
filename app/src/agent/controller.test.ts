@@ -10,13 +10,14 @@ function scripted(replies: string[], gate?: Promise<void>) {
   return { async *stream(): AsyncGenerator<StreamEvent> { if (gate) await gate; yield { type: "content", text: replies[i++] ?? '{"tool":"finish","args":{"summary":"done"}}' }; yield { type: "done", finish: "stop" }; } };
 }
 
-function setup(replies: string[], files: Record<string, string> = { "a.txt": "old\n" }, gate?: Promise<void>) {
+function setup(replies: string[], files: Record<string, string> = { "a.txt": "old\n" }, gate?: Promise<void>, policy?: () => Promise<{ requireSandbox: boolean; forbidAutoApprove: boolean; source: string | null }>) {
   const fs = new Map(Object.entries(files));
   const host = {
     list: async () => [...fs.keys()].filter((k) => !k.startsWith(".clutor")).sort(),
     read: async (_r: string, p: string) => fs.get(p) ?? null,
     write: async (_r: string, p: string, c: string | null) => { if (c === null) fs.delete(p); else fs.set(p, c); },
     run: async () => ({ exit_code: 0, output: "ok", timed_out: false, duration_ms: 1 }),
+    ...(policy ? { policy } : {}),
   } as unknown as AgentHost;
   let session: CodeSession = newSession("/p");
   let approvals: Approval[] = [];
@@ -95,6 +96,24 @@ describe("AgentController", () => {
     await local.ctl.run(local.sess().id, "t", { perm: "auto", source: "local" });
     expect(local.approvals()).toEqual([]);
     expect(local.sess().turns[0]!.blocks.some((b) => b.kind === "tool" && b.name === "run_command" && b.status === "ok")).toBe(true);
+  });
+
+  it("a policy that forbids auto-approval makes every command ask, even in auto mode and after \"allow for this session\"", async () => {
+    const cmd = ['{"tool":"run_command","args":{"command":"npm test"}}', '{"tool":"finish","args":{"summary":"ran"}}'];
+    const files = { "package.json": '{"scripts":{"test":"echo"}}' };
+    const t = setup(cmd, files, undefined, async () => ({ requireSandbox: false, forbidAutoApprove: true, source: "/p/clutor.policy.json" }));
+    t.ctl.allowSession(t.sess().id);
+    const p = t.ctl.run(t.sess().id, "t", { perm: "auto", source: "local" });
+    await wait(() => t.approvals().length === 1);
+    t.ctl.answer(t.approvals()[0]!.id, true);
+    await p;
+    expect(t.log.some((l) => l.includes("every command asks first"))).toBe(true);
+  });
+
+  it("a policy file that cannot be read stops the task instead of being ignored", async () => {
+    const t = setup(EDIT, undefined, undefined, async () => { throw new Error("p: unknown key \"requireSandbx\""); });
+    await expect(t.ctl.run(t.sess().id, "t", { perm: "ask", source: "local" })).rejects.toThrow(/policy file.*no task was started.*requireSandbx/);
+    expect(t.sess().turns).toHaveLength(0);
   });
 
   it("plan mode refuses commands and keeps no changes", async () => {

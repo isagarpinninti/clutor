@@ -38,6 +38,6 @@ Each cell says how it is known. **CI** means a GitHub Actions job runs it on eve
 | Benchmark record and the llama.cpp comparison script | Implemented; one machine |
 | Coding agent, receipts, rollback | Implemented |
 | OS sandbox for agent commands | Implemented on macOS and Linux (bubblewrap); not on Windows |
-| Policy file (`clutor.policy.json`) | Implemented in the command line; the desktop app does not read it yet |
+| Policy file (`clutor.policy.json`) | Implemented in the command line and the desktop app (the app's agent commands; `requireSandbox` can only be satisfied on macOS, because the app has no Linux or Windows sandbox) |
 | Hardware backend seam | Implemented (registry and test); no accelerator backend |
 | Multi-machine inference | Design only (`docs/DIRECTIONS.md`) |

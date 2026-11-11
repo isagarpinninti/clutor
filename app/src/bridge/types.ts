@@ -50,6 +50,7 @@ export interface RunOutcome { exit_code: number | null; output: string; timed_ou
 export interface McpLaunch { command: string; args: string[]; env: Record<string, string>; cwd?: string }
 
 /** The agent's view of the machine: one project folder, and MCP servers over standard input and output. */
+export interface PolicyInfo { requireSandbox: boolean; forbidAutoApprove: boolean; source: string | null }
 export interface AgentHost {
   /** Asks the user for a folder (null if they cancel). */
   pickFolder(): Promise<string | null>;
@@ -67,6 +68,8 @@ export interface AgentHost {
   termKill(id: string): Promise<void>;
   /** The folder's real path if it lies inside one of the allowed folders (symbolic links followed); an error otherwise. */
   checkRoot(root: string, allowed: string[]): Promise<string>;
+  /** The folder's policy file (clutor.policy.json, or the file named by CLUTOR_POLICY). Rejects when the file is invalid, and the caller must then refuse to run. */
+  policy?(root: string): Promise<PolicyInfo>;
   /** Creates a new empty project folder inside `parent` and returns its path. */
   newProject(parent: string, name: string): Promise<string>;
   /** The folders directly inside `root`. */

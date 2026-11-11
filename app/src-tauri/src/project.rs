@@ -162,7 +162,21 @@ pub async fn project_run(root: String, overlay: Vec<Overlay>, steps: Vec<Vec<Str
     result.map(|(code, output, timed_out)| RunResult { exit_code: code, output, timed_out, duration_ms: started.elapsed().as_millis() as u64 })
 }
 
+/// True when commands run inside an operating-system sandbox on this computer (macOS sandbox-exec, unless CLUTOR_SANDBOX=off). The app has no Linux or Windows sandbox.
+fn sandbox_active() -> bool {
+    #[cfg(target_os = "macos")]
+    { return std::env::var("CLUTOR_SANDBOX").map(|v| v != "off").unwrap_or(true) && Path::new("/usr/bin/sandbox-exec").exists(); }
+    #[cfg(not(target_os = "macos"))]
+    { false }
+}
+
 async fn run_in(root: &Path, dir: &Path, overlay: Vec<Overlay>, steps: Vec<Vec<String>>, timeout_ms: u64) -> Result<(Option<i32>, String, bool), String> {
+    // The policy file is checked before anything is copied or run. A policy that cannot be read refuses the command (it fails closed).
+    match crate::policy::load(root) {
+        Err(e) => return Ok((None, format!("refused: the policy file is invalid. {e}"), false)),
+        Ok(p) if p.require_sandbox && !sandbox_active() => return Ok((None, format!("refused by policy ({}): commands need an operating-system sandbox and this computer has none for the app (macOS only).", p.source.unwrap_or_default()), false)),
+        Ok(_) => {}
+    }
     copy_project(root, dir)?;
     for o in overlay {
         let dest = jail(dir, &o.path)?;
@@ -440,6 +454,19 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "old");
     }
 
+    #[tokio::test]
+    async fn an_invalid_policy_file_refuses_the_command_and_a_valid_one_does_not() {
+        let root = temp("policy-run");
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        std::fs::write(root.join("clutor.policy.json"), r#"{"requireSandbx":true}"#).unwrap();
+        let r = project_run(root.to_string_lossy().to_string(), vec![], vec![vec!["ls".into()]], 10_000).await.unwrap();
+        assert_eq!(r.exit_code, None);
+        assert!(r.output.contains("policy file is invalid"), "{}", r.output);
+        std::fs::write(root.join("clutor.policy.json"), r#"{"forbidAutoApprove":true}"#).unwrap();
+        #[cfg(not(windows))]
+        { let r = project_run(root.to_string_lossy().to_string(), vec![], vec![vec!["ls".into()]], 10_000).await.unwrap(); assert_eq!(r.exit_code, Some(0), "{}", r.output); }
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     async fn run_sees_unapplied_changes_and_leaves_the_project_alone_on_windows() {
@@ -540,7 +567,7 @@ fn step_needs_network(step: &[String]) -> bool {
 fn sandboxed_command(program: &str, scratch: &Path, network: bool) -> Command {
     #[cfg(target_os = "macos")]
     {
-        if std::env::var("CLUTOR_SANDBOX").map(|v| v != "off").unwrap_or(true) && Path::new("/usr/bin/sandbox-exec").exists() {
+        if sandbox_active() {
             let home = std::env::var("HOME").unwrap_or_default();
             let mut c = Command::new("/usr/bin/sandbox-exec");
             c.arg("-p").arg(seatbelt_profile(scratch, network, &home)).arg(program);

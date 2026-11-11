@@ -56,6 +56,8 @@ export class AgentController {
 
   /** Starts a task on a session and resolves when it ends. */
   private allowed = new Set<string>();
+  /** Sessions whose folder has a policy that forbids auto-approval: every command asks, whatever the permission mode or earlier "allow" choices. */
+  private forbidAuto = new Set<string>();
   /** The user chose "Allow for this session": commands that do not use the network run without asking until the session ends or the app is closed. */
   /** "Always allow this command" in this folder: stored, and honoured in every later session on it (never for a command that uses the network). */
   allowAlways(sessionId: string, command: string): void { const s = this.d.getSession(sessionId); if (s) this.d.rules?.add(s.root, command); }
@@ -72,6 +74,14 @@ export class AgentController {
     if (this.isRunning(sessionId)) throw new Error("a task is already running in this session");
     const task = text.trim();
     if (!task) throw new Error("the task is empty");
+    // The policy is read before every task, so a change to the file applies to the next one. A policy that cannot be read stops the task rather than being ignored.
+    if (this.d.host.policy) {
+      try {
+        const pol = await this.d.host.policy(session.root);
+        if (pol.forbidAutoApprove) this.forbidAuto.add(sessionId); else this.forbidAuto.delete(sessionId);
+        if (pol.source && (pol.forbidAutoApprove || pol.requireSandbox)) this.d.log?.({ ...(o.device ? { device: o.device } : {}), what: `policy ${pol.source}: ${[pol.forbidAutoApprove ? "every command asks first" : "", pol.requireSandbox ? "commands need an OS sandbox" : ""].filter(Boolean).join("; ")}` });
+      } catch (e) { throw new Error(`the policy file for this folder cannot be used, so no task was started: ${e instanceof Error ? e.message : String(e)}`, { cause: e }); }
+    }
     const turn: Turn = { id: this.d.id(), task, created: Date.now(), status: "running", blocks: [], ...(o.perm === "plan" ? { planOnly: true } : {}) };
     const ac = new AbortController();
     this.aborts.set(sessionId, ac);
@@ -126,9 +136,10 @@ export class AgentController {
 
   private approve(sessionId: string, info: { command: string; network: boolean }, o: { perm: Permission; source: Source; device?: string }): Promise<boolean> {
     if (o.perm === "plan") return Promise.resolve(false);
-    if (o.source === "local" && !info.network && (this.allowed.has(sessionId) || this.rules(sessionId).includes(info.command))) return Promise.resolve(true);   // "Allow for this session"
+    const forced = this.forbidAuto.has(sessionId);   // policy: always ask
+    if (!forced && o.source === "local" && !info.network && (this.allowed.has(sessionId) || this.rules(sessionId).includes(info.command))) return Promise.resolve(true);   // "Allow for this session"
     // "Auto-run checks" is only ever given to a task started on this computer, and still asks for anything that uses the network.
-    if (o.perm === "auto" && o.source === "local" && !info.network) return Promise.resolve(true);
+    if (!forced && o.perm === "auto" && o.source === "local" && !info.network) return Promise.resolve(true);
     return new Promise<boolean>((resolve) => {
       const approval: Approval = { id: this.d.id(), sessionId, command: info.command, network: info.network, source: o.source, ...(o.device ? { device: o.device } : {}), at: Date.now() };
       this.pending.set(approval.id, { approval, resolve });
