@@ -4,7 +4,7 @@ Every topic below points at the page that covers it. **Status** is about the thi
 
 | Topic | Read | Status |
 |---|---|---|
-| Architecture: what lives where | [README](../README.md) ("Repository layout"), [NATIVE_ENGINE](NATIVE_ENGINE.md) ("Design") | implemented. No single architecture page yet |
+| Architecture: what lives where | [ARCHITECTURE](ARCHITECTURE.md) | implemented |
 | Inference engine | [NATIVE_ENGINE](NATIVE_ENGINE.md) | implemented for seven architectures |
 | MoE expert streaming and the memory model | [NATIVE_ENGINE](NATIVE_ENGINE.md), [ENGINE](ENGINE.md) ("The memory planner"), [STREAMING_RESULTS](STREAMING_RESULTS.md) | implemented; measured on one machine |
 | Caching and prefetching | [ENGINE](ENGINE.md) ("The cache policies"), [NATIVE_ENGINE](NATIVE_ENGINE.md) ("Router-ahead prefetch") | implemented |
@@ -17,6 +17,6 @@ Every topic below points at the page that covers it. **Status** is about the thi
 | Hardware support and what runs where | [CAPABILITIES](CAPABILITIES.md) | implemented table; GPU/NPU: none |
 | GPU and other accelerators | [DIRECTIONS](DIRECTIONS.md) §1 | planned (the seam exists, no backend) |
 | Mesh of machines | [DIRECTIONS](DIRECTIONS.md) §2 | planned, design only |
-| Troubleshooting | `clutor doctor`; [GUIDE](GUIDE.md) | no dedicated page yet |
+| Troubleshooting | [TROUBLESHOOTING](TROUBLESHOOTING.md), `clutor doctor` | implemented |
 | What Clutor will not claim | [LIMITS](LIMITS.md), [SCORECARD](SCORECARD.md) | n/a |
 | Roadmap | [ROADMAP](ROADMAP.md) | n/a |
