@@ -23,6 +23,8 @@ import { chatUsage, contextPercent } from "./usage";
 import { compactMessages, shouldCompact } from "./compact";
 import { ModelDialog } from "./components/ModelDialog";
 import { FitDialog } from "./components/FitDialog";
+import { MachineStrip } from "./components/MachineStrip";
+import { homeRows } from "./home";
 import { memoryAdvice } from "./memory";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { AgentController, type Approval } from "./agent/controller";
@@ -450,6 +452,7 @@ export function App() {
               {state.status === "loading" ? null : <p className="tagline">What would you like to think through?</p>}
               {composer(true)}
               {state.status === "error" ? <p className="home-note err">{state.error}</p> : null}
+              {state.status === "loading" ? null : <MachineStrip system={system} rows={homeRows(lib.auto, system, settings.ctx)} onPick={() => setDialog("models")} />}
               {!haveModel && state.status !== "loading" ? (
                 <div className="home-note"><p>Choose a model to start. Clutor runs it on your own hardware, with its own engine.</p><button type="button" className="btn" onClick={() => setDialog("models")}>Choose a model</button></div>
               ) : state.status === "loading" ? <p className="home-note">Mapping the weights into memory. A large model can take a while the first time.</p> : (

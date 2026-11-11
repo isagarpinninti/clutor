@@ -36,8 +36,8 @@ export const ASSUMED_MEMORY_BYTES_PER_SEC = 40e9;
 
 export interface ReportOptions { memBytesPerSec?: number; measuredTps?: number }
 
-/** Tokens per second: time to read the weights a token uses from memory, plus the share of its experts that are not cached from the disk. Hit rate = cached share ^ 0.6, fitted to one measurement. */
-function estimateTps(layout: ModelLayout, p: MemoryPlan, memBytesPerSec: number): number {
+/** Tokens per second (the single estimator the CLI and the app share): time to read the weights a token uses from memory, plus the share of its experts that are not cached from the disk. Hit rate = cached share ^ 0.6, fitted to one measurement. */
+export function estimateTps(layout: { totalBytes: number; expertCount: number }, p: MemoryPlan, memBytesPerSec: number): number {
   const moe = layout.expertCount > 0;
   const expertAll = p.expertCache.expertBytes * p.expertCache.totalExperts;
   const active = p.perToken.activeExpertBytes;
