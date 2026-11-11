@@ -1095,3 +1095,9 @@ body.resizing * { transition: none !important; }
 @media (max-width: 560px) { .machine-rows li { grid-template-columns: 52px 1fr auto; } .machine-rows .msize { display: none; } }
 
 .menu-item.off { opacity: .6; cursor: not-allowed; } .menu-item.off:hover { background: none; }
+
+/* first run: second screen */
+.onboard-card.wide { width: min(480px, 100%); }
+.onboard-pick { width: 100%; border: 1px solid var(--g2); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; text-align: left; }
+.onboard-pick small { color: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-size: 11px; } .onboard-pick b { font-weight: 500; font-size: 15px; overflow-wrap: anywhere; }
+.onboard-card .note { font-size: 13px; }

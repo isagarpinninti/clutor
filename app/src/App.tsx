@@ -467,7 +467,7 @@ export function App() {
         </>}
       </main>
       </div>
-      {settings.onboarded ? null : <Onboarding onDone={(name) => setSettings((s) => ({ ...s, onboarded: true, ...(name ? { userName: name } : {}) }))} />}
+      {settings.onboarded ? null : <Onboarding system={system} rows={homeRows(lib.auto, system, settings.ctx)} files={lib.library.chat.length + lib.library.vision.length + lib.library.image.length + lib.library.other.length} scanning={lib.scanning} onDone={(name, choose) => { setSettings((s) => ({ ...s, onboarded: true, ...(name ? { userName: name } : {}) })); if (choose) setDialog("models"); }} />}
       {dialog === "models" ? <ModelDialog lib={lib} contextTokens={settings.ctx} folders={folders} onFolder={(p) => setSettings((s) => ({ ...s, modelsDir: p }))} system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}
       {fitAsk ? <FitDialog model={fitAsk.model} text={fitAsk.text} onRun={() => { const m = fitAsk.model; setFitAsk(null); pickModel(m, true); }} onFaster={() => { setFitAsk(null); setDialog("models"); }} onClose={() => setFitAsk(null)} /> : null}
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
