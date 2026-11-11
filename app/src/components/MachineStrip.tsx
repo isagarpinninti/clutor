@@ -17,6 +17,7 @@ export function MachineStrip({ system, rows, onPick }: { system: SystemInfo | un
               <span className="mname">{r.model}</span>
               <span className="msize">{gb(r.bytes)}</span>
               <span className={`fit fit-${r.fit}`}>{r.fit === "streams" || r.fit === "tight" ? "⚠ " : r.fit === "memory" ? "✓ " : ""}{fitLabel(r.fit)}</span>
+              {r.reason ? <small className="why">Why: {r.reason}</small> : null}
             </li>
           ))}
         </ul>

@@ -16,16 +16,20 @@ const bytesOf = (c: Auto[keyof Auto]["choice"]): { name: string; bytes: number }
   return { name: c.name, bytes: c.bytes };
 };
 
+/** The picker words its reason as "<model>: <why>"; the row already shows the model, so keep the why. */
+export const whyOf = (reason: string): string => { const i = reason.indexOf(": "); return i >= 0 ? reason.slice(i + 2) : reason; };
+
 export function homeRows(auto: Auto, system: SystemInfo | undefined, ctx: number): HomeRow[] {
   const row = (task: HomeRow["task"], a: Auto[keyof Auto]): HomeRow => {
     const b = bytesOf(a.choice);
-    if (!b) return { task, model: undefined, bytes: 0, fit: "unknown", reason: a.reason };
+    if (!b) return { task, model: undefined, bytes: 0, fit: "unknown", reason: whyOf(a.reason) };
     const name = b.name.replace(/\.(gguf|safetensors)$/i, "");
-    if (!system) return { task, model: name, bytes: b.bytes, fit: "unknown", reason: a.reason };
+    if (!system) return { task, model: name, bytes: b.bytes, fit: "unknown", reason: whyOf(a.reason) };
+    const reason = whyOf(a.reason);
     const advice = task === "Image" ? undefined : memoryAdvice(b.bytes, ctx, system.ramBytes, undefined);
     // the library already calls a model "tight" above 55% of memory (the operating system and the context need the rest); say the same here
     const fit: Fit = advice?.level === "over" ? "streams" : task !== "Image" && b.bytes > system.ramBytes * 0.55 ? "tight" : "memory";
-    return { task, model: name, bytes: b.bytes, fit, reason: a.reason };
+    return { task, model: name, bytes: b.bytes, fit, reason };
   };
   return [row("Chat", auto.chat), row("Code", auto.code), row("Vision", auto.vision), row("Image", auto.image)];
 }
