@@ -53,7 +53,19 @@ An approved command runs in a **scratch copy** of the project (with the agent's 
 
 ## Receipts
 
-Each finished task appends a receipt (ECDSA P-256 signed; see [SECURITY_MODEL.md](SECURITY_MODEL.md)) to `.clutor/receipts.jsonl`: the task, model name, status, each changed file with its before and after SHA-256, each command and whether it was approved, and the tag of the previous receipt. The tag is an HMAC-SHA-256 with a key in `.clutor/receipt.key` (mode 0600). `clutor receipts` verifies the chain. It detects edits, removals and reordering by someone without the key. It is a local audit log, not proof for anyone else.
+Each finished task appends a receipt to `.clutor/receipts.jsonl`, signed with ECDSA P-256 (see [SECURITY_MODEL.md](SECURITY_MODEL.md)). A version 3 receipt records:
+
+| Field | What it holds |
+|---|---|
+| `task`, `model` | The task text and the model name the server reported. There is no model *version*: the name is all an OpenAI-style server gives |
+| `status`, `startedAt`, `finishedAt`, `durationMs` | How it ended and how long it took |
+| `files` | Each changed file with its before and after SHA-256 |
+| `filesRead` | Paths the agent read with `read_file` (successful reads only; paths, never contents; at most 500) |
+| `commands` | Each command, its exit code, whether you approved it, and `network`: true only for an approved command allowed to use the network (a package install). False means the network was off where an OS sandbox exists; on Windows there is no sandbox, so a command may still reach the network |
+| `tokens` | Prompt and completion tokens the model server reported (0 when it reports none) |
+| `previous`, `keyId`, `publicKey`, `tag` | The chain: the tag of the receipt before, the key, and the signature |
+
+Not recorded: file contents, command output, the model's replies, or any search or listing the agent did other than reading files. `clutor receipts` verifies the chain and lists recent runs with the read, command, token and time columns. It detects edits, removals and reordering by someone without the key. Version 2 receipts (written by earlier releases) still verify and show `-` where they have no data. It is a local audit log, not proof for anyone else.
 
 ## Failure behaviour
 

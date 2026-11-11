@@ -10,7 +10,8 @@ export interface PublicJwk { kty: "EC"; crv: "P-256"; x: string; y: string }
 export interface ReceiptSigner { privateJwk: JsonWebKey; publicJwk: PublicJwk }
 
 export interface ReceiptBody {
-  v: 2;
+  /** 2 is the original; 3 adds the optional fields below. Both verify. */
+  v: 2 | 3;
   id: string;
   task: string;
   model: string;
@@ -18,8 +19,15 @@ export interface ReceiptBody {
   finishedAt: string;
   status: string;
   files: Array<{ path: string; status: "added" | "modified" | "deleted"; beforeSha256: string | null; afterSha256: string | null }>;
-  commands: Array<{ command: string; exitCode: number | null; approved: boolean }>;
+  /** `network` (v3): the command was allowed to use the network (a package install the person approved); false means it ran with the network off where an OS sandbox exists. */
+  commands: Array<{ command: string; exitCode: number | null; approved: boolean; network?: boolean }>;
   steps: number;
+  /** v3: files the agent read with read_file and the read succeeded. Paths only, never contents. */
+  filesRead?: string[];
+  /** v3: tokens the model reported using for this run (0 when the server does not report usage). */
+  tokens?: { prompt: number; completion: number };
+  /** v3: wall-clock milliseconds from start to finish. */
+  durationMs?: number;
   previous: string;
   /** Thumbprint of `publicKey`. */
   keyId: string;
@@ -75,7 +83,7 @@ export type ChainResult = { ok: true; keyIds: string[] } | { ok: false; index: n
 /** Verifies one receipt's signature and key id (not its place in a chain). */
 export async function verifyReceiptSignature(r: Receipt): Promise<{ ok: true } | { ok: false; reason: string }> {
   try {
-    if (r.v !== 2) return { ok: false, reason: "not a version 2 (ECDSA) receipt" };
+    if (r.v !== 2 && r.v !== 3) return { ok: false, reason: "not a version 2 or 3 (ECDSA) receipt" };
     if (!r.tag.startsWith("clt_")) return { ok: false, reason: "the tag does not start with clt_" };
     if ((await keyThumbprint(r.publicKey)) !== r.keyId) return { ok: false, reason: "the key id does not match the embedded public key" };
     const { tag, ...body } = r;
