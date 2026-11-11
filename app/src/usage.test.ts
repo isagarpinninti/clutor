@@ -18,3 +18,17 @@ describe("chatUsage", () => {
     expect(contextPercent(u)).toBe(0);
   });
 });
+
+describe("measured performance", () => {
+  const reply = (tps: number, cache?: { hitRate: number; gbRead: number }): Msg => ({ id: String(tps), role: "assistant", content: "x", stats: { tokens: 50, ms: 1000, tps, ...(cache ? { cache } : {}) } });
+  it("reports the speed range, median and cache totals, and nothing when nothing was measured", () => {
+    const u = chatUsage([reply(10), reply(4, { hitRate: 0.5, gbRead: 2 }), reply(7, { hitRate: 0.7, gbRead: 1 })], 4096);
+    expect(u.speed).toEqual({ min: 4, median: 7, max: 10, replies: 3 });
+    expect(u.cache?.replies).toBe(2);
+    expect(u.cache?.hitRate).toBeCloseTo(0.6);
+    expect(u.cache?.gbRead).toBe(3);
+    const none = chatUsage([{ id: "u", role: "user", content: "hi" }], 4096);
+    expect(none.speed).toBeUndefined();
+    expect(none.cache).toBeUndefined();
+  });
+});

@@ -53,6 +53,15 @@ export function UsagePanel({ state, ramBytes, usage, agent, jobs, agentContext }
         <Stat label="Agent runs" value={n(agent.runs)} hint={agent.runs ? `${n(agent.steps)} steps` : undefined} />
       </div>
 
+      <h4 className="ssub">Measured in this conversation</h4>
+      {usage.speed || usage.cache ? (
+        <Table rows={[
+          ...(usage.speed ? [["Generation speed", `${usage.speed.median.toFixed(1)} tok/s median (${usage.speed.min.toFixed(1)} to ${usage.speed.max.toFixed(1)}), ${usage.speed.replies} repl${usage.speed.replies === 1 ? "y" : "ies"}`] as [string, string]] : []),
+          ...(usage.cache ? [["Expert cache", `${Math.round(usage.cache.hitRate * 100)}% hit on average, ${usage.cache.gbRead.toFixed(2)} GB read from disk, ${usage.cache.replies} repl${usage.cache.replies === 1 ? "y" : "ies"}`] as [string, string]] : []),
+        ]} />
+      ) : <p className="lead">Nothing measured yet: send a message. Cache figures appear only when the model is streaming from disk.</p>}
+      <p className="lead"><small>These are measured on this computer. They say nothing about other machines, and a short reply or a cold cache reads slower than a warm one.</small></p>
+
       <h4 className="ssub">Model and memory</h4>
       <Table rows={[
         ["Model", state.model?.name ?? "none loaded"],
