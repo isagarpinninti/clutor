@@ -1,7 +1,7 @@
 [package]
 name = "clutor-app"
 version = "0.4.0"
-description = "Clutor: chat with large models on your own machine, on Clutor's own engine."
+description = "Clutor: run models bigger than your RAM with honest numbers, on Clutor's own engine. Local-first."
 authors = ["Sagar Pinninti"]
 edition = "2021"
 license = "MIT"
