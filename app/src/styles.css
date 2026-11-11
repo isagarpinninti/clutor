@@ -1081,3 +1081,15 @@ body.resizing * { transition: none !important; }
 .contract li.no { color: var(--bad, #e5645c); border-color: currentColor; }
 .check-use { margin: 4px 0 8px; font-size: 13px; }
 .fit-dialog { padding: 20px 22px; max-width: 460px; } .fit-dialog h2 { margin: 0 0 8px; font-size: 17px; } .fit-dialog .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+
+/* home: this computer and the model for each task */
+.machine { font-size: 13px; color: var(--muted); border: 1px solid var(--border, rgba(127,127,127,.25)); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.machine-line { margin: 0; font-variant-numeric: tabular-nums; }
+.machine-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.machine-rows li { display: grid; grid-template-columns: 56px 1fr auto auto; gap: 12px; align-items: baseline; }
+.machine-rows .task { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+.machine-rows .mname { color: var(--fg, inherit); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.machine-rows .msize { font-variant-numeric: tabular-nums; }
+.fit-streams, .fit-tight { color: var(--warn, #b7791f); } .fit-memory { color: var(--ok, #2f855a); }
+.linklike { align-self: flex-start; background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font-size: 12px; }
+@media (max-width: 560px) { .machine-rows li { grid-template-columns: 52px 1fr auto; } .machine-rows .msize { display: none; } }
