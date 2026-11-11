@@ -4,6 +4,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow 
 
 ## Unreleased
 
+- **The desktop app reads `clutor.policy.json`.** Before every agent task the app reads the policy (the file in the project folder, or the one named by `CLUTOR_POLICY`). `forbidAutoApprove`: every command asks, whatever the permission mode and any earlier "allow" choice. `requireSandbox`: commands are refused where the app has no OS sandbox, which today is everywhere but macOS. A policy file that is invalid stops the task and says why. Checked: Rust tests for parsing and for refusing a command; controller tests for the always-ask and the invalid-file cases. Still true: it is a statement of intent on a machine whose user can edit files, not protection from that user.
+
 - **Receipts version 3.** A receipt now also records the files the agent read (paths only), the tokens the model server reported, the run's duration, and for each command whether it was allowed to use the network. Version 2 receipts still verify. `clutor receipts` shows the new columns. Checked: unit tests (a run records what it read and no file contents; a version 2 receipt verifies; editing a version 3 field breaks the signature). Not recorded: file contents, command output, a model version (servers give only a name). Also corrected `docs/AGENT.md`, which still described the old HMAC receipts.
 - **`clutor plan` report, `doctor` hardware lines, `bench --record`, home screen strip, capability matrix.** See `docs/CAPABILITIES.md`, `benchmarks/README.md`.
 
