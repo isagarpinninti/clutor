@@ -2,7 +2,7 @@
   <img src="assets/clutor-logo.svg" width="520" alt="Clutor">
 </p>
 
-<h3 align="center">Run large language models on your own machine, with honest numbers.</h3>
+<h3 align="center">Run mixture-of-experts models larger than your RAM, and know the real speed before you start.</h3>
 
 <p align="center">
   <a href="https://github.com/isagarpinninti/clutor/actions/workflows/ci.yml"><img src="https://github.com/isagarpinninti/clutor/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -25,7 +25,11 @@
 
 ---
 
-Clutor is a local AI workbench built around its own inference engine: chat, a coding agent, models that read pictures, and a picture generator, all running on your own computer. Point it at a folder of models and it works out what each file is and which one to use for which task.
+Clutor makes big models usable on ordinary computers. Its own C engine keeps the always-needed weights in memory and streams only the experts a token uses from your SSD, so a mixture-of-experts (MoE) model bigger than your RAM can still run. Before you start, the planner tells you whether a model fits, where the memory goes and the real ceiling on speed, and it labels every number as measured, computed or assumed.
+
+On top of that engine sit a chat with pictures, a sandboxed coding agent and a picture generator, all on your own computer. Point Clutor at a folder of models and it works out what each file is and which one to use for which task.
+
+**What this does not do:** the streaming helps MoE models only. A dense model bigger than your RAM is not made fast by it, and nothing makes a huge model fast on a slow disk. The planner says so before you download anything.
 
 It has three parts:
 
@@ -53,6 +57,26 @@ It has three parts:
 </table>
 
 <sub>The two terminal views are real output of the `clutor` command line, drawn by a terminal emulator (`scripts/capture-terminal.py`) with an empty home folder. The other screenshots are the interface running in a browser preview with sample data (see `app/src/bridge/mock.ts` and `scripts/capture-screenshots.mjs`), so the chat reply in the first one says that no model is running. The picture in the last one is a real output of Qwen-Image-2.1 Turbo made by Clutor on an Apple M2 (`docs/screenshots/sample-picture.jpg`, 512 × 512, 155 s); the rest of that screen, including its timing, is the preview's.</sub>
+
+## Know before you run
+
+Most tools say "this model needs 18 GB". Clutor answers the real question: can this machine run it, where does the memory go, and how fast could it possibly be. This is the output of `clutor plan qwen3-30b-a3b --ram 16` (trimmed), computed from the published architecture:
+
+```text
+Qwen3-30B-A3B (Q4_K_M): dense resident, experts streamed within 12.5 GiB
+
+0.40 GiB  Embeddings, output head, routers (always in RAM)
+0.51 GiB  Dense layer weights (attention, shared experts)
+0.75 GiB  KV cache (8,192 tokens, 16-bit)
+10.5 GiB  Expert cache      (3928 of 6144 experts, 63.9%)
+
+Fastest the disk allows (3.0 GiB/s, assumed):
+cache hit rate  0.0%   at most  2.93 tokens/s
+cache hit rate 50.0%   at most  5.86 tokens/s
+cache hit rate 95.0%   at most 58.6 tokens/s
+```
+
+Each figure is a ceiling set by disk speed and cache hits, not a promise. The disk speed here is an assumption until you run `clutor bench`, which measures your own drive. The app shows the same verdict before a model loads, and warns when a model will not fit in the memory that is free right now.
 
 ## What it does
 
@@ -117,6 +141,8 @@ Rough physics, computed, not measured (disk assumed at 3 GB/s):
 So large MoE models are usable for slow, background work, and dense models of that size are not. The app's background jobs exist for exactly that case. Run `clutor plan <model> --ram N` for the arithmetic on your machine, and see [docs/ENGINE.md](docs/ENGINE.md).
 
 ## Measured on this hardware
+
+**Against llama.cpp on the same file** (Apple M2, 16 GB; details and the script in [docs/bench](docs/bench/README.md)): on a 30B mixture-of-experts model that fits in memory, the two CPU paths decode level within the noise (13.7 against 13.4 tokens/s); on a small dense 1B model Clutor is about 10% slower (50.5 against 56.5). llama.cpp on the GPU is faster at both, most of all at reading a prompt; the Clutor engine has no GPU backend. One machine only.
 
 Everything below was measured on one computer: **an Apple M2 with 16 GB of memory**, running the models with nothing else heavy open. They are single runs, not benchmarks; other machines will differ.
 

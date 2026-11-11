@@ -1,0 +1,63 @@
+{
+  "machine": {
+    "platform": "macOS-27.2-arm64-arm-64bit",
+    "cpu": "arm"
+  },
+  "model": "Huihui-Qwen3-VL-30B-A3B-Instruct-abliterated.i1-Q2_K.gguf",
+  "model_bytes": 11258611776,
+  "prompt_tokens": 110,
+  "gen_tokens": 48,
+  "clutor": {
+    "start_s": {
+      "mean": 0.12,
+      "min": 0.09,
+      "max": 0.15,
+      "runs": 3
+    },
+    "prefill_tps": {
+      "mean": 18.53,
+      "min": 7.85,
+      "max": 24.66,
+      "runs": 3
+    },
+    "decode_tps": {
+      "mean": 13.7,
+      "min": 10.35,
+      "max": 17.35,
+      "runs": 3
+    },
+    "first_token_s": {
+      "mean": 7.75,
+      "min": 4.46,
+      "max": 14.02,
+      "runs": 3
+    }
+  },
+  "clutor_peak_rss_mib": 7526.0,
+  "llama.cpp cpu": {
+    "threads": 4,
+    "prefill_tps": {
+      "mean": 16.39,
+      "runs": 3,
+      "stddev": 1.71
+    },
+    "decode_tps": {
+      "mean": 13.42,
+      "runs": 3,
+      "stddev": 2.2
+    }
+  },
+  "llama.cpp gpu": {
+    "threads": 4,
+    "prefill_tps": {
+      "mean": 97.81,
+      "runs": 3,
+      "stddev": 4.43
+    },
+    "decode_tps": {
+      "mean": 17.44,
+      "runs": 3,
+      "stddev": 13.55
+    }
+  }
+}

@@ -22,6 +22,10 @@ The agent works only in folders that were explicitly opened (registered). The pa
 
 Request bodies are limited to 8 MiB. The simulator caps tokens at 1,500, cache size and other inputs. Agent sessions are capped at 50 in memory.
 
+## Commands the agent runs
+
+The command policy (`packages/core/src/agent/commands.ts`) decides what may run at all. Approved commands then run in a scratch copy with a clean environment, and, where the machine has one, inside an operating-system sandbox (`packages/core/src/node/osandbox.ts`, and the same profile in `app/src-tauri/src/project.rs`). Each task's commands, with their exit codes and whether they were approved, are recorded in the signed receipt log below, which is the audit trail (it does not record the sandbox mode in force at the time). What the sandbox does and does not cover is in [LIMITS.md](LIMITS.md).
+
 ## Receipts
 
 Receipts are signed with ECDSA P-256. The private key is in `.clutor/keys/` (mode 0600, unreadable and unwritable by the agent). The public key and its RFC 7638 thumbprint are inside each signed receipt, so a third party verifies a log with `clutor receipt verify <file>` and no secret, and pins it with `--key-id` or `--pubkey`. Without pinning, a valid chain only shows consistency, not whose key signed it.

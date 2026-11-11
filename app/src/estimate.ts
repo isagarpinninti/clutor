@@ -76,3 +76,20 @@ export function remainingFromPlan(elapsedSec: number, done: number, total: numbe
   if (done < 1 || total <= done || elapsedSec <= 0) return undefined;
   return (elapsedSec / done) * (total - done);
 }
+
+/**
+ * The three questions in plain words: can it be loaded, can it be run, is it fast enough to talk to, and what it is good for at that speed.
+ * "Fast" means the cautious end of the speed estimate is at least 5 tokens per second. These come from the estimate, so they carry its uncertainty.
+ */
+export interface Contract { loadable: boolean; executable: boolean; fast: boolean; use: string }
+export function contract(check: ModelCheck, est: Estimates | undefined): Contract {
+  if (check.verdict === "too-big" || !est) return { loadable: check.verdict !== "too-big", executable: false, fast: false, use: "Not on this computer: it does not fit even with the disk helping." };
+  const low = est.tps.lowTps, high = est.tps.highTps;
+  const fast = low >= 5;
+  const use = low >= 15 ? "Chat and coding feel immediate."
+    : low >= 5 ? "Comfortable for chat and coding."
+    : high >= 2 ? "Usable for chat if you are willing to wait; better for tasks you leave running."
+    : high >= 0.5 ? "Background jobs only: a reply takes minutes."
+    : "Overnight jobs only: a reply takes many minutes.";
+  return { loadable: true, executable: true, fast, use };
+}

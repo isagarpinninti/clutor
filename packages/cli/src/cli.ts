@@ -6,7 +6,7 @@ import {
   BASELINE, CATALOG, CLUTOR_DEFAULTS, GiB, QUANTS, ShadowWorkspace, OpenAiCompatibleClient, buildModelLayout, evaluateGates, expertSizeBytes, fmtGiB, generateRoutingTrace, parseGguf, planMemory, runAgent, simulateStreaming, validateBounds, approximateLayout, fmtBytes,
   keyThumbprint, sealReceipt, verifyReceiptChain, type AgentEvent, type LlmClient, type PublicJwk, type Receipt,
 } from "@clutor/core";
-import { NodeProject, applyChanges, diskModelFrom, fileReader, hostInfo, lastReceiptTag, listCheckpoints, loadOrCreateReceiptSigner, measureExpertReads, appendReceipt, readReceipts, rollbackCheckpoint, scratchRunner, verifyReceiptLog, writeSyntheticGguf, ConflictError } from "@clutor/core/node";
+import { NodeProject, applyChanges, diskModelFrom, fileReader, hostInfo, lastReceiptTag, listCheckpoints, loadOrCreateReceiptSigner, measureExpertReads, appendReceipt, readReceipts, rollbackCheckpoint, loadPolicy, sandboxMode, scratchRunner, verifyReceiptLog, writeSyntheticGguf, ConflictError } from "@clutor/core/node";
 import { UsageError, flagBool, flagInt, flagString, parseArgs } from "./args";
 import { agentLlm, ensureSlotDir } from "./agentllm";
 import { runDecide } from "./decide";
@@ -384,7 +384,10 @@ async function code(io: Io, args: ReturnType<typeof parseArgs>, task: string, se
     const llm = llmFrom(config, backend);
     const project = new NodeProject(dir);
     const ws = new ShadowWorkspace(project);
-    const auto = flagBool(args, "yes") || config.agent.autoApproveProjectCommands || session?.auto === true;
+    const policy = loadPolicy(dir);
+    const wantsAuto = flagBool(args, "yes") || config.agent.autoApproveProjectCommands || session?.auto === true;
+    if (wantsAuto && policy.forbidAutoApprove) io.err(`note: ${policy.source} forbids running commands without asking; you will be asked.`);
+    const auto = wantsAuto && !policy.forbidAutoApprove;
     if (auto) io.err("note: commands that run project code will run without asking (--yes). Only do this for projects you trust.");
     const key = await loadOrCreateReceiptSigner(dir);
     const verifyFlag = flagString(args, "verify") ?? session?.verify;
@@ -478,6 +481,8 @@ async function doctor(io: Io, args: ReturnType<typeof parseArgs>, dirArg: string
   try { const l = cfgFor(args, io, dirArg); cfg = l.config; root = l.root; add(l.path ? "ok" : "info", l.path ? `Configuration ${l.path}` : `No ${CONFIG_FILE}: using defaults (run clutor init)`); } catch (e) { add("fail", e instanceof Error ? e.message : String(e)); }
   const ls = findLlamaServer(process.env, cfg?.backend.llamaServer.binary ? [dirname(cfg.backend.llamaServer.binary)] : []);
   add(ls ? "ok" : "warn", ls ? `llama-server at ${ls}` : "llama-server not found (install llama.cpp to run models; the planner, simulator and agent tools still work)");
+  const sbx = sandboxMode();
+  add(sbx === "none" ? "warn" : "ok", sbx === "none" ? "No operating-system sandbox for the agent's commands (macOS needs sandbox-exec, Linux needs bwrap installed; Windows has none). They still run in a scratch copy with the command policy." : `Agent commands run in an OS sandbox (${sbx}): writes only in the scratch copy, no credentials folders, no network except installs.`);
   const eng = findEngine();
   add(eng ? "ok" : "info", eng ? `Native engine at ${eng}` : "Native engine not built (clutor engine build): cache and prefetch strategies cannot be measured without it");
   if (cfg) {

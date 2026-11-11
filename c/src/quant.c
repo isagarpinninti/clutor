@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "quant.h"
+#include "backend.h"
 #include "kernel.h"
 #include "iq.h"
 #include <math.h>
@@ -957,12 +958,49 @@ static void dispatch(const batch_t *bp) {
   }
 }
 
-void cl_matvec_batch(const cl_mv *jobs, int n) {
+static void cpu_matvec_batch(const cl_mv *jobs, int n) {
   int first[64], total = 0;
   if (n > 64) n = 64;
   for (int j = 0; j < n; j++) { first[j] = total; total += (jobs[j].rows + CHUNK - 1) / CHUNK; }
   batch_t b = {jobs, n, first, total, NULL, NULL};
   dispatch(&b);
+}
+
+/* ---- backends: where the matrix products run (backend.h) ---- */
+static int cpu_supports(uint32_t type) { return cl_type_supported(type); }
+static const cl_backend cpu_backend = {"cpu", cpu_supports, cpu_matvec_batch};
+static const cl_backend *backends[8] = {&cpu_backend};
+static int n_backends = 1;
+static _Atomic(const cl_backend *) active_backend = NULL;   /* NULL until the first product reads CLUTOR_BACKEND */
+
+const cl_backend *cl_backend_cpu(void) { return &cpu_backend; }
+int cl_backend_register(const cl_backend *b) {
+  if (!b || !b->name || !b->supports || !b->matvec_batch || n_backends >= 8) return 0;
+  for (int i = 0; i < n_backends; i++) if (!strcmp(backends[i]->name, b->name)) return 0;
+  backends[n_backends++] = b;
+  return 1;
+}
+int cl_backend_select(const char *name) {
+  for (int i = 0; i < n_backends; i++) if (name && !strcmp(backends[i]->name, name)) { atomic_store(&active_backend, backends[i]); return 1; }
+  return 0;
+}
+const cl_backend *cl_backend_active(void) {
+  const cl_backend *a = atomic_load(&active_backend);
+  if (a) return a;
+  const char *e = getenv("CLUTOR_BACKEND");
+  if (!(e && *e && cl_backend_select(e))) atomic_store(&active_backend, &cpu_backend);
+  return atomic_load(&active_backend);
+}
+
+void cl_matvec_batch(const cl_mv *jobs, int n) {
+  const cl_backend *be = cl_backend_active();
+  if (be == &cpu_backend) { cpu_matvec_batch(jobs, n); return; }
+  if (n > 64) n = 64;
+  cl_mv mine[64], rest[64];
+  int nm = 0, nr = 0;
+  for (int j = 0; j < n; j++) { if (be->supports(jobs[j].type)) mine[nm++] = jobs[j]; else rest[nr++] = jobs[j]; }
+  if (nm) be->matvec_batch(mine, nm);
+  if (nr) cpu_matvec_batch(rest, nr);
 }
 
 void cl_parallel_for(int n, void (*fn)(void *ctx, int i), void *ctx) {

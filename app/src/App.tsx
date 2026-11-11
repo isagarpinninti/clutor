@@ -22,6 +22,8 @@ import { gather, needsWeb, withWebContext, type Gathered } from "./web";
 import { chatUsage, contextPercent } from "./usage";
 import { compactMessages, shouldCompact } from "./compact";
 import { ModelDialog } from "./components/ModelDialog";
+import { FitDialog } from "./components/FitDialog";
+import { memoryAdvice } from "./memory";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { AgentController, type Approval } from "./agent/controller";
 import { RemoteHandler } from "./remote/handler";
@@ -49,6 +51,7 @@ export function App() {
   const [conversations, setConversations] = useState<Conversation[]>(() => { const c = loadConversations(); return c.length ? c : [newConversation()]; });
   const [activeId, setActiveId] = useState<string>(() => conversations[0]?.id ?? "");
   const [system, setSystem] = useState<SystemInfo>();
+  const [fitAsk, setFitAsk] = useState<{ model: ModelInfo; text: string } | null>(null);
   const [dialog, setDialog] = useState<"models" | "settings" | "jobs" | "mcp" | "usage" | null>(null);
   const folders = useMemo(() => (settings.modelsDir ? [settings.modelsDir] : []), [settings.modelsDir]);
   const lib = useLibrary(folders, system?.ramBytes);
@@ -174,7 +177,10 @@ export function App() {
   const wanted = modelFor(mode);
   /** Which mode a choice in the model dialog is for (the dialog can be opened from Settings for either). */
   const [pickFor, setPickFor] = useState<"chat" | "code" | null>(null);
-  const pickModel = (m: ModelInfo): void => {
+  const pickModel = (m: ModelInfo, confirmed = false): void => {
+    // A model that cannot fit in this computer's memory is only opened after the person has seen what that means.
+    const advice = system && !confirmed ? memoryAdvice(m.bytes, settings.ctx, system.ramBytes, undefined) : undefined;
+    if (advice?.level === "over" && !m.path.startsWith("cloud:")) { setFitAsk({ model: m, text: advice.text }); return; }
     const target = pickFor ?? mode;
     setPickFor(null);
     setSettings((s) => ({ ...s, autoModel: false }));   // choosing a model yourself turns the automatic pick off
@@ -460,6 +466,7 @@ export function App() {
       </div>
       {settings.onboarded ? null : <Onboarding onDone={(name) => setSettings((s) => ({ ...s, onboarded: true, ...(name ? { userName: name } : {}) }))} />}
       {dialog === "models" ? <ModelDialog lib={lib} contextTokens={settings.ctx} folders={folders} onFolder={(p) => setSettings((s) => ({ ...s, modelsDir: p }))} system={system} current={state.model?.path} onPick={pickModel} onClose={() => setDialog(null)} /> : null}
+      {fitAsk ? <FitDialog model={fitAsk.model} text={fitAsk.text} onRun={() => { const m = fitAsk.model; setFitAsk(null); pickModel(m, true); }} onFaster={() => { setFitAsk(null); setDialog("models"); }} onClose={() => setFitAsk(null)} /> : null}
       {dialog === "jobs" ? <JobsDialog jobs={jobList} conversations={conversations} position={(id) => queue.position(id)} onAction={jobAction} onOpen={(id) => setActiveId(id)} onRemove={(id) => queue.remove(id)} onClose={() => setDialog(null)} /> : null}
       {dialog === "usage" ? <UsageDialog state={state} ramBytes={system?.ramBytes} usage={usage} agent={agentUsage} {...(lastAgentContext ? { agentContext: { used: lastAgentContext, max: state.ready?.nCtx ?? settings.ctx } } : {})} jobs={{ active: activeJobs, done: jobList.filter((j) => j.status === "done").length }} onClose={() => setDialog(null)} /> : null}
       {dialog === "mcp" ? <McpDialog servers={servers} manager={mcp} onChange={setServers} onClose={() => setDialog(null)} /> : null}

@@ -12,7 +12,7 @@ The areas most worth attention: the local server's access rules (host, origin, t
 
 ## What the project claims, and does not
 
-[docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) describes the protections. [docs/LIMITS.md](docs/LIMITS.md) lists what is **not** protected, notably that the command sandbox is not a security boundary against code you approve, and that nobody outside the project has reviewed the code.
+[docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) describes the protections. [docs/LIMITS.md](docs/LIMITS.md) lists what is **not** protected, notably what the command sandbox does and does not cover (it is an OS-level seatbelt on macOS and, with bubblewrap, Linux, not a vault against code you approve), and that nobody outside the project has reviewed the code.
 
 ## Supported versions
 

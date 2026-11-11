@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { bridge, type ModelInfo } from "../bridge";
 import { checkModel, diskFromBench, type DiskInfo, type ModelCheck } from "../plan";
-import { estimates } from "../estimate";
+import { contract, estimates } from "../estimate";
 import { fmtBytes, readSpeed } from "../store";
 
 interface Props { model: ModelInfo; ramBytes: number; contextTokens: number }
@@ -34,9 +34,16 @@ export function ModelCheckCard({ model, ramBytes, contextTokens }: Props) {
   if (!check) return <div className="check-card"><p className="empty-hint">Reading the model's header…</p></div>;
   const parts = check.plan.components.filter((c) => c.bytes > 0);
   const est = estimates(check, { ...(readSpeed(model.name) ? { measuredTps: readSpeed(model.name) as number } : {}) });
+  const ct = contract(check, est);
   return (
     <div className="check-card">
       <p className={`verdict ${tone[check.verdict]}`}>{check.headline}</p>
+      <ul className="contract" aria-label="Performance contract">
+        <li className={ct.loadable ? "yes" : "no"}><span aria-hidden="true">{ct.loadable ? "✓" : "✗"}</span> Loadable</li>
+        <li className={ct.executable ? "yes" : "no"}><span aria-hidden="true">{ct.executable ? "✓" : "✗"}</span> Runnable</li>
+        <li className={ct.fast ? "yes" : "no"}><span aria-hidden="true">{ct.fast ? "✓" : "✗"}</span> Fast</li>
+      </ul>
+      <p className="check-use">{ct.use}</p>
       <p className="check-speed">{check.speed}</p>
       {est ? (
         <div className="check-est" aria-label="Estimated times">

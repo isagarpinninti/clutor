@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimates, estimateSpeed, fmtDuration, fmtRange, remainingFromPlan } from "./estimate";
+import { contract, estimates, estimateSpeed, fmtDuration, fmtRange, remainingFromPlan } from "./estimate";
 import type { ModelCheck } from "./plan";
 
 const GiB = 2 ** 30;
@@ -49,5 +49,25 @@ describe("durations", () => {
     expect(remainingFromPlan(120, 1, 4)).toBe(360);
     expect(remainingFromPlan(120, 0, 4)).toBeUndefined();
     expect(remainingFromPlan(120, 4, 4)).toBeUndefined();
+  });
+});
+
+describe("performance contract", () => {
+  it("says a 30B MoE with a quarter of its experts cached is runnable but not fast, and what it is for", () => {
+    const c = base({ strategy: "dense-resident-experts-streamed" });
+    const ct = contract(c, estimates(c));
+    expect(ct.loadable && ct.executable).toBe(true);
+    expect(ct.fast).toBe(false);
+    expect(ct.use.length).toBeGreaterThan(10);
+  });
+  it("says a small model fully in memory is fast", () => {
+    const c = base({ strategy: "fully-resident", expertCache: { bytes: 0, slots: 0, expertBytes: 2.7e6, totalExperts: 6144, fractionOfExperts: 1, slotsPerToken: 384 } }, { fileBytes: 1 * GiB, experts: 0, verdict: "fits" });
+    const ct = contract(c, estimates(c));
+    expect(ct.fast).toBe(true);
+  });
+  it("says a model that is too big is neither runnable nor fast, and that it can still be loaded only if the verdict allows", () => {
+    const c = base({ strategy: "fully-resident" }, { verdict: "too-big" });
+    const ct = contract(c, estimates(c));
+    expect(ct).toMatchObject({ loadable: false, executable: false, fast: false });
   });
 });
