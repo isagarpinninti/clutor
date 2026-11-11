@@ -1,3 +1,4 @@
+import { ASSUMED_MEMORY_BYTES_PER_SEC, estimateTps } from "@core/planner/report";
 import type { ModelCheck } from "./plan";
 
 /**
@@ -8,7 +9,7 @@ import type { ModelCheck } from "./plan";
  * How many are cached is guessed from the share of the experts that fit: hit rate = share ^ 0.6, a fit to one measurement (Qwen3-30B-A3B on an Apple M2 with 16 GB: a cache holding a
  * quarter of the experts gave 4.7 tokens per second, half gave about 10), so treat it as a rough guide, not a promise.
  */
-export const ASSUMED_MEMORY_BYTES_PER_SEC = 40e9;
+export { ASSUMED_MEMORY_BYTES_PER_SEC };
 /** Prompt processing runs several times faster than generation (measured about 5 to 15 times on the 30B model); 5 is the cautious end. */
 export const PREFILL_SPEEDUP = 5;
 export interface Typical { label: string; promptTokens: number; outputTokens: number }
@@ -22,18 +23,7 @@ export interface SpeedEstimate { /** Generation speed, tokens per second: a caut
 export function estimateSpeed(check: ModelCheck, o: { memBytesPerSec?: number; measuredTps?: number } = {}): SpeedEstimate | undefined {
   if (check.verdict === "too-big") return undefined;
   if (o.measuredTps && o.measuredTps > 0) return { lowTps: o.measuredTps * 0.7, highTps: o.measuredTps * 1.2, source: "measured" };
-  const p = check.plan;
-  const mem = o.memBytesPerSec ?? ASSUMED_MEMORY_BYTES_PER_SEC;
-  const moe = check.experts > 0;
-  const expertAll = p.expertCache.expertBytes * p.expertCache.totalExperts;
-  const activeExpert = p.perToken.activeExpertBytes;
-  // Bytes read from memory per token: the whole file for a dense model, otherwise the always-used weights plus the experts that are used.
-  const memBytes = moe ? Math.max(0, check.fileBytes - expertAll) + activeExpert : check.fileBytes;
-  const f = p.strategy === "fully-resident" ? 1 : Math.min(1, Math.max(0, p.expertCache.fractionOfExperts));
-  const hit = moe ? Math.min(0.97, Math.pow(f, 0.6)) : 1;
-  const diskBytes = p.strategy === "fully-resident" ? 0 : p.perToken.denseStreamBytes + activeExpert * (1 - hit);
-  const secs = memBytes / mem + diskBytes / Math.max(1, p.disk.bytesPerSec);
-  const tps = secs > 0 ? 1 / secs : 0;
+  const tps = estimateTps({ totalBytes: check.fileBytes, expertCount: check.experts }, check.plan, o.memBytesPerSec ?? ASSUMED_MEMORY_BYTES_PER_SEC);
   const out: SpeedEstimate = { lowTps: tps / 1.5, highTps: tps * 1.3, source: "estimated" };
   if (tps < 0.5) out.caution = "Very slow: under half a token per second. It will work, but a reply can take many minutes.";
   else if (tps < 2) out.caution = "Slow: expect minutes for a short answer and an hour or more for a whole program.";
