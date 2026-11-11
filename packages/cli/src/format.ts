@@ -1,4 +1,4 @@
-import { fmtGiB, type GateResult, type MemoryPlan, type StreamMetrics } from "@clutor/core";
+import { fmtGiB, type GateResult, type Labelled, type MemoryPlan, type PlanReport, type StreamMetrics } from "@clutor/core";
 
 export function table(rows: string[][], header?: string[]): string {
   const all = header ? [header, ...rows] : rows;
@@ -41,4 +41,31 @@ export function formatSimulation(base: StreamMetrics, c: StreamMetrics): string 
     row("experts replaced by stand-ins", (m) => pct(1 - m.exactShare)),
     row("router probability served exactly", (m) => pct(m.exactMassShare)),
   ], ["", "baseline (LRU)", "clutor"]);
+}
+
+const TAG: Record<string, string> = { measured: "MEASURED", estimated: "ESTIMATED", theoretical: "THEORETICAL", unknown: "UNKNOWN" };
+const tagOf = (l: Labelled<number>): string => `[${TAG[l.basis]}]`;
+const MARK: Record<string, string> = { good: "✓ good", usable: "✓ usable", slow: "⚠ slow", poor: "✗ poor" };
+const TASK: Record<string, string> = { chat: "Interactive chat", coding: "Coding agent", background: "Background jobs", "long-generation": "Long generation" };
+const secs = (s: number): string => (s < 90 ? `${Math.max(1, Math.round(s))} s` : `${Math.round(s / 60)} min`);
+
+/** The plan as a decision: verdict, speed with its basis, what each kind of use will feel like, and how sure the numbers are. */
+export function formatReport(name: string, quant: string | undefined, r: PlanReport, machine: { ram: string; disk: string; cpu: string }): string {
+  const head = (t: string): string => `${t}\n${"-".repeat(32)}`;
+  const o: string[] = [];
+  o.push("CLUTOR PERFORMANCE PLAN", "", "MODEL", `${name}${quant ? ` ${quant}` : ""}`, `${fmtGiB(r.memory.modelBytes)}`, "");
+  o.push("YOUR MACHINE", `RAM      ${machine.ram}`, `SSD      ${machine.disk}`, `CPU      ${machine.cpu}`, "");
+  o.push(head("VERDICT"), r.verdict.canRun ? "✓ CAN RUN" : "✗ DOES NOT FIT", ...(r.verdict.mode === "disk streaming" ? ["⚠ SSD STREAMING REQUIRED"] : []), r.verdict.headline, "");
+  if (r.speed) {
+    o.push(head("EXPECTED PERFORMANCE"));
+    o.push(`Speed        ${tps(r.speed.low.value)} to ${tps(r.speed.high.value)} tokens/s   [${TAG[r.speed.low.basis]}]`);
+    if (r.startSeconds) o.push(`Start        about ${secs(r.startSeconds.value)} before the first token   [${TAG[r.startSeconds.basis]}]`);
+    if (r.diskCeilingTps) o.push(`Disk limit   at most ${tps(r.diskCeilingTps.value)} tokens/s with nothing cached   [${TAG[r.diskCeilingTps.basis]}]`);
+    o.push("");
+    o.push(head("CACHE"), `Recommended  ${fmtGiB(r.cache.recommendedBytes.value)}   ${tagOf(r.cache.recommendedBytes)}`, `Minimum      ${fmtGiB(r.cache.minimumBytes.value)}   ${tagOf(r.cache.minimumBytes)}`, "");
+    o.push(head("SUITABILITY"), table(r.suitability.map((t) => [TASK[t.task] ?? t.task, MARK[t.rating] ?? t.rating, t.why])), "");
+  }
+  o.push(head("CONFIDENCE"), r.confidence.level.toUpperCase(), ...r.confidence.reasons.map((x) => `- ${x}`), "");
+  o.push(head("WHY"), ...r.why);
+  return o.join("\n");
 }
