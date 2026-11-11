@@ -60,7 +60,7 @@ export function sandboxed(argv: string[], scratch: string, network: boolean): st
   if (mode === "seatbelt") return ["/usr/bin/sandbox-exec", "-p", seatbeltProfile(scratch, network), ...argv];
   if (mode === "bubblewrap") {
     const home = homedir();
-    const args = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--bind", scratch, scratch];
+    const args = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--bind", scratch, scratch]   // the rest of the file system stays read-only; TMPDIR is the scratch folder, so tools need no other writable place;
     for (const d of SECRET_DIRS) if (existsSync(`${home}/${d}`)) args.push("--tmpfs", `${home}/${d}`);
     if (!network) args.push("--unshare-net");
     return ["bwrap", ...args, "--chdir", scratch, ...argv];
