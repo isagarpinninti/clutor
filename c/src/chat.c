@@ -555,7 +555,7 @@ int cl_chat_run(cl_chat *c, const char *line) {
     if (f->xs) {
       cl_xs_stats s1 = cl_xs_get_stats(f->xs);
       uint64_t acc = s1.accesses - s0.accesses, hit = s1.hits - s0.hits;
-      ob_fmt(&c->out, ",\"cache\":{\"hitRate\":%.4f,\"gbRead\":%.4f}", acc ? (double)hit / (double)acc : 0.0, (double)((s1.demand_bytes + s1.prefetch_bytes) - (s0.demand_bytes + s0.prefetch_bytes)) / 1e9);
+      ob_fmt(&c->out, ",\"cache\":{\"hitRate\":%.4f,\"gbRead\":%.4f,\"waitSeconds\":%.3f}", acc ? (double)hit / (double)acc : 0.0, (double)((s1.demand_bytes + s1.prefetch_bytes) - (s0.demand_bytes + s0.prefetch_bytes)) / 1e9, (double)(s1.wait_ns - s0.wait_ns) / 1e9);
     }
     ob_put(&c->out, "}", 1); flush_event(c);
   } else if (!strcmp(op, "cancel")) {

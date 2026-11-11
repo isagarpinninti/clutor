@@ -42,6 +42,31 @@ for arch in MOE:
         p.stdin.write(json.dumps({"op": "quit"}) + "\n"); p.stdin.flush(); p.wait(timeout=30)
         check(str(ready.get("autoStream")).lower() == want, f"{arch}: chat reports autoStream={want}", str(ready)[:200])
 
+# The done event of a streamed reply reports how the cache did and how long the compute thread waited for the disk; a mapped model reports no cache.
+def done_event(model, fake):
+    env = dict(os.environ)
+    if fake: env["CLUTOR_FAKE_RAM_BYTES"] = str(fake)
+    else: env.pop("CLUTOR_FAKE_RAM_BYTES", None)
+    p = subprocess.Popen([ENGINE, "chat", model, "--ctx", "64"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env, text=True)
+    p.stdout.readline()
+    p.stdin.write(json.dumps({"op": "append", "text": "the cat is in the room", "raw": True}) + "\n"); p.stdin.flush()
+    while json.loads(p.stdout.readline() or "{}").get("ev") != "appended": pass
+    p.stdin.write(json.dumps({"op": "generate", "max": 8, "temp": 0}) + "\n"); p.stdin.flush()
+    done = {}
+    while True:
+        line = p.stdout.readline()
+        if not line: break
+        ev = json.loads(line)
+        if ev.get("ev") == "done": done = ev; break
+    p.stdin.write(json.dumps({"op": "quit"}) + "\n"); p.stdin.flush(); p.wait(timeout=30)
+    return done
+
+for arch in MOE[:2]:
+    model = os.path.join(FOLDER, f"tiny_{arch}.gguf")
+    c = done_event(model, 200_000).get("cache")
+    check(isinstance(c, dict) and all(isinstance(c.get(k), (int, float)) and c[k] >= 0 for k in ("hitRate", "gbRead", "waitSeconds")) and c["hitRate"] <= 1, f"{arch}: a streamed reply reports hitRate, gbRead and waitSeconds", str(c))
+    check("cache" not in done_event(model, 0), f"{arch}: a mapped reply reports no cache")
+
 for arch in DENSE:
     model = os.path.join(FOLDER, f"tiny_{arch}.gguf")
     r = run(["generate", model, "the cat is in the room", "--n", "4"], 200_000)

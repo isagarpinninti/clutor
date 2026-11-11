@@ -141,7 +141,7 @@ export class EngineSession {
             type: "done", finish: finish === "stop" ? "stop" : finish,
             promptTokens: Number(e["pos"]) - Number(e["tokens"]), completionTokens: Number(e["tokens"]), tokensPerSecond: Number(e["tokensPerSecond"]),
             ...(prefillSecs > 0 && newTokens > 0 ? { promptPerSecond: newTokens / prefillSecs } : {}),
-            ...(e["cache"] ? { cache: e["cache"] as { hitRate: number; gbRead: number } } : {}),
+            ...(e["cache"] ? { cache: e["cache"] as { hitRate: number; gbRead: number; waitSeconds?: number } } : {}),
           };
           return;
         }
