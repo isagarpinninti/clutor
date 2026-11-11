@@ -6,3 +6,4 @@ export * from "./shard";
 export * from "./receipts";
 export * from "./osandbox";
 export * from "./policy";
+export * from "./capabilities";

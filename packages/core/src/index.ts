@@ -5,6 +5,7 @@ export * from "./models/library";
 export * from "./planner/catalog";
 export * from "./planner/plan";
 export * from "./planner/report";
+export * from "./planner/record";
 export * from "./cache/policies";
 export * from "./engine/trace";
 export * from "./engine/streamer";
