@@ -50,6 +50,7 @@ const host: AgentHost = {
   },
   termKill: (id) => invoke("term_kill", { id }),
   checkRoot: (root, allowed) => invoke("remote_check_root", { root, allowed }),
+  policy: (root) => invoke("project_policy", { root }),
   newProject: (parent, name) => invoke("remote_new_project", { parent, name }),
   dirs: (root) => invoke("project_dirs", { root }),
   mcpSend: (id, line) => invoke("mcp_send", { id, line }),

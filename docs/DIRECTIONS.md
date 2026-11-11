@@ -38,7 +38,7 @@ Not decided and not built. I would wait until more than one platform is tested a
 
 A company wants to say what the agent may do without trusting each laptop's settings. Built, in the command line and the local server's agent: `clutor.policy.json` (in the project folder, or the file named by `CLUTOR_POLICY`) with two switches, `requireSandbox` (commands are refused when the computer has no OS sandbox) and `forbidAutoApprove` (the configuration key and `--yes` are ignored, so the person is always asked). Unknown keys and wrong types are errors, so a typo cannot silently turn protection off. Tested in `packages/core/test/policy.test.ts` and `node.test.ts`.
 
-Not built: the desktop app does not read the file yet; there is no switch to forbid cloud providers or to fix the permission level; nothing signs the file. And it cannot stop a person who can edit files on their own computer from deleting it or changing `CLUTOR_POLICY`; for that a company needs its device-management tooling to place a read-only file.
+The desktop app reads the same file before every agent task: `forbidAutoApprove` makes every command ask (the permission mode, "allow for this session" and saved allow rules are ignored), `requireSandbox` refuses commands where the app has no sandbox (everything but macOS), and a file that cannot be read stops the task rather than being ignored. Tested in Rust (parsing, refusal of a command) and in the controller tests. Not built: there is no switch to forbid cloud providers or to fix the permission level; nothing signs the file. And it cannot stop a person who can edit files on their own computer from deleting it or changing `CLUTOR_POLICY`; for that a company needs its device-management tooling to place a read-only file.
 
 ## 5. The name
 

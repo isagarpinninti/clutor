@@ -3,6 +3,7 @@ mod engine;
 mod image;
 mod models;
 mod inspect;
+mod policy;
 mod project;
 mod remote;
 mod web;
@@ -35,6 +36,7 @@ pub fn run() {
             project::project_read,
             project::project_write,
             project::project_run,
+            policy::project_policy,
             project::mcp_start,
             project::mcp_send,
             project::mcp_stop,
